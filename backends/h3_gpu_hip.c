@@ -1757,6 +1757,55 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
     return ok;
 }
 
+int h3_gpu_gate_adaln_quantize_int8(
+    h3_gpu *gpu, h3_gpu_tensor *gated_residual,
+    h3_gpu_tensor *quantized_output, h3_gpu_tensor *quantized_scales,
+    const h3_gpu_tensor *residual, const h3_gpu_tensor *branch,
+    const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *gate_modulation,
+    const h3_gpu_tensor *norm_modulation, const h3_gpu_tensor *row_map,
+    uint32_t rows, uint32_t padded_rows, uint32_t width, uint32_t slots,
+    uint32_t gate_slot, uint32_t shift_slot, uint32_t scale_slot,
+    float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    size_t padded_count = (size_t)padded_rows * width;
+    if (!ctx || !rows || !width || padded_rows < rows || width > 5376u ||
+        gate_slot >= slots || shift_slot >= slots || scale_slot >= slots ||
+        !h3_hip_require_bf16(ctx, residual, count, "int8 gate AdaLN residual") ||
+        !h3_hip_require_bf16(ctx, branch, count, "int8 gate AdaLN branch") ||
+        !h3_hip_require_bf16(ctx, norm_weight, width, "int8 gate AdaLN norm") ||
+        !h3_hip_require_bf16(ctx, gate_modulation, 1,
+                             "int8 gate AdaLN gate modulation") ||
+        !h3_hip_require_bf16(ctx, norm_modulation, 1,
+                             "int8 gate AdaLN norm modulation") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "int8 gate AdaLN row map") ||
+        !h3_hip_require_bf16(ctx, gated_residual, count,
+                             "int8 gate AdaLN gated residual") ||
+        !h3_hip_require_i8(ctx, quantized_output, padded_count,
+                           "int8 gate AdaLN quantized output") ||
+        !h3_hip_require_f32(ctx, quantized_scales, padded_rows,
+                            "int8 gate AdaLN scales")) {
+        return 0;
+    }
+    h3_gpu_tensor *adaln_out = h3_gpu_tensor_new_bf16(gpu, count);
+    if (!adaln_out) {
+        h3_hip_set_error(ctx, "int8 gate AdaLN temporary allocation failed");
+        return 0;
+    }
+    int ok = h3_gpu_gate_adaln_bf16(
+        gpu, gated_residual, adaln_out, residual, branch, norm_weight,
+        gate_modulation, norm_modulation, row_map, rows, width, slots,
+        gate_slot, shift_slot, scale_slot, epsilon) &&
+             h3_hip_quantize_bf16_int8_rows(
+                 ctx, quantized_output, quantized_scales, adaln_out, rows,
+                 padded_rows, width);
+    h3_gpu_tensor_free(adaln_out);
+    if (!ok) {
+        h3_hip_set_error(ctx, "h3_gate_adaln_quantize_int8 failed");
+    }
+    return ok;
+}
+
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name) {
     h3_hip_set_error(gpu, "HIP backend: %s is not implemented yet", name);
     return 0;
