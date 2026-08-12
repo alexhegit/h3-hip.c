@@ -1692,6 +1692,71 @@ static int test_linear_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_mlp_int8(h3_gpu *gpu) {
+    enum { ROWS = 2, INPUT_DIM = 8, HIDDEN = 4, OUTPUT_DIM = 4,
+           PADDED_ROWS = 128 };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM,
+           FC1_ELEMS = HIDDEN * 2 * INPUT_DIM,
+           FC2_ELEMS = OUTPUT_DIM * HIDDEN,
+           Q_ELEMS = PADDED_ROWS * INPUT_DIM };
+    uint16_t input_bf16[INPUT_ELEMS], fc1_w_bf16[FC1_ELEMS], fc2_w_bf16[FC2_ELEMS];
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input_bf16[i] = f32_to_bf16((float)((int)(i % 5) - 2) * 0.25f);
+    for (size_t i = 0; i < FC1_ELEMS; i++)
+        fc1_w_bf16[i] = f32_to_bf16((float)((int)(i % 7) - 3) * 0.0625f);
+    for (size_t i = 0; i < FC2_ELEMS; i++)
+        fc2_w_bf16[i] = f32_to_bf16((float)((int)(i % 9) - 4) * 0.03125f);
+    h3_gpu_tensor *input = h3_gpu_tensor_from_bf16(gpu, input_bf16, INPUT_ELEMS);
+    h3_gpu_tensor *fc1_w = h3_gpu_tensor_from_bf16(gpu, fc1_w_bf16, FC1_ELEMS);
+    h3_gpu_tensor *fc2_w = h3_gpu_tensor_from_bf16(gpu, fc2_w_bf16, FC2_ELEMS);
+    h3_gpu_tensor *fc1_int8 = h3_gpu_tensor_new_i8(gpu, FC1_ELEMS);
+    h3_gpu_tensor *fc1_scales = h3_gpu_tensor_new_f32(gpu, HIDDEN * 2);
+    h3_gpu_tensor *fc2_int8 = h3_gpu_tensor_new_i8(gpu, FC2_ELEMS);
+    h3_gpu_tensor *fc2_scales = h3_gpu_tensor_new_f32(gpu, OUTPUT_DIM);
+    h3_gpu_tensor *quantized = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *activation_scales = h3_gpu_tensor_new_f32(gpu, PADDED_ROWS);
+    h3_gpu_tensor *activated = h3_gpu_tensor_new_bf16(gpu, ROWS * HIDDEN);
+    h3_gpu_tensor *reference = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    CHECK(input && fc1_w && fc2_w && fc1_int8 && fc1_scales && fc2_int8 &&
+          fc2_scales && quantized && activation_scales && activated &&
+          reference && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin mlp int8"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, fc1_int8, fc1_scales, fc1_w, HIDDEN * 2, INPUT_DIM),
+        "quantize mlp fc1"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, fc2_int8, fc2_scales, fc2_w, OUTPUT_DIM, HIDDEN),
+        "quantize mlp fc2"));
+    CHECK(!require_gpu(gpu, h3_gpu_mlp_bf16(
+        gpu, reference, input, fc1_w, fc2_w, ROWS, INPUT_DIM, HIDDEN,
+        OUTPUT_DIM), "reference bf16 mlp"));
+    CHECK(!require_gpu(gpu, h3_gpu_mlp_int8_bf16(
+        gpu, output, activated, quantized, activation_scales, input,
+        fc1_int8, fc1_scales, fc2_int8, fc2_scales, fc1_w, fc2_w, ROWS,
+        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0), "mlp int8"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit mlp int8"));
+    uint16_t got[ROWS * OUTPUT_DIM], got_ref[ROWS * OUTPUT_DIM];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * OUTPUT_DIM));
+    CHECK(h3_gpu_tensor_read_bf16(reference, got_ref, ROWS * OUTPUT_DIM));
+    for (size_t i = 0; i < ROWS * OUTPUT_DIM; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(got_ref[i])) < 0.25f);
+    }
+    h3_gpu_tensor_free(input);
+    h3_gpu_tensor_free(fc1_w);
+    h3_gpu_tensor_free(fc2_w);
+    h3_gpu_tensor_free(fc1_int8);
+    h3_gpu_tensor_free(fc1_scales);
+    h3_gpu_tensor_free(fc2_int8);
+    h3_gpu_tensor_free(fc2_scales);
+    h3_gpu_tensor_free(quantized);
+    h3_gpu_tensor_free(activation_scales);
+    h3_gpu_tensor_free(activated);
+    h3_gpu_tensor_free(reference);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_silu(h3_gpu *gpu) {
     enum { COUNT = 3 };
     const float values[COUNT] = {-1.0f, 0.0f, 2.0f};
@@ -1784,6 +1849,7 @@ int main(void) {
     if (test_quantize_weight_int8(gpu) != 0) return 1;
     if (test_add_bf16(gpu) != 0) return 1;
     if (test_linear_int8(gpu) != 0) return 1;
+    if (test_mlp_int8(gpu) != 0) return 1;
     if (test_silu(gpu) != 0) return 1;
     if (test_swiglu(gpu) != 0) return 1;
     h3_gpu_free(gpu);
