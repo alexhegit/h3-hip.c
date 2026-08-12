@@ -138,6 +138,36 @@ typedef struct {
     uint32_t width;
 } h3_embedding_args;
 
+typedef struct {
+    uint32_t sequence;
+    uint32_t query_heads;
+    uint32_t kv_heads;
+    uint32_t head_dim;
+    float epsilon;
+} h3_text_rope_args;
+
+typedef struct {
+    uint32_t sequence;
+    uint32_t query_heads;
+    uint32_t kv_heads;
+    uint32_t head_dim;
+} h3_text_rope_inplace_args;
+
+typedef struct {
+    uint32_t sequence;
+    uint32_t query_heads;
+    uint32_t kv_heads;
+    uint32_t head_dim;
+    float scale;
+} h3_gqa_args;
+
+typedef struct {
+    uint32_t sequence;
+    uint32_t heads;
+    uint32_t head_dim;
+    float epsilon;
+} h3_head_norm_args;
+
 int h3_launch_cast_f32_to_bf16(const float *input, uint16_t *output,
                                uint32_t count, hipStream_t stream);
 int h3_launch_cast_bf16_to_f32(const uint16_t *input, float *output,
@@ -231,6 +261,22 @@ int h3_launch_linear_f32_tiled_bf16_map(
     const float *input, const float *weight, const float *bias,
     uint16_t *output, const uint32_t *row_map, const h3_linear_args *args,
     hipStream_t stream);
+int h3_launch_text_qk_rope_bf16(
+    const uint16_t *query_input, const uint16_t *key_input,
+    const uint16_t *q_weight, const uint16_t *k_weight,
+    const uint16_t *rope_cos, const uint16_t *rope_sin,
+    uint16_t *query_output, uint16_t *key_output,
+    const h3_text_rope_args *args, hipStream_t stream);
+int h3_launch_head_rms_norm_bf16(uint16_t *tensor, const uint16_t *weight,
+                                 const h3_head_norm_args *args,
+                                 hipStream_t stream);
+int h3_launch_rope_text_bf16(uint16_t *query, uint16_t *key,
+                             const float *rope_cos, const float *rope_sin,
+                             const h3_text_rope_inplace_args *args,
+                             hipStream_t stream);
+int h3_launch_gqa_causal_bf16(const uint16_t *query, const uint16_t *key,
+                              const uint16_t *value, uint16_t *output,
+                              const h3_gqa_args *args, hipStream_t stream);
 
 #ifdef __cplusplus
 }

@@ -1329,6 +1329,117 @@ int h3_gpu_token_expand_adaln_bf16(
         "h3_token_expand_adaln_bf16");
 }
 
+int h3_gpu_text_qk_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query_output,
+                             h3_gpu_tensor *key_output,
+                             const h3_gpu_tensor *query_input,
+                             const h3_gpu_tensor *key_input,
+                             const h3_gpu_tensor *q_norm,
+                             const h3_gpu_tensor *k_norm,
+                             const h3_gpu_tensor *rope_cos,
+                             const h3_gpu_tensor *rope_sin, uint32_t sequence,
+                             uint32_t query_heads, uint32_t kv_heads,
+                             uint32_t head_dim, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t query_count = (size_t)sequence * query_heads * head_dim;
+    size_t key_count = (size_t)sequence * kv_heads * head_dim;
+    size_t rope_count = (size_t)sequence * (head_dim / 2);
+    if (!ctx || head_dim % 2 || !kv_heads || query_heads % kv_heads ||
+        !h3_hip_require_bf16(ctx, query_input, query_count, "text query") ||
+        !h3_hip_require_bf16(ctx, key_input, key_count, "text key") ||
+        !h3_hip_require_bf16(ctx, q_norm, head_dim, "text Q norm") ||
+        !h3_hip_require_bf16(ctx, k_norm, head_dim, "text K norm") ||
+        !h3_hip_require_bf16(ctx, rope_cos, rope_count, "text RoPE cosine") ||
+        !h3_hip_require_bf16(ctx, rope_sin, rope_count, "text RoPE sine") ||
+        !h3_hip_require_bf16(ctx, query_output, query_count,
+                             "text query output") ||
+        !h3_hip_require_bf16(ctx, key_output, key_count, "text key output")) {
+        return 0;
+    }
+    h3_text_rope_args args = {sequence, query_heads, kv_heads, head_dim,
+                              epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_text_qk_rope_bf16(
+        (const uint16_t *)tensor_ptr(query_input)->host,
+        (const uint16_t *)tensor_ptr(key_input)->host,
+        (const uint16_t *)tensor_ptr(q_norm)->host,
+        (const uint16_t *)tensor_ptr(k_norm)->host,
+        (const uint16_t *)tensor_ptr(rope_cos)->host,
+        (const uint16_t *)tensor_ptr(rope_sin)->host,
+        (uint16_t *)tensor_ptr(query_output)->host,
+        (uint16_t *)tensor_ptr(key_output)->host, &args, ctx->stream),
+        "h3_text_qk_rope_bf16");
+}
+
+int h3_gpu_head_rms_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *tensor,
+                              const h3_gpu_tensor *weight, uint32_t sequence,
+                              uint32_t heads, uint32_t head_dim,
+                              float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)sequence * heads * head_dim;
+    if (!ctx || !sequence || !heads || !head_dim ||
+        !h3_hip_require_bf16(ctx, tensor, count, "head norm tensor") ||
+        !h3_hip_require_bf16(ctx, weight, head_dim, "head norm weight")) {
+        return 0;
+    }
+    h3_head_norm_args args = {sequence, heads, head_dim, epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_head_rms_norm_bf16(
+        (uint16_t *)tensor_ptr(tensor)->host,
+        (const uint16_t *)tensor_ptr(weight)->host, &args, ctx->stream),
+        "h3_head_rms_norm_bf16");
+}
+
+int h3_gpu_rope_text_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
+                          h3_gpu_tensor *key,
+                          const h3_gpu_tensor *rope_cos_f32,
+                          const h3_gpu_tensor *rope_sin_f32, uint32_t sequence,
+                          uint32_t query_heads, uint32_t kv_heads,
+                          uint32_t head_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t query_count = (size_t)sequence * query_heads * head_dim;
+    size_t key_count = (size_t)sequence * kv_heads * head_dim;
+    size_t rope_count = (size_t)sequence * (head_dim / 2);
+    if (!ctx || head_dim % 2 || !kv_heads || query_heads % kv_heads ||
+        !h3_hip_require_bf16(ctx, query, query_count, "RoPE query") ||
+        !h3_hip_require_bf16(ctx, key, key_count, "RoPE key") ||
+        !h3_hip_require_f32(ctx, rope_cos_f32, rope_count, "RoPE cosine") ||
+        !h3_hip_require_f32(ctx, rope_sin_f32, rope_count, "RoPE sine")) {
+        return 0;
+    }
+    h3_text_rope_inplace_args args = {sequence, query_heads, kv_heads,
+                                      head_dim};
+    return h3_hip_launch_ok(ctx, h3_launch_rope_text_bf16(
+        (uint16_t *)tensor_ptr(query)->host,
+        (uint16_t *)tensor_ptr(key)->host,
+        (const float *)tensor_ptr(rope_cos_f32)->host,
+        (const float *)tensor_ptr(rope_sin_f32)->host, &args, ctx->stream),
+        "h3_rope_text_bf16");
+}
+
+int h3_gpu_gqa_causal_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *query,
+                           const h3_gpu_tensor *key,
+                           const h3_gpu_tensor *value, uint32_t sequence,
+                           uint32_t query_heads, uint32_t kv_heads,
+                           uint32_t head_dim, float scale) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t query_count = (size_t)sequence * query_heads * head_dim;
+    size_t kv_count = (size_t)sequence * kv_heads * head_dim;
+    if (!ctx || !sequence || !query_heads || !kv_heads || !head_dim ||
+        query_heads % kv_heads || head_dim > 128u ||
+        !h3_hip_require_bf16(ctx, query, query_count, "GQA query") ||
+        !h3_hip_require_bf16(ctx, key, kv_count, "GQA key") ||
+        !h3_hip_require_bf16(ctx, value, kv_count, "GQA value") ||
+        !h3_hip_require_bf16(ctx, output, query_count, "GQA output")) {
+        return 0;
+    }
+    h3_gqa_args args = {sequence, query_heads, kv_heads, head_dim, scale};
+    return h3_hip_launch_ok(ctx, h3_launch_gqa_causal_bf16(
+        (const uint16_t *)tensor_ptr(query)->host,
+        (const uint16_t *)tensor_ptr(key)->host,
+        (const uint16_t *)tensor_ptr(value)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_gqa_causal_bf16");
+}
+
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name) {
     h3_hip_set_error(gpu, "HIP backend: %s is not implemented yet", name);
     return 0;

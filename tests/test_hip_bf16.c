@@ -1151,6 +1151,204 @@ static int test_linear_bias(h3_gpu *gpu) {
     return 0;
 }
 
+static void cpu_text_qk_rope_bf16(
+    const uint16_t *query_input, const uint16_t *key_input,
+    const uint16_t *q_weight, const uint16_t *k_weight,
+    const uint16_t *rope_cos, const uint16_t *rope_sin,
+    uint16_t *query_output, uint16_t *key_output, uint32_t sequence,
+    uint32_t query_heads, uint32_t kv_heads, uint32_t head_dim,
+    float epsilon) {
+    uint32_t half_dim = head_dim / 2;
+    for (uint32_t row = 0; row < sequence; row++) {
+        for (uint32_t head = 0; head < query_heads; head++) {
+            for (uint32_t dimension = 0; dimension < head_dim; dimension++) {
+                uint32_t pair = dimension < half_dim ? dimension + half_dim :
+                                                       dimension - half_dim;
+                float c = bf16_to_f32(
+                    rope_cos[row * half_dim + (dimension % half_dim)]);
+                float s = bf16_to_f32(
+                    rope_sin[row * half_dim + (dimension % half_dim)]);
+                uint32_t q_base = (row * query_heads + head) * head_dim;
+                float q_sum = 0.0f;
+                for (uint32_t d = 0; d < head_dim; d++) {
+                    float value = bf16_to_f32(query_input[q_base + d]);
+                    q_sum = fmaf(value, value, q_sum);
+                }
+                float q_inverse = 1.0f / sqrtf(q_sum / (float)head_dim + epsilon);
+                float q0 = bf16_to_f32(query_input[q_base + dimension]) *
+                    q_inverse * bf16_to_f32(q_weight[dimension]);
+                float q1 = bf16_to_f32(query_input[q_base + pair]) * q_inverse *
+                    bf16_to_f32(q_weight[pair]);
+                float q_rotated = dimension < half_dim ? q0 * c - q1 * s :
+                                                         q0 * c + q1 * s;
+                query_output[q_base + dimension] = f32_to_bf16(q_rotated);
+            }
+        }
+        for (uint32_t head = 0; head < kv_heads; head++) {
+            for (uint32_t dimension = 0; dimension < head_dim; dimension++) {
+                uint32_t pair = dimension < half_dim ? dimension + half_dim :
+                                                       dimension - half_dim;
+                float c = bf16_to_f32(
+                    rope_cos[row * half_dim + (dimension % half_dim)]);
+                float s = bf16_to_f32(
+                    rope_sin[row * half_dim + (dimension % half_dim)]);
+                uint32_t k_base = (row * kv_heads + head) * head_dim;
+                float k_sum = 0.0f;
+                for (uint32_t d = 0; d < head_dim; d++) {
+                    float value = bf16_to_f32(key_input[k_base + d]);
+                    k_sum = fmaf(value, value, k_sum);
+                }
+                float k_inverse = 1.0f / sqrtf(k_sum / (float)head_dim + epsilon);
+                float k0 = bf16_to_f32(key_input[k_base + dimension]) * k_inverse *
+                    bf16_to_f32(k_weight[dimension]);
+                float k1 = bf16_to_f32(key_input[k_base + pair]) * k_inverse *
+                    bf16_to_f32(k_weight[pair]);
+                float k_rotated = dimension < half_dim ? k0 * c - k1 * s :
+                                                         k0 * c + k1 * s;
+                key_output[k_base + dimension] = f32_to_bf16(k_rotated);
+            }
+        }
+    }
+}
+
+static void cpu_gqa_causal_bf16(const uint16_t *query, const uint16_t *key,
+                                const uint16_t *value, uint16_t *output,
+                                uint32_t sequence, uint32_t query_heads,
+                                uint32_t kv_heads, uint32_t head_dim,
+                                float scale) {
+    for (uint32_t query_row = 0; query_row < sequence; query_row++) {
+        for (uint32_t query_head = 0; query_head < query_heads; query_head++) {
+            uint32_t kv_head = query_head / (query_heads / kv_heads);
+            uint32_t q_base =
+                (query_row * query_heads + query_head) * head_dim;
+            uint32_t key_count = query_row + 1;
+            float scores[512];
+            float max_score = -1e30f;
+            for (uint32_t key_row = 0; key_row < key_count; key_row++) {
+                uint32_t k_base = (key_row * kv_heads + kv_head) * head_dim;
+                float dot = 0.0f;
+                for (uint32_t d = 0; d < head_dim; d++) {
+                    float q = bf16_to_f32(f32_to_bf16(
+                        bf16_to_f32(query[q_base + d]) * scale));
+                    dot = fmaf(q, bf16_to_f32(key[k_base + d]), dot);
+                }
+                scores[key_row] = dot;
+                max_score = fmaxf(max_score, dot);
+            }
+            float sum = 0.0f;
+            for (uint32_t key_row = 0; key_row < key_count; key_row++) {
+                scores[key_row] = expf(scores[key_row] - max_score);
+                sum += scores[key_row];
+            }
+            float inv_sum = 1.0f / sum;
+            for (uint32_t d = 0; d < head_dim; d++) {
+                float acc = 0.0f;
+                for (uint32_t key_row = 0; key_row < key_count; key_row++) {
+                    uint32_t v_index =
+                        (key_row * kv_heads + kv_head) * head_dim + d;
+                    acc = fmaf(scores[key_row] * inv_sum,
+                               bf16_to_f32(value[v_index]), acc);
+                }
+                output[q_base + d] = f32_to_bf16(acc);
+            }
+        }
+    }
+}
+
+static int test_text_qk_rope(h3_gpu *gpu) {
+    enum { SEQUENCE = 2, QUERY_HEADS = 4, KV_HEADS = 2, HEAD_DIM = 4 };
+    enum { Q_ELEMS = SEQUENCE * QUERY_HEADS * HEAD_DIM,
+           K_ELEMS = SEQUENCE * KV_HEADS * HEAD_DIM };
+    uint16_t query_in[Q_ELEMS], key_in[K_ELEMS];
+    uint16_t q_norm[HEAD_DIM], k_norm[HEAD_DIM];
+    uint16_t rope_cos[SEQUENCE * HEAD_DIM / 2], rope_sin[SEQUENCE * HEAD_DIM / 2];
+    for (size_t i = 0; i < Q_ELEMS; i++)
+        query_in[i] = f32_to_bf16((float)((int)(i % 9) - 4) * 0.25f);
+    for (size_t i = 0; i < K_ELEMS; i++)
+        key_in[i] = f32_to_bf16((float)((int)(i % 7) - 3) * 0.125f);
+    for (uint32_t i = 0; i < HEAD_DIM; i++) {
+        q_norm[i] = f32_to_bf16(1.0f);
+        k_norm[i] = f32_to_bf16(1.0f);
+    }
+    for (uint32_t row = 0; row < SEQUENCE; row++) {
+        rope_cos[row * 2 + 0] = f32_to_bf16(0.6f);
+        rope_cos[row * 2 + 1] = f32_to_bf16(0.8f);
+        rope_sin[row * 2 + 0] = f32_to_bf16(0.8f);
+        rope_sin[row * 2 + 1] = f32_to_bf16(-0.6f);
+    }
+    uint16_t expected_q[Q_ELEMS], expected_k[K_ELEMS];
+    cpu_text_qk_rope_bf16(query_in, key_in, q_norm, k_norm, rope_cos, rope_sin,
+                          expected_q, expected_k, SEQUENCE, QUERY_HEADS,
+                          KV_HEADS, HEAD_DIM, 1e-5f);
+    h3_gpu_tensor *gpu_q_in = h3_gpu_tensor_from_bf16(gpu, query_in, Q_ELEMS);
+    h3_gpu_tensor *gpu_k_in = h3_gpu_tensor_from_bf16(gpu, key_in, K_ELEMS);
+    h3_gpu_tensor *gpu_q_norm = h3_gpu_tensor_from_bf16(gpu, q_norm, HEAD_DIM);
+    h3_gpu_tensor *gpu_k_norm = h3_gpu_tensor_from_bf16(gpu, k_norm, HEAD_DIM);
+    h3_gpu_tensor *gpu_cos = h3_gpu_tensor_from_bf16(gpu, rope_cos, SEQUENCE * 2);
+    h3_gpu_tensor *gpu_sin = h3_gpu_tensor_from_bf16(gpu, rope_sin, SEQUENCE * 2);
+    h3_gpu_tensor *query_out = h3_gpu_tensor_new_bf16(gpu, Q_ELEMS);
+    h3_gpu_tensor *key_out = h3_gpu_tensor_new_bf16(gpu, K_ELEMS);
+    CHECK(gpu_q_in && gpu_k_in && gpu_q_norm && gpu_k_norm && gpu_cos &&
+          gpu_sin && query_out && key_out);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin text qk rope"));
+    CHECK(!require_gpu(gpu, h3_gpu_text_qk_rope_bf16(
+        gpu, query_out, key_out, gpu_q_in, gpu_k_in, gpu_q_norm, gpu_k_norm,
+        gpu_cos, gpu_sin, SEQUENCE, QUERY_HEADS, KV_HEADS, HEAD_DIM, 1e-5f),
+        "text qk rope"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit text qk rope"));
+    uint16_t got_q[Q_ELEMS], got_k[K_ELEMS];
+    CHECK(h3_gpu_tensor_read_bf16(query_out, got_q, Q_ELEMS));
+    CHECK(h3_gpu_tensor_read_bf16(key_out, got_k, K_ELEMS));
+    for (size_t i = 0; i < Q_ELEMS; i++)
+        CHECK(fabsf(bf16_to_f32(got_q[i]) - bf16_to_f32(expected_q[i])) < 0.03f);
+    for (size_t i = 0; i < K_ELEMS; i++)
+        CHECK(fabsf(bf16_to_f32(got_k[i]) - bf16_to_f32(expected_k[i])) < 0.03f);
+    h3_gpu_tensor_free(gpu_q_in);
+    h3_gpu_tensor_free(gpu_k_in);
+    h3_gpu_tensor_free(gpu_q_norm);
+    h3_gpu_tensor_free(gpu_k_norm);
+    h3_gpu_tensor_free(gpu_cos);
+    h3_gpu_tensor_free(gpu_sin);
+    h3_gpu_tensor_free(query_out);
+    h3_gpu_tensor_free(key_out);
+    return 0;
+}
+
+static int test_gqa_causal(h3_gpu *gpu) {
+    enum { SEQUENCE = 4, QUERY_HEADS = 4, KV_HEADS = 2, HEAD_DIM = 4 };
+    enum { Q_ELEMS = SEQUENCE * QUERY_HEADS * HEAD_DIM,
+           KV_ELEMS = SEQUENCE * KV_HEADS * HEAD_DIM };
+    uint16_t query[Q_ELEMS], key[KV_ELEMS], value[KV_ELEMS], expected[Q_ELEMS];
+    for (size_t i = 0; i < Q_ELEMS; i++)
+        query[i] = f32_to_bf16((float)((int)(i % 11) - 5) * 0.1f);
+    for (size_t i = 0; i < KV_ELEMS; i++) {
+        key[i] = f32_to_bf16((float)((int)(i % 9) - 4) * 0.15f);
+        value[i] = f32_to_bf16((float)((int)(i % 7) - 3) * 0.2f);
+    }
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_gqa_causal_bf16(query, key, value, expected, SEQUENCE, QUERY_HEADS,
+                        KV_HEADS, HEAD_DIM, scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, Q_ELEMS);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, KV_ELEMS);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, KV_ELEMS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, Q_ELEMS);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin gqa causal"));
+    CHECK(!require_gpu(gpu, h3_gpu_gqa_causal_bf16(
+        gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, QUERY_HEADS, KV_HEADS,
+        HEAD_DIM, scale), "gqa causal"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit gqa causal"));
+    uint16_t got[Q_ELEMS];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, Q_ELEMS));
+    for (size_t i = 0; i < Q_ELEMS; i++)
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i])) < 0.05f);
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 int main(void) {
     char error[256];
     h3_gpu *gpu = h3_gpu_create("kernels/h3_kernels.hip", error, sizeof(error));
@@ -1173,6 +1371,8 @@ int main(void) {
     if (test_gate(gpu) != 0) return 1;
     if (test_adaln_offset(gpu) != 0) return 1;
     if (test_linear_bias(gpu) != 0) return 1;
+    if (test_text_qk_rope(gpu) != 0) return 1;
+    if (test_gqa_causal(gpu) != 0) return 1;
     h3_gpu_free(gpu);
     puts("h3_hip_bf16_tests ok");
     return 0;
