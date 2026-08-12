@@ -288,6 +288,10 @@ int h3_launch_quantize_bf16_int8_rows(const uint16_t *input, int8_t *output,
                                       const h3_int8_quant_args *args,
                                       uint32_t dispatch_rows,
                                       hipStream_t stream);
+int h3_launch_linear_int8_bf16_naive(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output, const h3_linear_args *args,
+    hipStream_t stream);
 
 #ifdef __cplusplus
 }
