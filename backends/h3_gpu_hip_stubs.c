@@ -63,10 +63,6 @@ int h3_gpu_conv3d_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *i
 
 int h3_gpu_vae_encoder_group_norm_silu_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch, uint32_t depth, uint32_t height, uint32_t width, uint32_t channels, uint32_t groups, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_vae_encoder_group_norm_silu_f32"); }
 
-int h3_gpu_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t input_dim, uint32_t output_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_linear_bf16"); }
-
-int h3_gpu_mlp_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *fc1_weight, const h3_gpu_tensor *fc2_weight, uint32_t rows, uint32_t input_dim, uint32_t hidden_dim, uint32_t output_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_mlp_bf16"); }
-
 int h3_gpu_mlp_nax_bf16(h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *activated, const h3_gpu_tensor *input, const h3_gpu_tensor *fc1_weight, const h3_gpu_tensor *fc2_weight, uint32_t rows, uint32_t input_dim, uint32_t hidden_dim, uint32_t output_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_mlp_nax_bf16"); }
 
 int h3_gpu_quantize_weight_int8(h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *scales, const h3_gpu_tensor *input, uint32_t rows, uint32_t columns) { return h3_hip_unimplemented(NULL, "h3_gpu_quantize_weight_int8"); }
@@ -77,41 +73,15 @@ int h3_gpu_linear_int8_head_major_bf16( h3_gpu *gpu, h3_gpu_tensor *output, h3_g
 
 int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *activated, h3_gpu_tensor *quantized_activation, h3_gpu_tensor *activation_scales, const h3_gpu_tensor *input, const h3_gpu_tensor *fc1_weight, const h3_gpu_tensor *fc1_scales, const h3_gpu_tensor *fc2_weight, const h3_gpu_tensor *fc2_scales, const h3_gpu_tensor *fc1_bf16, const h3_gpu_tensor *fc2_bf16, uint32_t rows, uint32_t input_dim, uint32_t hidden_dim, uint32_t output_dim, int use_slower_grouped_quantizer, int use_slower_dynamic_fc1_k, int use_int8_row_fc2, int input_is_quantized) { return h3_hip_unimplemented(NULL, "h3_gpu_mlp_int8_bf16"); }
 
-int h3_gpu_silu_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, uint32_t elements) { return h3_hip_unimplemented(NULL, "h3_gpu_silu_bf16"); }
-
-int h3_gpu_rms_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, uint32_t rows, uint32_t width, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_rms_norm_bf16"); }
-
-int h3_gpu_layer_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t width, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_layer_norm_bf16"); }
-
-int h3_gpu_gelu_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, uint32_t elements, int approximate) { return h3_hip_unimplemented(NULL, "h3_gpu_gelu_bf16"); }
-
 int h3_gpu_vision_qkv_rope_bf16( h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, const h3_gpu_tensor *qkv, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half) { return h3_hip_unimplemented(NULL, "h3_gpu_vision_qkv_rope_bf16"); }
-
-int h3_gpu_adaln_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map, uint32_t rows, uint32_t width, uint32_t slots, uint32_t shift_slot, uint32_t scale_slot, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_adaln_bf16"); }
-
-int h3_gpu_adaln_bf16_offset(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, size_t input_offset, const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map, uint32_t rows, uint32_t width, uint32_t slots, uint32_t shift_slot, uint32_t scale_slot, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_adaln_bf16_offset"); }
 
 int h3_gpu_adaln_linear_bf16( h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *inverse, const h3_gpu_tensor *input, size_t input_offset, const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t width, uint32_t output_dim, uint32_t slots, uint32_t shift_slot, uint32_t scale_slot, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_adaln_linear_bf16"); }
 
-int h3_gpu_gate_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *residual, const h3_gpu_tensor *branch, const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map, uint32_t rows, uint32_t width, uint32_t slots, uint32_t gate_slot) { return h3_hip_unimplemented(NULL, "h3_gpu_gate_bf16"); }
-
-int h3_gpu_gate_adaln_bf16( h3_gpu *gpu, h3_gpu_tensor *gated_residual, h3_gpu_tensor *output, const h3_gpu_tensor *residual, const h3_gpu_tensor *branch, const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *gate_modulation, const h3_gpu_tensor *norm_modulation, const h3_gpu_tensor *row_map, uint32_t rows, uint32_t width, uint32_t slots, uint32_t gate_slot, uint32_t shift_slot, uint32_t scale_slot, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_gate_adaln_bf16"); }
-
 int h3_gpu_gate_adaln_quantize_int8( h3_gpu *gpu, h3_gpu_tensor *gated_residual, h3_gpu_tensor *quantized_output, h3_gpu_tensor *quantized_scales, const h3_gpu_tensor *residual, const h3_gpu_tensor *branch, const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *gate_modulation, const h3_gpu_tensor *norm_modulation, const h3_gpu_tensor *row_map, uint32_t rows, uint32_t padded_rows, uint32_t width, uint32_t slots, uint32_t gate_slot, uint32_t shift_slot, uint32_t scale_slot, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_gate_adaln_quantize_int8"); }
-
-int h3_gpu_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, const h3_gpu_tensor *qkv, const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_qkv_rope_bf16"); }
-
-int h3_gpu_grouped_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, const h3_gpu_tensor *qkv, const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_grouped_qkv_rope_bf16"); }
 
 int h3_gpu_grouped_qkv_linear_rope_bf16( h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, h3_gpu_tensor *qkv, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t rows, uint32_t input_dim, uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_grouped_qkv_linear_rope_bf16"); }
 
 int h3_gpu_grouped_qkv_linear_rope_int8( h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, h3_gpu_tensor *quantized_input, h3_gpu_tensor *input_scales, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales, const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t rows, uint32_t input_dim, uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon, int input_is_quantized, int use_slower_unfused_qkv_rope, int use_slower_scalar_qkv_rms, int use_slower_uncached_int8_scales) { return h3_hip_unimplemented(NULL, "h3_gpu_grouped_qkv_linear_rope_int8"); }
-
-int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query, const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t sequence, uint32_t heads, uint32_t head_dim, float scale) { return h3_hip_unimplemented(NULL, "h3_gpu_sdpa_bf16"); }
-
-int h3_gpu_sdpa_bf16_head_major_output( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query, const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t sequence, uint32_t heads, uint32_t head_dim, float scale) { return h3_hip_unimplemented(NULL, "h3_gpu_sdpa_bf16_head_major_output"); }
-
-int h3_gpu_swiglu_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *fused, uint32_t rows, uint32_t width) { return h3_hip_unimplemented(NULL, "h3_gpu_swiglu_bf16"); }
 
 int h3_gpu_embedding_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *weight, const h3_gpu_tensor *token_ids, uint32_t tokens, uint32_t vocab_size, uint32_t width) { return h3_hip_unimplemented(NULL, "h3_gpu_embedding_bf16"); }
 
@@ -123,8 +93,6 @@ int h3_gpu_rope_text_bf16(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key,
 
 int h3_gpu_gqa_causal_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query, const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t sequence, uint32_t query_heads, uint32_t kv_heads, uint32_t head_dim, float scale) { return h3_hip_unimplemented(NULL, "h3_gpu_gqa_causal_bf16"); }
 
-int h3_gpu_sub_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *left, const h3_gpu_tensor *right, uint32_t elements) { return h3_hip_unimplemented(NULL, "h3_gpu_sub_bf16"); }
-
 int h3_gpu_token_pool_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, size_t input_offset, h3_gpu_tensor *original, size_t original_offset, h3_gpu_tensor *baseline, size_t baseline_offset, const h3_gpu_tensor *baseline_indices, const h3_gpu_tensor *pairs, uint32_t input_rows, uint32_t rows, uint32_t baseline_rows, uint32_t width) { return h3_hip_unimplemented(NULL, "h3_gpu_token_pool_bf16"); }
 
 int h3_gpu_token_pool_adaln_bf16( h3_gpu *gpu, h3_gpu_tensor *residual, h3_gpu_tensor *output, const h3_gpu_tensor *input, size_t input_offset, h3_gpu_tensor *original, size_t original_offset, h3_gpu_tensor *baseline, size_t baseline_offset, const h3_gpu_tensor *baseline_indices, const h3_gpu_tensor *pairs, const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map, uint32_t input_rows, uint32_t rows, uint32_t baseline_rows, uint32_t width, uint32_t slots, uint32_t shift_slot, uint32_t scale_slot, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_token_pool_adaln_bf16"); }
@@ -132,7 +100,5 @@ int h3_gpu_token_pool_adaln_bf16( h3_gpu *gpu, h3_gpu_tensor *residual, h3_gpu_t
 int h3_gpu_token_expand_delta_bf16( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *original, size_t original_offset, const h3_gpu_tensor *reduced, const h3_gpu_tensor *baseline, size_t baseline_offset, const h3_gpu_tensor *baseline_indices, const h3_gpu_tensor *parents, uint32_t rows, uint32_t reduced_rows, uint32_t baseline_rows, uint32_t width, uint32_t exact_prefix_rows, float update_scale) { return h3_hip_unimplemented(NULL, "h3_gpu_token_expand_delta_bf16"); }
 
 int h3_gpu_token_expand_adaln_bf16( h3_gpu *gpu, h3_gpu_tensor *residual, h3_gpu_tensor *output, const h3_gpu_tensor *original, size_t original_offset, const h3_gpu_tensor *reduced, const h3_gpu_tensor *baseline, size_t baseline_offset, const h3_gpu_tensor *baseline_indices, const h3_gpu_tensor *parents, const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map, uint32_t rows, uint32_t reduced_rows, uint32_t baseline_rows, uint32_t width, uint32_t exact_prefix_rows, float update_scale, uint32_t slots, uint32_t shift_slot, uint32_t scale_slot, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_token_expand_adaln_bf16"); }
-
-int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample, size_t sample_offset, const h3_gpu_tensor *last, const h3_gpu_tensor *previous, uint32_t elements, float delta, float ratio) { return h3_hip_unimplemented(NULL, "h3_gpu_euler_bf16"); }
 
 int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *gate, const h3_gpu_tensor *up, uint32_t elements) { return h3_hip_unimplemented(NULL, "h3_gpu_silu_mul_bf16"); }
