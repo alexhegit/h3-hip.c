@@ -493,3 +493,231 @@ extern "C" int h3_launch_linear_f32_tiled_bf16_map(
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
 }
+
+__global__ void h3_text_qk_rope_bf16_kernel(
+    const uint16_t *query_input, const uint16_t *key_input,
+    const uint16_t *q_weight, const uint16_t *k_weight,
+    const uint16_t *rope_cos, const uint16_t *rope_sin,
+    uint16_t *query_output, uint16_t *key_output, h3_text_rope_args args) {
+    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head = blockIdx.y * blockDim.y + threadIdx.y;
+    uint32_t row = blockIdx.z * blockDim.z + threadIdx.z;
+    if (dimension >= args.head_dim || head >= args.query_heads ||
+        row >= args.sequence) {
+        return;
+    }
+    uint32_t half_dim = args.head_dim / 2;
+    uint32_t pair = dimension < half_dim ? dimension + half_dim :
+                                          dimension - half_dim;
+    float c = h3_bf16_to_f32(rope_cos[row * half_dim + (dimension % half_dim)]);
+    float s = h3_bf16_to_f32(rope_sin[row * half_dim + (dimension % half_dim)]);
+    uint32_t q_base = (row * args.query_heads + head) * args.head_dim;
+    float q_sum = 0.0f;
+    for (uint32_t d = 0; d < args.head_dim; d++) {
+        float value = h3_bf16_to_f32(query_input[q_base + d]);
+        q_sum = fmaf(value, value, q_sum);
+    }
+    float q_inverse = rsqrtf(q_sum / float(args.head_dim) + args.epsilon);
+    float q0 = h3_bf16_to_f32(query_input[q_base + dimension]) * q_inverse *
+               h3_bf16_to_f32(q_weight[dimension]);
+    float q1 = h3_bf16_to_f32(query_input[q_base + pair]) * q_inverse *
+               h3_bf16_to_f32(q_weight[pair]);
+    float q_rotated = dimension < half_dim ? q0 * c - q1 * s : q0 * c + q1 * s;
+    query_output[q_base + dimension] = h3_f32_to_bf16(q_rotated);
+    if (head < args.kv_heads) {
+        uint32_t k_base = (row * args.kv_heads + head) * args.head_dim;
+        float k_sum = 0.0f;
+        for (uint32_t d = 0; d < args.head_dim; d++) {
+            float value = h3_bf16_to_f32(key_input[k_base + d]);
+            k_sum = fmaf(value, value, k_sum);
+        }
+        float k_inverse = rsqrtf(k_sum / float(args.head_dim) + args.epsilon);
+        float k0 = h3_bf16_to_f32(key_input[k_base + dimension]) * k_inverse *
+                   h3_bf16_to_f32(k_weight[dimension]);
+        float k1 = h3_bf16_to_f32(key_input[k_base + pair]) * k_inverse *
+                   h3_bf16_to_f32(k_weight[pair]);
+        float k_rotated = dimension < half_dim ? k0 * c - k1 * s : k0 * c + k1 * s;
+        key_output[k_base + dimension] = h3_f32_to_bf16(k_rotated);
+    }
+}
+
+__global__ void h3_head_rms_norm_bf16_kernel(uint16_t *tensor,
+                                             const uint16_t *weight,
+                                             h3_head_norm_args args) {
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= args.sequence || head >= args.heads) return;
+    uint32_t base = (row * args.heads + head) * args.head_dim;
+    float sum = 0.0f;
+    for (uint32_t d = 0; d < args.head_dim; d++) {
+        float value = h3_bf16_to_f32(tensor[base + d]);
+        sum = fmaf(value, value, sum);
+    }
+    float inverse = rsqrtf(sum / float(args.head_dim) + args.epsilon);
+    for (uint32_t d = 0; d < args.head_dim; d++) {
+        float value = h3_bf16_to_f32(tensor[base + d]);
+        tensor[base + d] = h3_f32_to_bf16(
+            value * inverse * h3_bf16_to_f32(weight[d]));
+    }
+}
+
+__global__ void h3_rope_text_bf16_kernel(uint16_t *query, uint16_t *key,
+                                         const float *rope_cos,
+                                         const float *rope_sin,
+                                         h3_text_rope_inplace_args args) {
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= args.sequence) return;
+    uint32_t half_dim = args.head_dim / 2;
+    if (head < args.query_heads) {
+        uint32_t base = (row * args.query_heads + head) * args.head_dim;
+        for (uint32_t d = 0; d < half_dim; d++) {
+            float first = h3_bf16_to_f32(query[base + d]);
+            float second = h3_bf16_to_f32(query[base + half_dim + d]);
+            float c = rope_cos[row * half_dim + d];
+            float s = rope_sin[row * half_dim + d];
+            query[base + d] = h3_f32_to_bf16(first * c - second * s);
+            query[base + half_dim + d] = h3_f32_to_bf16(second * c + first * s);
+        }
+    }
+    if (head < args.kv_heads) {
+        uint32_t base = (row * args.kv_heads + head) * args.head_dim;
+        for (uint32_t d = 0; d < half_dim; d++) {
+            float first = h3_bf16_to_f32(key[base + d]);
+            float second = h3_bf16_to_f32(key[base + half_dim + d]);
+            float c = rope_cos[row * half_dim + d];
+            float s = rope_sin[row * half_dim + d];
+            key[base + d] = h3_f32_to_bf16(first * c - second * s);
+            key[base + half_dim + d] = h3_f32_to_bf16(second * c + first * s);
+        }
+    }
+}
+
+__global__ void h3_gqa_causal_bf16_kernel(const uint16_t *query,
+                                          const uint16_t *key,
+                                          const uint16_t *value,
+                                          uint16_t *output, h3_gqa_args args) {
+    __shared__ float reductions[128];
+    __shared__ float shared_query[128];
+    __shared__ float scores[512];
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    uint32_t query_row = blockIdx.x;
+    uint32_t query_head = blockIdx.y;
+    if (query_row >= args.sequence || query_head >= args.query_heads) return;
+    uint32_t kv_head = query_head / (args.query_heads / args.kv_heads);
+    uint32_t q_base = (query_row * args.query_heads + query_head) * args.head_dim;
+    uint32_t key_count = query_row + 1;
+    for (uint32_t d = tid; d < args.head_dim; d += threads) {
+        shared_query[d] = h3_bf16_to_f32(h3_f32_to_bf16(
+            h3_bf16_to_f32(query[q_base + d]) * args.scale));
+    }
+    __syncthreads();
+    float local_max = -1e30f;
+    for (uint32_t key_row = tid; key_row < key_count; key_row += threads) {
+        uint32_t k_base = (key_row * args.kv_heads + kv_head) * args.head_dim;
+        float dot = 0.0f;
+        for (uint32_t d = 0; d < args.head_dim; d++) {
+            dot = fmaf(shared_query[d], h3_bf16_to_f32(key[k_base + d]), dot);
+        }
+        scores[key_row] = dot;
+        local_max = fmaxf(local_max, dot);
+    }
+    reductions[tid] = local_max;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] = fmaxf(reductions[tid], reductions[tid + stride]);
+        __syncthreads();
+    }
+    float maximum = reductions[0];
+    float local_sum = 0.0f;
+    for (uint32_t key_row = tid; key_row < key_count; key_row += threads) {
+        float probability = expf(scores[key_row] - maximum);
+        scores[key_row] = probability;
+        local_sum += probability;
+    }
+    reductions[tid] = local_sum;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] += reductions[tid + stride];
+        __syncthreads();
+    }
+    float inverse_sum = 1.0f / reductions[0];
+    for (uint32_t d = tid; d < args.head_dim; d += threads) {
+        float sum = 0.0f;
+        for (uint32_t key_row = 0; key_row < key_count; key_row++) {
+            uint32_t v_index =
+                (key_row * args.kv_heads + kv_head) * args.head_dim + d;
+            sum = fmaf(scores[key_row] * inverse_sum,
+                       h3_bf16_to_f32(value[v_index]), sum);
+        }
+        output[q_base + d] = h3_f32_to_bf16(sum);
+    }
+}
+
+extern "C" int h3_launch_text_qk_rope_bf16(
+    const uint16_t *query_input, const uint16_t *key_input,
+    const uint16_t *q_weight, const uint16_t *k_weight,
+    const uint16_t *rope_cos, const uint16_t *rope_sin,
+    uint16_t *query_output, uint16_t *key_output,
+    const h3_text_rope_args *args, hipStream_t stream) {
+    h3_text_rope_args host_args = *args;
+    void *kernel_args[] = {&query_input, &key_input, &q_weight, &k_weight,
+                           &rope_cos, &rope_sin, &query_output, &key_output,
+                           &host_args};
+    dim3 block(16, 4, 1);
+    dim3 grid((host_args.head_dim + 15) / 16, host_args.query_heads,
+              host_args.sequence);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_text_qk_rope_bf16_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}
+
+extern "C" int h3_launch_head_rms_norm_bf16(uint16_t *tensor,
+                                            const uint16_t *weight,
+                                            const h3_head_norm_args *args,
+                                            hipStream_t stream) {
+    h3_head_norm_args host_args = *args;
+    void *kernel_args[] = {&tensor, &weight, &host_args};
+    dim3 block(1, 1, 1);
+    dim3 grid(host_args.sequence, host_args.heads, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_head_rms_norm_bf16_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}
+
+extern "C" int h3_launch_rope_text_bf16(uint16_t *query, uint16_t *key,
+                                        const float *rope_cos,
+                                        const float *rope_sin,
+                                        const h3_text_rope_inplace_args *args,
+                                        hipStream_t stream) {
+    h3_text_rope_inplace_args host_args = *args;
+    void *kernel_args[] = {&query, &key, &rope_cos, &rope_sin, &host_args};
+    uint32_t maximum_heads = host_args.query_heads > host_args.kv_heads ?
+        host_args.query_heads : host_args.kv_heads;
+    dim3 block(1, 1, 1);
+    dim3 grid(host_args.sequence, maximum_heads, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_rope_text_bf16_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_gqa_causal_bf16(const uint16_t *query,
+                                         const uint16_t *key,
+                                         const uint16_t *value,
+                                         uint16_t *output,
+                                         const h3_gqa_args *args,
+                                         hipStream_t stream) {
+    if (args->sequence > 512 || args->head_dim > 128) return 0;
+    h3_gqa_args host_args = *args;
+    void *kernel_args[] = {&query, &key, &value, &output, &host_args};
+    uint32_t threads = 1;
+    while (threads * 2u <= 128u && threads < host_args.sequence) threads *= 2u;
+    dim3 block(threads, 1, 1);
+    dim3 grid(host_args.sequence, host_args.query_heads, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_gqa_causal_bf16_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}

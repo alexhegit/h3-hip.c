@@ -72,10 +72,3 @@ int h3_gpu_gate_adaln_quantize_int8( h3_gpu *gpu, h3_gpu_tensor *gated_residual,
 
 int h3_gpu_grouped_qkv_linear_rope_int8( h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, h3_gpu_tensor *quantized_input, h3_gpu_tensor *input_scales, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales, const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t rows, uint32_t input_dim, uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon, int input_is_quantized, int use_slower_unfused_qkv_rope, int use_slower_scalar_qkv_rms, int use_slower_uncached_int8_scales) { return h3_hip_unimplemented(NULL, "h3_gpu_grouped_qkv_linear_rope_int8"); }
 
-int h3_gpu_text_qk_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query_output, h3_gpu_tensor *key_output, const h3_gpu_tensor *query_input, const h3_gpu_tensor *key_input, const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t sequence, uint32_t query_heads, uint32_t kv_heads, uint32_t head_dim, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_text_qk_rope_bf16"); }
-
-int h3_gpu_head_rms_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *tensor, const h3_gpu_tensor *weight, uint32_t sequence, uint32_t heads, uint32_t head_dim, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_head_rms_norm_bf16"); }
-
-int h3_gpu_rope_text_bf16(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, const h3_gpu_tensor *rope_cos_f32, const h3_gpu_tensor *rope_sin_f32, uint32_t sequence, uint32_t query_heads, uint32_t kv_heads, uint32_t head_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_rope_text_bf16"); }
-
-int h3_gpu_gqa_causal_bf16(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query, const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t sequence, uint32_t query_heads, uint32_t kv_heads, uint32_t head_dim, float scale) { return h3_hip_unimplemented(NULL, "h3_gpu_gqa_causal_bf16"); }
