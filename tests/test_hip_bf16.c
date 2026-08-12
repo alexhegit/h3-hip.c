@@ -1670,6 +1670,75 @@ static void cpu_quantize_weight_int8(const uint16_t *input, int8_t *output,
     }
 }
 
+static void cpu_quantize_bf16_int8_groups(
+    const uint16_t *input, int8_t *output, float *scales, uint32_t rows,
+    uint32_t columns, uint32_t group_size) {
+    uint32_t groups = columns / group_size;
+    for (uint32_t row = 0; row < rows; row++) {
+        for (uint32_t group = 0; group < groups; group++) {
+            float max_abs = 0.0f;
+            uint32_t start = group * group_size;
+            for (uint32_t local = 0; local < group_size; local++) {
+                float value = bf16_to_f32(input[row * columns + start + local]);
+                max_abs = fmaxf(max_abs, fabsf(value));
+            }
+            float scale = max_abs > 0.0f ? max_abs / 127.0f : 1.0f / 127.0f;
+            float inverse = max_abs > 0.0f ? 127.0f / max_abs : 127.0f;
+            scales[row * groups + group] = scale;
+            for (uint32_t local = 0; local < group_size; local++) {
+                int quantized = (int)rintf(
+                    bf16_to_f32(input[row * columns + start + local]) * inverse);
+                if (quantized > 127) quantized = 127;
+                if (quantized < -127) quantized = -127;
+                output[row * columns + start + local] = (int8_t)quantized;
+            }
+        }
+    }
+}
+
+extern int h3_hip_quantize_bf16_int8_groups_dispatch(
+    h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *scales,
+    const h3_gpu_tensor *input, uint32_t rows, uint32_t padded_rows,
+    uint32_t columns, uint32_t group_size);
+
+static int test_quantize_bf16_int8_groups(h3_gpu *gpu) {
+    enum { ROWS = 2, COLS = 8, GROUP_SIZE = 4, GROUPS = COLS / GROUP_SIZE,
+           PADDED_ROWS = 128 };
+    enum { COUNT = ROWS * COLS, Q_ELEMS = PADDED_ROWS * COLS,
+           SCALE_ELEMS = PADDED_ROWS * GROUPS };
+    uint16_t input[COUNT];
+    int8_t expected[COUNT];
+    float expected_scales[ROWS * GROUPS];
+    for (size_t i = 0; i < COUNT; i++)
+        input[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.125f);
+    cpu_quantize_bf16_int8_groups(input, expected, expected_scales, ROWS, COLS,
+                                  GROUP_SIZE);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *scales = h3_gpu_tensor_new_f32(gpu, SCALE_ELEMS);
+    CHECK(gpu_input && output && scales);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin grouped quantize"));
+    CHECK(!require_gpu(gpu, h3_hip_quantize_bf16_int8_groups_dispatch(
+        gpu, output, scales, gpu_input, ROWS, PADDED_ROWS, COLS, GROUP_SIZE),
+        "grouped quantize"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit grouped quantize"));
+    int8_t got[COUNT];
+    float got_scales[ROWS * GROUPS];
+    CHECK(h3_gpu_tensor_read_i8(output, got, COUNT));
+    CHECK(h3_gpu_tensor_read_f32(scales, got_scales, ROWS * GROUPS));
+    for (uint32_t row = 0; row < ROWS; row++) {
+        for (uint32_t group = 0; group < GROUPS; group++) {
+            CHECK(fabsf(got_scales[row * GROUPS + group] -
+                        expected_scales[row * GROUPS + group]) < 1e-5f);
+        }
+    }
+    CHECK(memcmp(got, expected, sizeof(got)) == 0);
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(scales);
+    return 0;
+}
+
 static int test_quantize_weight_int8(h3_gpu *gpu) {
     enum { ROWS = 2, COLS = 8 };
     enum { COUNT = ROWS * COLS };
@@ -2098,6 +2167,7 @@ int main(void) {
     if (test_sub_bf16(gpu) != 0) return 1;
     if (test_gelu(gpu) != 0) return 1;
     if (test_quantize_weight_int8(gpu) != 0) return 1;
+    if (test_quantize_bf16_int8_groups(gpu) != 0) return 1;
     if (test_add_bf16(gpu) != 0) return 1;
     if (test_linear_int8(gpu) != 0) return 1;
     if (test_linear_int8_head_major(gpu) != 0) return 1;

@@ -1525,6 +1525,53 @@ static int h3_hip_quantize_bf16_int8_head_major_rows(
         "h3_quantize_bf16_int8_head_major_rows");
 }
 
+int h3_hip_quantize_bf16_int8_groups_dispatch(
+    h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *scales,
+    const h3_gpu_tensor *input, uint32_t rows, uint32_t padded_rows,
+    uint32_t columns, uint32_t group_size) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t groups = columns / group_size;
+    if (!ctx || !group_size || (group_size % 4u) || !rows || !columns ||
+        padded_rows < rows || (columns % group_size) ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * columns,
+                             "grouped int8 input") ||
+        !h3_hip_require_i8(ctx, output, (size_t)padded_rows * columns,
+                           "grouped int8 output") ||
+        !h3_hip_require_f32(ctx, scales, (size_t)padded_rows * groups,
+                            "grouped int8 scales")) {
+        return 0;
+    }
+    h3_int8_group_quant_args quant_args = {rows, columns, group_size, groups};
+    return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_int8_groups(
+        (const uint16_t *)tensor_ptr(input)->host,
+        (int8_t *)tensor_ptr(output)->host,
+        (float *)tensor_ptr(scales)->host, &quant_args, padded_rows,
+        ctx->stream), "h3_quantize_bf16_int8_groups");
+}
+
+static int h3_hip_quantize_bf16_int8_groups(
+    struct h3_gpu *ctx, h3_gpu_tensor *quantized,
+    h3_gpu_tensor *scales, const h3_gpu_tensor *input, uint32_t rows,
+    uint32_t padded_rows, uint32_t columns, uint32_t group_size) {
+    uint32_t groups = columns / group_size;
+    if (!ctx || !group_size || (group_size % 4u) || !rows || !columns ||
+        padded_rows < rows || (columns % group_size) ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * columns,
+                             "grouped int8 input") ||
+        !h3_hip_require_i8(ctx, quantized, (size_t)padded_rows * columns,
+                           "grouped int8 output") ||
+        !h3_hip_require_f32(ctx, scales, (size_t)padded_rows * groups,
+                            "grouped int8 scales")) {
+        return 0;
+    }
+    h3_int8_group_quant_args quant_args = {rows, columns, group_size, groups};
+    return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_int8_groups(
+        (const uint16_t *)tensor_ptr(input)->host,
+        (int8_t *)tensor_ptr(quantized)->host,
+        (float *)tensor_ptr(scales)->host, &quant_args, padded_rows,
+        ctx->stream), "h3_quantize_bf16_int8_groups");
+}
+
 int h3_gpu_linear_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                             h3_gpu_tensor *quantized_input,
                             h3_gpu_tensor *input_scales,
@@ -1635,9 +1682,14 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     if (ok && !h3_gpu_swiglu_bf16(gpu, activated, fc1_out, rows, hidden_dim)) {
         ok = 0;
     }
-    if (ok && !h3_hip_quantize_bf16_int8_rows(
+    if (ok && !use_int8_row_fc2 && hidden_dim % 1024u == 0 &&
+        !h3_hip_quantize_bf16_int8_groups(
             ctx, quantized_activation, activation_scales, activated, rows,
-            padded_rows, hidden_dim)) {
+            padded_rows, hidden_dim, 1024u)) {
+        ok = 0;
+    } else if (ok && !h3_hip_quantize_bf16_int8_rows(
+                   ctx, quantized_activation, activation_scales, activated,
+                   rows, padded_rows, hidden_dim)) {
         ok = 0;
     }
     if (ok && !h3_hip_launch_linear_int8_prequant(

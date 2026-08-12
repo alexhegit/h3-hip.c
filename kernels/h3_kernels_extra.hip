@@ -836,6 +836,64 @@ extern "C" int h3_launch_quantize_bf16_int8_head_major_rows(
                            stream) == hipSuccess;
 }
 
+__global__ void h3_quantize_bf16_int8_groups_scalar_kernel(
+    const uint16_t *input, int8_t *output, float *scales,
+    h3_int8_group_quant_args args) {
+    __shared__ float reductions[256];
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    uint32_t row_base = row * args.columns;
+    if (row >= args.rows) {
+        for (uint32_t column = tid; column < args.columns; column += threads)
+            output[row_base + column] = 0;
+        for (uint32_t group = tid; group < args.groups; group += threads)
+            scales[row * args.groups + group] = 1.0f;
+        return;
+    }
+    for (uint32_t group = 0; group < args.groups; group++) {
+        uint32_t start = group * args.group_size;
+        float local_max = 0.0f;
+        for (uint32_t local = tid; local < args.group_size; local += threads) {
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(
+                input[row_base + start + local])));
+        }
+        reductions[tid] = local_max;
+        __syncthreads();
+        for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+            if (tid < stride) {
+                reductions[tid] = fmaxf(reductions[tid], reductions[tid + stride]);
+            }
+            __syncthreads();
+        }
+        float scale = reductions[0] > 0.0f ? reductions[0] / 127.0f : 1.0f / 127.0f;
+        float inverse = reductions[0] > 0.0f ? 127.0f / reductions[0] : 127.0f;
+        if (tid == 0) scales[row * args.groups + group] = scale;
+        for (uint32_t local = tid; local < args.group_size; local += threads) {
+            int quantized = (int)rintf(
+                h3_bf16_to_f32(input[row_base + start + local]) * inverse);
+            if (quantized > 127) quantized = 127;
+            if (quantized < -127) quantized = -127;
+            output[row_base + start + local] = (int8_t)quantized;
+        }
+        __syncthreads();
+    }
+}
+
+extern "C" int h3_launch_quantize_bf16_int8_groups(
+    const uint16_t *input, int8_t *output, float *scales,
+    const h3_int8_group_quant_args *args, uint32_t dispatch_rows,
+    hipStream_t stream) {
+    h3_int8_group_quant_args host_args = *args;
+    void *kernel_args[] = {&input, &output, &scales, &host_args};
+    dim3 block(256, 1, 1);
+    dim3 grid(dispatch_rows, 1, 1);
+    return hipLaunchKernel(reinterpret_cast<const void *>(
+                               h3_quantize_bf16_int8_groups_scalar_kernel),
+                           grid, block, kernel_args, sizeof(kernel_args),
+                           stream) == hipSuccess;
+}
+
 __global__ void h3_linear_int8_bf16_naive_kernel(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, h3_linear_args args) {
