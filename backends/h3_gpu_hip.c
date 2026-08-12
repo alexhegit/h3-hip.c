@@ -1687,6 +1687,76 @@ int h3_gpu_linear_int8_head_major_bf16(
         rows, input_dim, output_dim);
 }
 
+int h3_gpu_grouped_qkv_linear_rope_int8(
+    h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key,
+    h3_gpu_tensor *value, h3_gpu_tensor *quantized_input,
+    h3_gpu_tensor *input_scales, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
+    const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm,
+    const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin,
+    uint32_t rows, uint32_t input_dim, uint32_t heads, uint32_t head_dim,
+    uint32_t rope_half, float epsilon, int input_is_quantized,
+    int use_slower_unfused_qkv_rope, int use_slower_scalar_qkv_rms,
+    int use_slower_uncached_int8_scales) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t inner = heads * head_dim;
+    uint32_t qkv_dim = inner * 3u;
+    uint32_t padded_rows = (rows + 127u) & ~127u;
+    size_t activation_count = (size_t)padded_rows * input_dim;
+    size_t weight_count = (size_t)qkv_dim * input_dim;
+    size_t projected = (size_t)rows * inner;
+    size_t rope_count = (size_t)rows * rope_half;
+    (void)use_slower_unfused_qkv_rope;
+    (void)use_slower_scalar_qkv_rms;
+    (void)use_slower_uncached_int8_scales;
+    if (!ctx || !rows || !input_dim || !heads || !head_dim || !rope_half ||
+        !h3_hip_require_i8(ctx, weight, weight_count, "int8 QKV weight") ||
+        !h3_hip_require_f32(ctx, weight_scales, qkv_dim, "int8 QKV scales") ||
+        !h3_hip_require_i8(ctx, quantized_input, activation_count,
+                           "int8 QKV quantized input") ||
+        !h3_hip_require_f32(ctx, input_scales, padded_rows,
+                            "int8 QKV input scales") ||
+        (!input_is_quantized &&
+         !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                              "int8 QKV input")) ||
+        !h3_hip_require_bf16(ctx, q_norm, head_dim, "int8 Q norm") ||
+        !h3_hip_require_bf16(ctx, k_norm, head_dim, "int8 K norm") ||
+        !h3_hip_require_bf16(ctx, rope_cos, rope_count, "int8 RoPE cos") ||
+        !h3_hip_require_bf16(ctx, rope_sin, rope_count, "int8 RoPE sin") ||
+        !h3_hip_require_bf16(ctx, query, projected, "int8 query") ||
+        !h3_hip_require_bf16(ctx, key, projected, "int8 key") ||
+        !h3_hip_require_bf16(ctx, value, projected, "int8 value")) {
+        return 0;
+    }
+    h3_gpu_tensor *qkv = h3_gpu_tensor_new_bf16(gpu, (size_t)rows * qkv_dim);
+    if (!qkv) {
+        h3_hip_set_error(ctx, "int8 QKV temporary allocation failed");
+        return 0;
+    }
+    int ok = 1;
+    if (!input_is_quantized &&
+        !h3_hip_quantize_bf16_int8_rows(
+            ctx, quantized_input, input_scales, input, rows, padded_rows,
+            input_dim)) {
+        ok = 0;
+    }
+    if (ok && !h3_hip_launch_linear_int8_prequant(
+            ctx, qkv, quantized_input, input_scales, weight, weight_scales,
+            rows, input_dim, qkv_dim)) {
+        ok = 0;
+    }
+    if (ok && !h3_gpu_grouped_qkv_rope_bf16(
+            gpu, query, key, value, qkv, q_norm, k_norm, rope_cos, rope_sin,
+            rows, heads, head_dim, rope_half, epsilon)) {
+        ok = 0;
+    }
+    h3_gpu_tensor_free(qkv);
+    if (!ok) {
+        h3_hip_set_error(ctx, "h3_grouped_qkv_linear_rope_int8 failed");
+    }
+    return ok;
+}
+
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name) {
     h3_hip_set_error(gpu, "HIP backend: %s is not implemented yet", name);
     return 0;
