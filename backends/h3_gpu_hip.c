@@ -1484,6 +1484,33 @@ int h3_gpu_quantize_weight_int8(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_quantize_bf16_int8_rows");
 }
 
+static int h3_hip_launch_linear_int8_prequant(
+    struct h3_gpu *ctx, h3_gpu_tensor *output,
+    const h3_gpu_tensor *quantized_input, const h3_gpu_tensor *input_scales,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
+    uint32_t rows, uint32_t input_dim, uint32_t output_dim) {
+    h3_linear_args args = {rows, input_dim, output_dim, 0};
+    return h3_hip_launch_ok(ctx, h3_launch_linear_int8_bf16_naive(
+        (const int8_t *)tensor_ptr(quantized_input)->host,
+        (const int8_t *)tensor_ptr(weight)->host,
+        (const float *)tensor_ptr(input_scales)->host,
+        (const float *)tensor_ptr(weight_scales)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_linear_int8_bf16_naive");
+}
+
+static int h3_hip_quantize_bf16_int8_rows(
+    struct h3_gpu *ctx, h3_gpu_tensor *quantized,
+    h3_gpu_tensor *scales, const h3_gpu_tensor *input, uint32_t rows,
+    uint32_t padded_rows, uint32_t columns) {
+    h3_int8_quant_args quant_args = {rows, columns, 1.0f};
+    return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_int8_rows(
+        (const uint16_t *)tensor_ptr(input)->host,
+        (int8_t *)tensor_ptr(quantized)->host,
+        (float *)tensor_ptr(scales)->host, &quant_args, padded_rows,
+        ctx->stream), "h3_quantize_bf16_int8_rows");
+}
+
 int h3_gpu_linear_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                             h3_gpu_tensor *quantized_input,
                             h3_gpu_tensor *input_scales,
@@ -1520,14 +1547,95 @@ int h3_gpu_linear_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
             ctx->stream), "h3_quantize_bf16_int8_rows")) {
         return 0;
     }
-    h3_linear_args args = {rows, input_dim, output_dim, 0};
-    return h3_hip_launch_ok(ctx, h3_launch_linear_int8_bf16_naive(
-        (const int8_t *)tensor_ptr(quantized_input)->host,
-        (const int8_t *)tensor_ptr(weight)->host,
-        (const float *)tensor_ptr(input_scales)->host,
-        (const float *)tensor_ptr(weight_scales)->host,
-        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
-        "h3_linear_int8_bf16_naive");
+    return h3_hip_launch_linear_int8_prequant(
+        ctx, output, quantized_input, input_scales, weight, weight_scales,
+        rows, input_dim, output_dim);
+}
+
+int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                         h3_gpu_tensor *activated,
+                         h3_gpu_tensor *quantized_activation,
+                         h3_gpu_tensor *activation_scales,
+                         const h3_gpu_tensor *input,
+                         const h3_gpu_tensor *fc1_weight,
+                         const h3_gpu_tensor *fc1_scales,
+                         const h3_gpu_tensor *fc2_weight,
+                         const h3_gpu_tensor *fc2_scales,
+                         const h3_gpu_tensor *fc1_bf16, const h3_gpu_tensor *fc2_bf16,
+                         uint32_t rows, uint32_t input_dim, uint32_t hidden_dim,
+                         uint32_t output_dim, int use_slower_grouped_quantizer,
+                         int use_slower_dynamic_fc1_k, int use_int8_row_fc2,
+                         int input_is_quantized) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t padded_rows = (rows + 127u) & ~127u;
+    uint32_t fc1_output_dim = hidden_dim * 2u;
+    size_t activation_capacity = (size_t)padded_rows *
+        (input_dim > hidden_dim ? input_dim : hidden_dim);
+    size_t fc1_weight_count = (size_t)fc1_output_dim * input_dim;
+    size_t fc2_weight_count = (size_t)output_dim * hidden_dim;
+    (void)fc1_bf16;
+    (void)fc2_bf16;
+    (void)use_slower_grouped_quantizer;
+    (void)use_slower_dynamic_fc1_k;
+    (void)use_int8_row_fc2;
+    if (!ctx || !rows || !input_dim || !hidden_dim || !output_dim ||
+        !h3_hip_require_i8(ctx, quantized_activation, activation_capacity,
+                           "int8 MLP activation") ||
+        !h3_hip_require_f32(ctx, activation_scales, padded_rows,
+                            "int8 MLP activation scales") ||
+        !h3_hip_require_i8(ctx, fc1_weight, fc1_weight_count,
+                           "int8 MLP FC1 weight") ||
+        !h3_hip_require_f32(ctx, fc1_scales, fc1_output_dim,
+                            "int8 MLP FC1 scales") ||
+        !h3_hip_require_i8(ctx, fc2_weight, fc2_weight_count,
+                           "int8 MLP FC2 weight") ||
+        !h3_hip_require_f32(ctx, fc2_scales, output_dim,
+                            "int8 MLP FC2 scales") ||
+        (!input_is_quantized &&
+         !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                              "int8 MLP input")) ||
+        !h3_hip_require_bf16(ctx, activated, (size_t)rows * hidden_dim,
+                             "int8 MLP activated") ||
+        !h3_hip_require_bf16(ctx, output, (size_t)rows * output_dim,
+                             "int8 MLP output")) {
+        return 0;
+    }
+    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(
+        gpu, (size_t)rows * fc1_output_dim);
+    if (!fc1_out) {
+        h3_hip_set_error(ctx, "int8 MLP FC1 temporary allocation failed");
+        return 0;
+    }
+    int ok = 1;
+    if (!input_is_quantized &&
+        !h3_hip_quantize_bf16_int8_rows(
+            ctx, quantized_activation, activation_scales, input, rows,
+            padded_rows, input_dim)) {
+        ok = 0;
+    }
+    if (ok && !h3_hip_launch_linear_int8_prequant(
+            ctx, fc1_out, quantized_activation, activation_scales, fc1_weight,
+            fc1_scales, rows, input_dim, fc1_output_dim)) {
+        ok = 0;
+    }
+    if (ok && !h3_gpu_swiglu_bf16(gpu, activated, fc1_out, rows, hidden_dim)) {
+        ok = 0;
+    }
+    if (ok && !h3_hip_quantize_bf16_int8_rows(
+            ctx, quantized_activation, activation_scales, activated, rows,
+            padded_rows, hidden_dim)) {
+        ok = 0;
+    }
+    if (ok && !h3_hip_launch_linear_int8_prequant(
+            ctx, output, quantized_activation, activation_scales, fc2_weight,
+            fc2_scales, rows, hidden_dim, output_dim)) {
+        ok = 0;
+    }
+    h3_gpu_tensor_free(fc1_out);
+    if (!ok) {
+        h3_hip_set_error(ctx, "h3_mlp_int8_bf16 failed");
+    }
+    return ok;
 }
 
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name) {
