@@ -204,6 +204,92 @@ static int test_gate_adaln(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_gate_adaln_quantize_int8(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 8, SLOTS = 2, PADDED_ROWS = 128 };
+    enum { COUNT = ROWS * WIDTH, Q_ELEMS = PADDED_ROWS * WIDTH };
+    const float residual_f[COUNT] = {
+        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f,
+        -1.0f, 0.5f, 1.5f, 2.5f, 3.5f, 4.5f, 5.5f, 6.5f
+    };
+    const float branch_f[COUNT] = {
+        0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f,
+        1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 4.5f
+    };
+    uint16_t residual[COUNT], branch[COUNT], norm[WIDTH];
+    uint16_t gate_mod[ROWS * SLOTS * WIDTH], norm_mod[ROWS * SLOTS * WIDTH];
+    for (size_t i = 0; i < COUNT; i++) {
+        residual[i] = f32_to_bf16(residual_f[i]);
+        branch[i] = f32_to_bf16(branch_f[i]);
+    }
+    for (size_t i = 0; i < WIDTH; i++)
+        norm[i] = f32_to_bf16(1.0f);
+    for (size_t i = 0; i < ROWS * SLOTS * WIDTH; i++) {
+        gate_mod[i] = f32_to_bf16(0.5f);
+        norm_mod[i] = f32_to_bf16(0.0f);
+    }
+    const uint32_t row_map[ROWS] = {0, 1};
+    h3_gpu_tensor *gpu_residual = h3_gpu_tensor_from_bf16(gpu, residual, COUNT);
+    h3_gpu_tensor *gpu_branch = h3_gpu_tensor_from_bf16(gpu, branch, COUNT);
+    h3_gpu_tensor *gpu_norm = h3_gpu_tensor_from_bf16(gpu, norm, WIDTH);
+    h3_gpu_tensor *gpu_gate_mod = h3_gpu_tensor_from_bf16(
+        gpu, gate_mod, ROWS * SLOTS * WIDTH);
+    h3_gpu_tensor *gpu_norm_mod = h3_gpu_tensor_from_bf16(
+        gpu, norm_mod, ROWS * SLOTS * WIDTH);
+    h3_gpu_tensor *gpu_row_map = h3_gpu_tensor_from_u32(gpu, row_map, ROWS);
+    h3_gpu_tensor *ref_gated = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    h3_gpu_tensor *ref_adaln = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    h3_gpu_tensor *ref_quant = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *ref_scales = h3_gpu_tensor_new_f32(gpu, PADDED_ROWS);
+    h3_gpu_tensor *got_gated = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    h3_gpu_tensor *got_quant = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *got_scales = h3_gpu_tensor_new_f32(gpu, PADDED_ROWS);
+    CHECK(gpu_residual && gpu_branch && gpu_norm && gpu_gate_mod &&
+          gpu_norm_mod && gpu_row_map && ref_gated && ref_adaln &&
+          ref_quant && ref_scales && got_gated && got_quant && got_scales);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin gate adaln quantize"));
+    CHECK(!require_gpu(gpu, h3_gpu_gate_adaln_bf16(
+        gpu, ref_gated, ref_adaln, gpu_residual, gpu_branch, gpu_norm,
+        gpu_gate_mod, gpu_norm_mod, gpu_row_map, ROWS, WIDTH, SLOTS, 0, 0, 1,
+        1e-5f), "reference gate adaln"));
+    CHECK(!require_gpu(gpu, h3_gpu_gate_adaln_quantize_int8(
+        gpu, got_gated, got_quant, got_scales, gpu_residual, gpu_branch,
+        gpu_norm, gpu_gate_mod, gpu_norm_mod, gpu_row_map, ROWS, PADDED_ROWS,
+        WIDTH, SLOTS, 0, 0, 1, 1e-5f), "gate adaln quantize int8"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, ref_quant, ref_scales, ref_adaln, ROWS, WIDTH),
+        "reference gate adaln quantize"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit gate adaln quantize"));
+    uint16_t read_ref_gated[COUNT], read_got_gated[COUNT];
+    CHECK(h3_gpu_tensor_read_bf16(ref_gated, read_ref_gated, COUNT));
+    CHECK(h3_gpu_tensor_read_bf16(got_gated, read_got_gated, COUNT));
+    CHECK(memcmp(read_ref_gated, read_got_gated, sizeof(read_ref_gated)) == 0);
+    int8_t read_ref_quant[Q_ELEMS], read_got_quant[Q_ELEMS];
+    float read_ref_scales[PADDED_ROWS], read_got_scales[PADDED_ROWS];
+    CHECK(h3_gpu_tensor_read_i8(ref_quant, read_ref_quant, COUNT));
+    CHECK(h3_gpu_tensor_read_i8(got_quant, read_got_quant, COUNT));
+    CHECK(h3_gpu_tensor_read_f32(ref_scales, read_ref_scales, ROWS));
+    CHECK(h3_gpu_tensor_read_f32(got_scales, read_got_scales, ROWS));
+    for (size_t i = 0; i < COUNT; i++) {
+        float ref = (float)read_ref_quant[i] * read_ref_scales[i / WIDTH];
+        float got = (float)read_got_quant[i] * read_got_scales[i / WIDTH];
+        CHECK(fabsf(ref - got) < 0.15f);
+    }
+    h3_gpu_tensor_free(gpu_residual);
+    h3_gpu_tensor_free(gpu_branch);
+    h3_gpu_tensor_free(gpu_norm);
+    h3_gpu_tensor_free(gpu_gate_mod);
+    h3_gpu_tensor_free(gpu_norm_mod);
+    h3_gpu_tensor_free(gpu_row_map);
+    h3_gpu_tensor_free(ref_gated);
+    h3_gpu_tensor_free(ref_adaln);
+    h3_gpu_tensor_free(ref_quant);
+    h3_gpu_tensor_free(ref_scales);
+    h3_gpu_tensor_free(got_gated);
+    h3_gpu_tensor_free(got_quant);
+    h3_gpu_tensor_free(got_scales);
+    return 0;
+}
+
 static int test_patch_linear(h3_gpu *gpu) {
     enum {
         PATCH_ROWS = 2, PATCH_IN = 32, PATCH_OUT = 5376, OUTPUT_ROWS = 8
@@ -1988,6 +2074,7 @@ int main(void) {
     if (test_euler(gpu) != 0) return 1;
     if (test_token_pool_expand(gpu) != 0) return 1;
     if (test_gate_adaln(gpu) != 0) return 1;
+    if (test_gate_adaln_quantize_int8(gpu) != 0) return 1;
     if (test_patch_linear(gpu) != 0) return 1;
     if (test_qkv_rope(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
