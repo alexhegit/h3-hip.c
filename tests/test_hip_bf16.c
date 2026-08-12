@@ -1692,6 +1692,66 @@ static int test_linear_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_silu(h3_gpu *gpu) {
+    enum { COUNT = 3 };
+    const float values[COUNT] = {-1.0f, 0.0f, 2.0f};
+    uint16_t input[COUNT], expected[COUNT];
+    for (size_t i = 0; i < COUNT; i++) {
+        input[i] = f32_to_bf16(values[i]);
+        expected[i] = f32_to_bf16(values[i] / (1.0f + expf(-values[i])));
+    }
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    CHECK(gpu_input && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin silu"));
+    CHECK(!require_gpu(gpu, h3_gpu_silu_bf16(gpu, output, gpu_input, COUNT),
+                       "silu"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit silu"));
+    uint16_t got[COUNT];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i])) < 0.02f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_swiglu(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 3 };
+    enum { FUSED = ROWS * WIDTH * 2 };
+    const float fused_f[FUSED] = {
+        0.0f, 1.0f, -1.0f, 2.0f, 3.0f, 4.0f,
+        -0.5f, 0.5f, 1.5f, 1.0f, -1.0f, 2.0f
+    };
+    uint16_t fused[FUSED], expected[ROWS * WIDTH];
+    for (size_t i = 0; i < FUSED; i++)
+        fused[i] = f32_to_bf16(fused_f[i]);
+    for (uint32_t row = 0; row < ROWS; row++) {
+        for (uint32_t col = 0; col < WIDTH; col++) {
+            float gate = fused_f[row * WIDTH * 2 + col];
+            float up = fused_f[row * WIDTH * 2 + WIDTH + col];
+            expected[row * WIDTH + col] =
+                f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
+        }
+    }
+    h3_gpu_tensor *gpu_fused = h3_gpu_tensor_from_bf16(gpu, fused, FUSED);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * WIDTH);
+    CHECK(gpu_fused && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin swiglu"));
+    CHECK(!require_gpu(gpu, h3_gpu_swiglu_bf16(gpu, output, gpu_fused, ROWS, WIDTH),
+                       "swiglu"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit swiglu"));
+    uint16_t got[ROWS * WIDTH];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * WIDTH));
+    for (size_t i = 0; i < ROWS * WIDTH; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i])) < 0.02f);
+    }
+    h3_gpu_tensor_free(gpu_fused);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 int main(void) {
     char error[256];
     h3_gpu *gpu = h3_gpu_create("kernels/h3_kernels.hip", error, sizeof(error));
@@ -1724,6 +1784,8 @@ int main(void) {
     if (test_quantize_weight_int8(gpu) != 0) return 1;
     if (test_add_bf16(gpu) != 0) return 1;
     if (test_linear_int8(gpu) != 0) return 1;
+    if (test_silu(gpu) != 0) return 1;
+    if (test_swiglu(gpu) != 0) return 1;
     h3_gpu_free(gpu);
     puts("h3_hip_bf16_tests ok");
     return 0;
