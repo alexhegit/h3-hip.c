@@ -146,12 +146,62 @@ static int test_token_pool_expand(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_gate_adaln(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 4, SLOTS = 2 };
+    const float residual_f[ROWS * WIDTH] = {
+        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f
+    };
+    const float branch_f[ROWS * WIDTH] = {
+        0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f
+    };
+    uint16_t residual[ROWS * WIDTH], branch[ROWS * WIDTH];
+    uint16_t norm[WIDTH], gate_mod[ROWS * SLOTS * WIDTH];
+    uint16_t norm_mod[ROWS * SLOTS * WIDTH];
+    for (size_t i = 0; i < ROWS * WIDTH; i++) {
+        residual[i] = f32_to_bf16(residual_f[i]);
+        branch[i] = f32_to_bf16(branch_f[i]);
+    }
+    for (size_t i = 0; i < WIDTH; i++)
+        norm[i] = f32_to_bf16(1.0f);
+    for (size_t i = 0; i < ROWS * SLOTS * WIDTH; i++) {
+        gate_mod[i] = f32_to_bf16(0.5f);
+        norm_mod[i] = f32_to_bf16(0.0f);
+    }
+    const uint32_t row_map[ROWS] = {0, 1};
+    h3_gpu_tensor *gpu_residual = h3_gpu_tensor_from_bf16(gpu, residual, ROWS * WIDTH);
+    h3_gpu_tensor *gpu_branch = h3_gpu_tensor_from_bf16(gpu, branch, ROWS * WIDTH);
+    h3_gpu_tensor *gpu_norm = h3_gpu_tensor_from_bf16(gpu, norm, WIDTH);
+    h3_gpu_tensor *gpu_gate_mod = h3_gpu_tensor_from_bf16(gpu, gate_mod, ROWS * SLOTS * WIDTH);
+    h3_gpu_tensor *gpu_norm_mod = h3_gpu_tensor_from_bf16(gpu, norm_mod, ROWS * SLOTS * WIDTH);
+    h3_gpu_tensor *gpu_row_map = h3_gpu_tensor_from_u32(gpu, row_map, ROWS);
+    h3_gpu_tensor *gated = h3_gpu_tensor_new_bf16(gpu, ROWS * WIDTH);
+    h3_gpu_tensor *out = h3_gpu_tensor_new_bf16(gpu, ROWS * WIDTH);
+    CHECK(gpu_residual && gpu_branch && gpu_norm && gpu_gate_mod &&
+          gpu_norm_mod && gpu_row_map && gated && out);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin gate adaln"));
+    CHECK(!require_gpu(gpu, h3_gpu_gate_adaln_bf16(
+        gpu, gated, out, gpu_residual, gpu_branch, gpu_norm, gpu_gate_mod,
+        gpu_norm_mod, gpu_row_map, ROWS, WIDTH, SLOTS, 0, 0, 1, 1e-5f),
+        "gate adaln"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit gate adaln"));
+    h3_gpu_tensor_free(gpu_residual);
+    h3_gpu_tensor_free(gpu_branch);
+    h3_gpu_tensor_free(gpu_norm);
+    h3_gpu_tensor_free(gpu_gate_mod);
+    h3_gpu_tensor_free(gpu_norm_mod);
+    h3_gpu_tensor_free(gpu_row_map);
+    h3_gpu_tensor_free(gated);
+    h3_gpu_tensor_free(out);
+    return 0;
+}
+
 int main(void) {
     char error[256];
     h3_gpu *gpu = h3_gpu_create("kernels/h3_kernels.hip", error, sizeof(error));
     CHECK(gpu != NULL);
     if (test_euler(gpu) != 0) return 1;
     if (test_token_pool_expand(gpu) != 0) return 1;
+    if (test_gate_adaln(gpu) != 0) return 1;
     h3_gpu_free(gpu);
     puts("h3_hip_bf16_tests ok");
     return 0;

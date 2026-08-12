@@ -518,6 +518,83 @@ static int h3_hip_launch_ok(struct h3_gpu *gpu, int ok, const char *name) {
     return 0;
 }
 
+static int h3_hip_require_f32_tensor(struct h3_gpu *gpu,
+                                     const h3_gpu_tensor *tensor,
+                                     size_t elements, const char *label) {
+    if (!tensor || tensor_ptr(tensor)->dtype != H3_GPU_F32) {
+        h3_hip_set_error(gpu, "%s tensor dtype mismatch", label);
+        return 0;
+    }
+    if (elements && h3_gpu_tensor_elements(tensor) < elements) {
+        h3_hip_set_error(gpu, "%s tensor is too small", label);
+        return 0;
+    }
+    return 1;
+}
+
+int h3_gpu_copy_f32(h3_gpu *gpu, h3_gpu_tensor *destination,
+                    size_t destination_offset, const h3_gpu_tensor *source,
+                    size_t source_offset, size_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, source, source_offset + elements,
+                            "copy source") ||
+        !h3_hip_require_f32(ctx, destination, destination_offset + elements,
+                             "copy destination")) {
+        return 0;
+    }
+    memcpy((float *)tensor_ptr(destination)->host + destination_offset,
+           (const float *)tensor_ptr(source)->host + source_offset,
+           elements * sizeof(float));
+    ctx->stats.blit_copies++;
+    return 1;
+}
+
+int h3_gpu_patch_linear_bf16_offset(h3_gpu *gpu, h3_gpu_tensor *output,
+                                    size_t output_offset,
+                                    const h3_gpu_tensor *input,
+                                    size_t input_offset,
+                                    const h3_gpu_tensor *weight,
+                                    const h3_gpu_tensor *bias, uint32_t rows,
+                                    uint32_t input_dim, uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t input_count = (size_t)rows * input_dim;
+    size_t weight_count = (size_t)output_dim * input_dim;
+    size_t output_count = (size_t)rows * output_dim;
+    if (!ctx || output_dim != 5376u ||
+        (input_dim != 32u && input_dim != 96u) ||
+        input_offset + input_count > tensor_ptr(input)->elements ||
+        output_offset + output_count > tensor_ptr(output)->elements ||
+        !h3_hip_require_f32_tensor(ctx, input, input_offset + input_count,
+                                   "patch input") ||
+        !h3_hip_require_f32_tensor(ctx, weight, weight_count,
+                                   "patch weight") ||
+        !h3_hip_require_bf16(ctx, output, output_offset + output_count,
+                            "patch output") ||
+        (bias && !h3_hip_require_f32_tensor(ctx, bias, output_dim,
+                                            "patch bias"))) {
+        return 0;
+    }
+    const float *bias_ptr = bias ?
+        (const float *)tensor_ptr(bias)->host :
+        (const float *)tensor_ptr(input)->host;
+    h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
+    return h3_hip_launch_ok(ctx, h3_launch_linear_f32_tiled_bf16(
+        (const float *)tensor_ptr(input)->host + input_offset,
+        (const float *)tensor_ptr(weight)->host, bias_ptr,
+        (uint16_t *)tensor_ptr(output)->host + output_offset, &args,
+        ctx->stream), "h3_linear_f32_tiled_bf16");
+}
+
+int h3_gpu_patch_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                             const h3_gpu_tensor *input,
+                             const h3_gpu_tensor *weight,
+                             const h3_gpu_tensor *bias, uint32_t rows,
+                             uint32_t input_dim, uint32_t output_dim) {
+    return h3_gpu_patch_linear_bf16_offset(gpu, output, 0, input, 0, weight,
+                                           bias, rows, input_dim, output_dim);
+}
+
 int h3_gpu_sub_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                     const h3_gpu_tensor *left, const h3_gpu_tensor *right,
                     uint32_t elements) {
