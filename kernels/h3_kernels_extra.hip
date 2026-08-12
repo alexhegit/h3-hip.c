@@ -440,3 +440,56 @@ extern "C" int h3_launch_linear_f32_tiled_bf16(
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
 }
+
+__global__ void h3_linear_f32_tiled_bf16_map_kernel(
+    const float *input, const float *weight, const float *bias,
+    uint16_t *output, const uint32_t *row_map, h3_linear_args args) {
+    __shared__ float input_tile[16][16];
+    __shared__ float weight_tile[16][16];
+    __shared__ uint32_t output_rows[16];
+    uint32_t row = blockIdx.y * 16 + threadIdx.y;
+    uint32_t column = blockIdx.x * 16 + threadIdx.x;
+    if (threadIdx.x == 0) {
+        output_rows[threadIdx.y] = row < args.rows ? row_map[row] : 0;
+    }
+    __syncthreads();
+    float sum = args.has_bias && column < args.output_dim ?
+        bias[column] : 0.0f;
+    uint32_t tile_count = (args.input_dim + 15) / 16;
+    for (uint32_t tile = 0; tile < tile_count; tile++) {
+        uint32_t input_k = tile * 16 + threadIdx.x;
+        input_tile[threadIdx.y][threadIdx.x] =
+            row < args.rows && input_k < args.input_dim ?
+            input[row * args.input_dim + input_k] : 0.0f;
+        uint32_t weight_k = tile * 16 + threadIdx.y;
+        weight_tile[threadIdx.y][threadIdx.x] =
+            column < args.output_dim && weight_k < args.input_dim ?
+            weight[column * args.input_dim + weight_k] : 0.0f;
+        __syncthreads();
+        for (uint32_t k = 0; k < 16; k++) {
+            sum = fmaf(input_tile[threadIdx.y][k], weight_tile[k][threadIdx.x],
+                       sum);
+        }
+        __syncthreads();
+    }
+    if (row < args.rows && column < args.output_dim) {
+        output[output_rows[threadIdx.y] * args.output_dim + column] =
+            h3_f32_to_bf16(sum);
+    }
+}
+
+extern "C" int h3_launch_linear_f32_tiled_bf16_map(
+    const float *input, const float *weight, const float *bias,
+    uint16_t *output, const uint32_t *row_map, const h3_linear_args *args,
+    hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &row_map,
+                           &host_args};
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.output_dim + 15) / 16, (host_args.rows + 15) / 16, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_linear_f32_tiled_bf16_map_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}

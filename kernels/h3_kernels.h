@@ -227,6 +227,10 @@ int h3_launch_linear_f32_tiled_bf16(const float *input, const float *weight,
                                     const float *bias, uint16_t *output,
                                     const h3_linear_args *args,
                                     hipStream_t stream);
+int h3_launch_linear_f32_tiled_bf16_map(
+    const float *input, const float *weight, const float *bias,
+    uint16_t *output, const uint32_t *row_map, const h3_linear_args *args,
+    hipStream_t stream);
 
 #ifdef __cplusplus
 }

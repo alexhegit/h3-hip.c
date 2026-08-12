@@ -1,6 +1,7 @@
 #include "h3_gpu.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -195,6 +196,68 @@ static int test_gate_adaln(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_patch_linear(h3_gpu *gpu) {
+    enum {
+        PATCH_ROWS = 2, PATCH_IN = 32, PATCH_OUT = 5376, OUTPUT_ROWS = 8
+    };
+    size_t input_count = (size_t)PATCH_ROWS * PATCH_IN;
+    size_t weight_count = (size_t)PATCH_OUT * PATCH_IN;
+    float *input = (float *)malloc(input_count * sizeof(*input));
+    float *weight = (float *)malloc(weight_count * sizeof(*weight));
+    float *bias = (float *)malloc(PATCH_OUT * sizeof(*bias));
+    CHECK(input && weight && bias);
+    for (size_t i = 0; i < input_count; i++)
+        input[i] = (float)((int)(i % 17) - 8) * 0.03125f;
+    for (size_t i = 0; i < weight_count; i++)
+        weight[i] = (float)((int)(i % 23) - 11) * 0.0078125f;
+    for (size_t i = 0; i < PATCH_OUT; i++)
+        bias[i] = (float)((int)(i % 7) - 3) * 0.015625f;
+    const uint32_t row_map[PATCH_ROWS] = {3, 5};
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, input_count);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, weight_count);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, PATCH_OUT);
+    h3_gpu_tensor *gpu_row_map = h3_gpu_tensor_from_u32(gpu, row_map, PATCH_ROWS);
+    h3_gpu_tensor *dense = h3_gpu_tensor_new_bf16(
+        gpu, (size_t)PATCH_ROWS * PATCH_OUT);
+    h3_gpu_tensor *mapped = h3_gpu_tensor_new_bf16(
+        gpu, (size_t)OUTPUT_ROWS * PATCH_OUT);
+    CHECK(gpu_input && gpu_weight && gpu_bias && gpu_row_map && dense && mapped);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin patch linear"));
+    CHECK(!require_gpu(gpu, h3_gpu_patch_linear_bf16(
+        gpu, dense, gpu_input, gpu_weight, gpu_bias, PATCH_ROWS, PATCH_IN,
+        PATCH_OUT), "patch linear"));
+    CHECK(!require_gpu(gpu, h3_gpu_patch_linear_bf16_map(
+        gpu, mapped, gpu_input, gpu_weight, gpu_bias, gpu_row_map, OUTPUT_ROWS,
+        PATCH_ROWS, PATCH_IN, PATCH_OUT), "patch linear map"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit patch linear"));
+    uint16_t *got_dense = (uint16_t *)malloc(
+        (size_t)PATCH_ROWS * PATCH_OUT * sizeof(*got_dense));
+    uint16_t *got_mapped = (uint16_t *)malloc(
+        (size_t)OUTPUT_ROWS * PATCH_OUT * sizeof(*got_mapped));
+    CHECK(got_dense && got_mapped);
+    CHECK(h3_gpu_tensor_read_bf16(
+        dense, got_dense, (size_t)PATCH_ROWS * PATCH_OUT));
+    CHECK(h3_gpu_tensor_read_bf16(
+        mapped, got_mapped, (size_t)OUTPUT_ROWS * PATCH_OUT));
+    for (uint32_t row = 0; row < PATCH_ROWS; row++) {
+        CHECK(memcmp(got_mapped + (size_t)row_map[row] * PATCH_OUT,
+                     got_dense + (size_t)row * PATCH_OUT,
+                     (size_t)PATCH_OUT * sizeof(uint16_t)) == 0);
+    }
+    free(input);
+    free(weight);
+    free(bias);
+    free(got_dense);
+    free(got_mapped);
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(gpu_row_map);
+    h3_gpu_tensor_free(dense);
+    h3_gpu_tensor_free(mapped);
+    return 0;
+}
+
 int main(void) {
     char error[256];
     h3_gpu *gpu = h3_gpu_create("kernels/h3_kernels.hip", error, sizeof(error));
@@ -202,6 +265,7 @@ int main(void) {
     if (test_euler(gpu) != 0) return 1;
     if (test_token_pool_expand(gpu) != 0) return 1;
     if (test_gate_adaln(gpu) != 0) return 1;
+    if (test_patch_linear(gpu) != 0) return 1;
     h3_gpu_free(gpu);
     puts("h3_hip_bf16_tests ok");
     return 0;

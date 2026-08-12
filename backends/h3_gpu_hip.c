@@ -595,6 +595,40 @@ int h3_gpu_patch_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                                            bias, rows, input_dim, output_dim);
 }
 
+int h3_gpu_patch_linear_bf16_map(h3_gpu *gpu, h3_gpu_tensor *output,
+                                 const h3_gpu_tensor *input,
+                                 const h3_gpu_tensor *weight,
+                                 const h3_gpu_tensor *bias,
+                                 const h3_gpu_tensor *row_map,
+                                 uint32_t output_rows, uint32_t rows,
+                                 uint32_t input_dim, uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t input_count = (size_t)rows * input_dim;
+    size_t weight_count = (size_t)output_dim * input_dim;
+    size_t output_count = (size_t)output_rows * output_dim;
+    if (!ctx || output_dim != 5376u ||
+        (input_dim != 32u && input_dim != 96u) ||
+        !h3_hip_require_f32_tensor(ctx, input, input_count, "mapped patch input") ||
+        !h3_hip_require_f32_tensor(ctx, weight, weight_count,
+                                   "mapped patch weight") ||
+        !h3_hip_require_bf16(ctx, output, output_count, "mapped patch output") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "mapped patch row map") ||
+        (bias && !h3_hip_require_f32_tensor(ctx, bias, output_dim,
+                                            "mapped patch bias"))) {
+        return 0;
+    }
+    const float *bias_ptr = bias ?
+        (const float *)tensor_ptr(bias)->host :
+        (const float *)tensor_ptr(input)->host;
+    h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
+    return h3_hip_launch_ok(ctx, h3_launch_linear_f32_tiled_bf16_map(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host, bias_ptr,
+        (uint16_t *)tensor_ptr(output)->host,
+        (const uint32_t *)tensor_ptr(row_map)->host, &args, ctx->stream),
+        "h3_linear_f32_tiled_bf16_map");
+}
+
 int h3_gpu_sub_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                     const h3_gpu_tensor *left, const h3_gpu_tensor *right,
                     uint32_t elements) {
