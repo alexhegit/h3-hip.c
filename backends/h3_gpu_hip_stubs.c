@@ -5,7 +5,6 @@ int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name);
 
 int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t rows, uint32_t input_dim, uint32_t output_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_linear_f32"); }
 
-int h3_gpu_patch_linear_bf16_map( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, const h3_gpu_tensor *row_map, uint32_t output_rows, uint32_t rows, uint32_t input_dim, uint32_t output_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_patch_linear_bf16_map"); }
 
 int h3_gpu_silu_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, uint32_t elements) { return h3_hip_unimplemented(NULL, "h3_gpu_silu_f32"); }
 
