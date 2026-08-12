@@ -223,6 +223,10 @@ int h3_launch_embedding_bf16(const uint16_t *weight, const uint32_t *token_ids,
 int h3_launch_silu_mul_bf16(const uint16_t *gate, const uint16_t *up,
                             uint16_t *output, uint32_t count,
                             hipStream_t stream);
+int h3_launch_linear_f32_tiled_bf16(const float *input, const float *weight,
+                                    const float *bias, uint16_t *output,
+                                    const h3_linear_args *args,
+                                    hipStream_t stream);
 
 #ifdef __cplusplus
 }
