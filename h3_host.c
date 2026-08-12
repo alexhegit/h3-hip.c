@@ -1,6 +1,8 @@
 #include "h3_host.h"
 
+#ifndef H3_HIP
 #include <Accelerate/Accelerate.h>
+#endif
 
 #include <float.h>
 #include <limits.h>
@@ -555,14 +557,33 @@ int h3_resize_rgb24_high_quality(const uint8_t *input, int frames,
         free(pixels);
         return 0;
     }
+    size_t input_frame_bytes = input_area * 3;
+    size_t output_frame_bytes = output_area * 3;
+#ifdef H3_HIP
+    for (int frame = 0; frame < frames; frame++) {
+        const uint8_t *source_frame = input + (size_t)frame * input_frame_bytes;
+        uint8_t *output_frame = pixels + (size_t)frame * output_frame_bytes;
+        for (int oy = 0; oy < output_height; oy++) {
+            int sy = (int)((int64_t)oy * input_height / output_height);
+            if (sy >= input_height) sy = input_height - 1;
+            for (int ox = 0; ox < output_width; ox++) {
+                int sx = (int)((int64_t)ox * input_width / output_width);
+                if (sx >= input_width) sx = input_width - 1;
+                size_t src = (size_t)sy * (size_t)input_width + (size_t)sx;
+                size_t dst = (size_t)oy * (size_t)output_width + (size_t)ox;
+                output_frame[3 * dst] = source_frame[3 * src];
+                output_frame[3 * dst + 1] = source_frame[3 * src + 1];
+                output_frame[3 * dst + 2] = source_frame[3 * src + 2];
+            }
+        }
+    }
+#else
     uint8_t *source_argb = malloc(input_area * 4);
     uint8_t *output_argb = malloc(output_area * 4);
     if (!source_argb || !output_argb) {
         free(source_argb); free(output_argb); free(pixels);
         return 0;
     }
-    size_t input_frame_bytes = input_area * 3;
-    size_t output_frame_bytes = output_area * 3;
     vImage_Buffer source_buffer = {
         source_argb, (vImagePixelCount)input_height,
         (vImagePixelCount)input_width, (size_t)input_width * 4
@@ -594,6 +615,7 @@ int h3_resize_rgb24_high_quality(const uint8_t *input, int frames,
         }
     }
     free(source_argb); free(output_argb);
+#endif
     *output = pixels;
     return 1;
 }

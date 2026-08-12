@@ -52,6 +52,15 @@ h3/
 
 ## Phase 0 — Infrastructure (1–2 weeks)
 
+**Status (local `hip` branch):** initial skeleton landed.
+
+- `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
+- `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`
+- `kernels/h3_kernels.hip` — smoke kernels (`add`, `cast`)
+- `Makefile` — `H3_BACKEND=hip` (default on Linux), `HIP_ARCH=gfx1151`
+- `tests/test_hip_smoke.c` — `./h3_hip_smoke` GPU smoke test
+- Unimplemented `h3_gpu_*` ops stubbed in `backends/h3_gpu_hip_stubs.c`
+
 **Goal:** build on Linux, probe GPU, load HIP module, run one smoke kernel.
 
 | Task | Deliverable |
