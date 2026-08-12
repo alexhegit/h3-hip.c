@@ -1692,6 +1692,75 @@ static int test_linear_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_linear_int8_head_major(h3_gpu *gpu) {
+    enum { ROWS = 2, HEADS = 2, HEAD_DIM = 4, OUTPUT_DIM = 4,
+           INPUT_DIM = HEADS * HEAD_DIM, PADDED_ROWS = 128 };
+    enum { HM_ELEMS = HEADS * ROWS * HEAD_DIM,
+           WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM,
+           Q_ELEMS = PADDED_ROWS * INPUT_DIM,
+           RM_ELEMS = ROWS * INPUT_DIM };
+    const float hm_f[HM_ELEMS] = {
+        0.0f, 0.25f, -0.25f, 0.5f, 1.0f, -0.5f, 0.125f, -0.125f,
+        0.75f, -1.0f, 0.5f, -0.75f, 0.25f, 0.25f, -0.5f, 1.0f
+    };
+    uint16_t head_major[HM_ELEMS], row_major[RM_ELEMS], weight_bf16[WEIGHT_ELEMS];
+    for (size_t row = 0; row < ROWS; row++) {
+        for (size_t head = 0; head < HEADS; head++) {
+            for (size_t dim = 0; dim < HEAD_DIM; dim++) {
+                size_t hm = (head * ROWS + row) * HEAD_DIM + dim;
+                size_t rm = row * INPUT_DIM + head * HEAD_DIM + dim;
+                head_major[hm] = f32_to_bf16(hm_f[hm]);
+                row_major[rm] = head_major[hm];
+            }
+        }
+    }
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight_bf16[i] = f32_to_bf16((float)((int)(i % 9) - 4) * 0.0625f);
+    h3_gpu_tensor *gpu_head_major = h3_gpu_tensor_from_bf16(
+        gpu, head_major, HM_ELEMS);
+    h3_gpu_tensor *gpu_row_major = h3_gpu_tensor_from_bf16(
+        gpu, row_major, RM_ELEMS);
+    h3_gpu_tensor *gpu_weight_bf16 = h3_gpu_tensor_from_bf16(
+        gpu, weight_bf16, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight = h3_gpu_tensor_new_i8(gpu, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight_scales = h3_gpu_tensor_new_f32(gpu, OUTPUT_DIM);
+    h3_gpu_tensor *quantized = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32(gpu, PADDED_ROWS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    h3_gpu_tensor *reference = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    CHECK(gpu_head_major && gpu_row_major && gpu_weight_bf16 && weight &&
+          weight_scales && quantized && input_scales && output && reference);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin head-major int8"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, weight, weight_scales, gpu_weight_bf16, OUTPUT_DIM, INPUT_DIM),
+        "quantize head-major int8 weight"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_int8_bf16(
+        gpu, reference, quantized, input_scales, gpu_row_major, weight,
+        weight_scales, ROWS, INPUT_DIM, OUTPUT_DIM, 0),
+        "reference row-major int8 linear"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_int8_head_major_bf16(
+        gpu, output, quantized, input_scales, gpu_head_major, weight,
+        weight_scales, ROWS, HEADS, HEAD_DIM, OUTPUT_DIM),
+        "head-major int8 linear"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit head-major int8"));
+    uint16_t got[ROWS * OUTPUT_DIM], got_ref[ROWS * OUTPUT_DIM];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * OUTPUT_DIM));
+    CHECK(h3_gpu_tensor_read_bf16(reference, got_ref, ROWS * OUTPUT_DIM));
+    for (size_t i = 0; i < ROWS * OUTPUT_DIM; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(got_ref[i])) < 0.15f);
+    }
+    h3_gpu_tensor_free(gpu_head_major);
+    h3_gpu_tensor_free(gpu_row_major);
+    h3_gpu_tensor_free(gpu_weight_bf16);
+    h3_gpu_tensor_free(weight);
+    h3_gpu_tensor_free(weight_scales);
+    h3_gpu_tensor_free(quantized);
+    h3_gpu_tensor_free(input_scales);
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(reference);
+    return 0;
+}
+
 static int test_mlp_int8(h3_gpu *gpu) {
     enum { ROWS = 2, INPUT_DIM = 8, HIDDEN = 4, OUTPUT_DIM = 4,
            PADDED_ROWS = 128 };
@@ -1849,6 +1918,7 @@ int main(void) {
     if (test_quantize_weight_int8(gpu) != 0) return 1;
     if (test_add_bf16(gpu) != 0) return 1;
     if (test_linear_int8(gpu) != 0) return 1;
+    if (test_linear_int8_head_major(gpu) != 0) return 1;
     if (test_mlp_int8(gpu) != 0) return 1;
     if (test_silu(gpu) != 0) return 1;
     if (test_swiglu(gpu) != 0) return 1;
