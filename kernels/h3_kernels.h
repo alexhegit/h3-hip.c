@@ -80,6 +80,64 @@ typedef struct {
     float ratio;
 } h3_euler_args;
 
+typedef struct {
+    uint32_t input_offset;
+    uint32_t original_offset;
+    uint32_t baseline_offset;
+    uint32_t rows;
+    uint32_t width;
+} h3_token_pool_args;
+
+typedef struct {
+    uint32_t input_offset;
+    uint32_t original_offset;
+    uint32_t baseline_offset;
+    uint32_t rows;
+    uint32_t width;
+    uint32_t slots;
+    uint32_t shift_slot;
+    uint32_t scale_slot;
+    float epsilon;
+} h3_token_pool_adaln_args;
+
+typedef struct {
+    uint32_t original_offset;
+    uint32_t baseline_offset;
+    uint32_t rows;
+    uint32_t width;
+    uint32_t exact_prefix_rows;
+    float update_scale;
+} h3_token_expand_args;
+
+typedef struct {
+    uint32_t original_offset;
+    uint32_t baseline_offset;
+    uint32_t rows;
+    uint32_t width;
+    uint32_t exact_prefix_rows;
+    uint32_t slots;
+    uint32_t shift_slot;
+    uint32_t scale_slot;
+    float update_scale;
+    float epsilon;
+} h3_token_expand_adaln_args;
+
+typedef struct {
+    uint32_t rows;
+    uint32_t width;
+    uint32_t output_dim;
+    uint32_t slots;
+    uint32_t shift_slot;
+    uint32_t scale_slot;
+    uint32_t has_bias;
+} h3_adaln_linear_args;
+
+typedef struct {
+    uint32_t tokens;
+    uint32_t vocab_size;
+    uint32_t width;
+} h3_embedding_args;
+
 int h3_launch_cast_f32_to_bf16(const float *input, uint16_t *output,
                                uint32_t count, hipStream_t stream);
 int h3_launch_cast_bf16_to_f32(const uint16_t *input, float *output,
@@ -129,6 +187,42 @@ int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);
+int h3_launch_rms_inverse_bf16(const uint16_t *input, float *inverse,
+                               const h3_norm_args *args, hipStream_t stream);
+int h3_launch_adaln_linear_bf16(const uint16_t *input, const float *inverse,
+                                const uint16_t *norm_weight,
+                                const uint16_t *modulation,
+                                const uint32_t *row_map, const uint16_t *weight,
+                                const uint16_t *bias, uint16_t *output,
+                                const h3_adaln_linear_args *args,
+                                hipStream_t stream);
+int h3_launch_token_pool_bf16(const uint16_t *input, const uint32_t *pairs,
+                              uint16_t *output, uint16_t *baseline,
+                              const uint32_t *baseline_indices,
+                              uint16_t *original, const h3_token_pool_args *args,
+                              hipStream_t stream);
+int h3_launch_token_pool_adaln_bf16(
+    const uint16_t *input, const uint32_t *pairs, uint16_t *residual,
+    uint16_t *baseline, const uint32_t *baseline_indices, uint16_t *original,
+    const uint16_t *weight, const uint16_t *modulation,
+    const uint32_t *row_map, uint16_t *output,
+    const h3_token_pool_adaln_args *args, hipStream_t stream);
+int h3_launch_token_expand_delta_bf16(
+    const uint16_t *original, const uint16_t *reduced, const uint16_t *baseline,
+    const uint32_t *baseline_indices, const uint32_t *parents,
+    uint16_t *output, const h3_token_expand_args *args, hipStream_t stream);
+int h3_launch_token_expand_adaln_bf16(
+    const uint16_t *original, const uint16_t *reduced, const uint16_t *baseline,
+    const uint32_t *baseline_indices, const uint32_t *parents,
+    uint16_t *residual, const uint16_t *weight, const uint16_t *modulation,
+    const uint32_t *row_map, uint16_t *output,
+    const h3_token_expand_adaln_args *args, hipStream_t stream);
+int h3_launch_embedding_bf16(const uint16_t *weight, const uint32_t *token_ids,
+                               uint16_t *output, const h3_embedding_args *args,
+                               hipStream_t stream);
+int h3_launch_silu_mul_bf16(const uint16_t *gate, const uint16_t *up,
+                            uint16_t *output, uint32_t count,
+                            hipStream_t stream);
 
 #ifdef __cplusplus
 }
