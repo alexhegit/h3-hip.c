@@ -1090,6 +1090,36 @@ int h3_hip_fc1_swiglu_nax_bf16_dispatch(
                                       input_dim, hidden_dim);
 }
 
+static int h3_hip_linear_bf16_nax(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, uint32_t rows, uint32_t input_dim,
+    uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !rows || !input_dim || !output_dim ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                             "NAX linear input") ||
+        !h3_hip_require_bf16(ctx, weight, (size_t)output_dim * input_dim,
+                             "NAX linear weight") ||
+        !h3_hip_require_bf16(ctx, output, (size_t)rows * output_dim,
+                             "NAX linear output")) {
+        return 0;
+    }
+    if (!h3_gpu_linear_bf16(gpu, output, input, weight, NULL, rows, input_dim,
+                            output_dim)) {
+        h3_hip_set_error(ctx, "h3_linear_bf16_nax failed");
+        return 0;
+    }
+    return 1;
+}
+
+int h3_hip_linear_bf16_nax_dispatch(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, uint32_t rows, uint32_t input_dim,
+    uint32_t output_dim) {
+    return h3_hip_linear_bf16_nax(gpu, output, input, weight, rows, input_dim,
+                                  output_dim);
+}
+
 int h3_gpu_mlp_nax_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                         h3_gpu_tensor *activated,
                         const h3_gpu_tensor *input,
@@ -1115,8 +1145,8 @@ int h3_gpu_mlp_nax_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     }
     int ok = h3_hip_fc1_swiglu_nax_bf16(gpu, activated, input, fc1_weight, rows,
                                         input_dim, hidden_dim) &&
-             h3_gpu_linear_bf16(gpu, output, activated, fc2_weight, NULL, rows,
-                                hidden_dim, output_dim);
+             h3_hip_linear_bf16_nax(gpu, output, activated, fc2_weight, rows,
+                                    hidden_dim, output_dim);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_mlp_nax_bf16 failed");
     }
