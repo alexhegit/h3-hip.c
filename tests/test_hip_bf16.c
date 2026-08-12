@@ -1692,6 +1692,101 @@ static int test_linear_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_grouped_qkv_linear_rope_int8(h3_gpu *gpu) {
+    enum { ROWS = 2, INPUT_DIM = 8, HEADS = 2, HEAD_DIM = 4, ROPE_HALF = 2,
+           PADDED_ROWS = 128 };
+    enum { INNER = HEADS * HEAD_DIM, QKV_DIM = INNER * 3,
+           INPUT_ELEMS = ROWS * INPUT_DIM, WEIGHT_ELEMS = QKV_DIM * INPUT_DIM,
+           Q_ELEMS = PADDED_ROWS * INPUT_DIM };
+    uint16_t input[INPUT_ELEMS], weight_bf16[WEIGHT_ELEMS];
+    uint16_t q_norm[HEAD_DIM], k_norm[HEAD_DIM];
+    uint16_t rope_cos[ROWS * ROPE_HALF], rope_sin[ROWS * ROPE_HALF];
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input[i] = f32_to_bf16((float)((int)(i % 11) - 5) * 0.125f);
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.03125f);
+    for (uint32_t row = 0; row < ROWS; row++) {
+        rope_cos[row * ROPE_HALF + 0] = f32_to_bf16(0.6f);
+        rope_cos[row * ROPE_HALF + 1] = f32_to_bf16(0.8f);
+        rope_sin[row * ROPE_HALF + 0] = f32_to_bf16(0.8f);
+        rope_sin[row * ROPE_HALF + 1] = f32_to_bf16(-0.6f);
+    }
+    for (uint32_t i = 0; i < HEAD_DIM; i++) {
+        q_norm[i] = f32_to_bf16(1.0f);
+        k_norm[i] = f32_to_bf16(1.0f);
+    }
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, INPUT_ELEMS);
+    h3_gpu_tensor *gpu_weight_bf16 = h3_gpu_tensor_from_bf16(
+        gpu, weight_bf16, WEIGHT_ELEMS);
+    h3_gpu_tensor *gpu_q_norm = h3_gpu_tensor_from_bf16(gpu, q_norm, HEAD_DIM);
+    h3_gpu_tensor *gpu_k_norm = h3_gpu_tensor_from_bf16(gpu, k_norm, HEAD_DIM);
+    h3_gpu_tensor *gpu_cos = h3_gpu_tensor_from_bf16(gpu, rope_cos, ROWS * ROPE_HALF);
+    h3_gpu_tensor *gpu_sin = h3_gpu_tensor_from_bf16(gpu, rope_sin, ROWS * ROPE_HALF);
+    h3_gpu_tensor *weight = h3_gpu_tensor_new_i8(gpu, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight_scales = h3_gpu_tensor_new_f32(gpu, QKV_DIM);
+    h3_gpu_tensor *quantized = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32(gpu, PADDED_ROWS);
+    h3_gpu_tensor *qkv = h3_gpu_tensor_new_bf16(gpu, ROWS * QKV_DIM);
+    h3_gpu_tensor *ref_q = h3_gpu_tensor_new_bf16(gpu, ROWS * INNER);
+    h3_gpu_tensor *ref_k = h3_gpu_tensor_new_bf16(gpu, ROWS * INNER);
+    h3_gpu_tensor *ref_v = h3_gpu_tensor_new_bf16(gpu, ROWS * INNER);
+    h3_gpu_tensor *got_q = h3_gpu_tensor_new_bf16(gpu, ROWS * INNER);
+    h3_gpu_tensor *got_k = h3_gpu_tensor_new_bf16(gpu, ROWS * INNER);
+    h3_gpu_tensor *got_v = h3_gpu_tensor_new_bf16(gpu, ROWS * INNER);
+    CHECK(gpu_input && gpu_weight_bf16 && gpu_q_norm && gpu_k_norm && gpu_cos &&
+          gpu_sin && weight && weight_scales && quantized && input_scales &&
+          qkv && ref_q && ref_k && ref_v && got_q && got_k && got_v);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin grouped qkv int8"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, weight, weight_scales, gpu_weight_bf16, QKV_DIM, INPUT_DIM),
+        "quantize grouped qkv int8 weight"));
+    CHECK(!require_gpu(gpu, h3_gpu_grouped_qkv_linear_rope_bf16(
+        gpu, ref_q, ref_k, ref_v, qkv, gpu_input, gpu_weight_bf16, gpu_q_norm,
+        gpu_k_norm, gpu_cos, gpu_sin, ROWS, INPUT_DIM, HEADS, HEAD_DIM,
+        ROPE_HALF, 1e-5f), "reference grouped qkv linear rope"));
+    CHECK(!require_gpu(gpu, h3_gpu_grouped_qkv_linear_rope_int8(
+        gpu, got_q, got_k, got_v, quantized, input_scales, gpu_input, weight,
+        weight_scales, gpu_q_norm, gpu_k_norm, gpu_cos, gpu_sin, ROWS,
+        INPUT_DIM, HEADS, HEAD_DIM, ROPE_HALF, 1e-5f, 0, 0, 0, 0),
+        "grouped qkv linear rope int8"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit grouped qkv int8"));
+    uint16_t read_ref_q[ROWS * INNER], read_got_q[ROWS * INNER];
+    uint16_t read_ref_k[ROWS * INNER], read_got_k[ROWS * INNER];
+    uint16_t read_ref_v[ROWS * INNER], read_got_v[ROWS * INNER];
+    CHECK(h3_gpu_tensor_read_bf16(ref_q, read_ref_q, ROWS * INNER));
+    CHECK(h3_gpu_tensor_read_bf16(got_q, read_got_q, ROWS * INNER));
+    CHECK(h3_gpu_tensor_read_bf16(ref_k, read_ref_k, ROWS * INNER));
+    CHECK(h3_gpu_tensor_read_bf16(got_k, read_got_k, ROWS * INNER));
+    CHECK(h3_gpu_tensor_read_bf16(ref_v, read_ref_v, ROWS * INNER));
+    CHECK(h3_gpu_tensor_read_bf16(got_v, read_got_v, ROWS * INNER));
+    for (size_t i = 0; i < ROWS * INNER; i++) {
+        CHECK(fabsf(bf16_to_f32(read_got_q[i]) - bf16_to_f32(read_ref_q[i])) <
+              0.25f);
+        CHECK(fabsf(bf16_to_f32(read_got_k[i]) - bf16_to_f32(read_ref_k[i])) <
+              0.25f);
+        CHECK(fabsf(bf16_to_f32(read_got_v[i]) - bf16_to_f32(read_ref_v[i])) <
+              0.25f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight_bf16);
+    h3_gpu_tensor_free(gpu_q_norm);
+    h3_gpu_tensor_free(gpu_k_norm);
+    h3_gpu_tensor_free(gpu_cos);
+    h3_gpu_tensor_free(gpu_sin);
+    h3_gpu_tensor_free(weight);
+    h3_gpu_tensor_free(weight_scales);
+    h3_gpu_tensor_free(quantized);
+    h3_gpu_tensor_free(input_scales);
+    h3_gpu_tensor_free(qkv);
+    h3_gpu_tensor_free(ref_q);
+    h3_gpu_tensor_free(ref_k);
+    h3_gpu_tensor_free(ref_v);
+    h3_gpu_tensor_free(got_q);
+    h3_gpu_tensor_free(got_k);
+    h3_gpu_tensor_free(got_v);
+    return 0;
+}
+
 static int test_linear_int8_head_major(h3_gpu *gpu) {
     enum { ROWS = 2, HEADS = 2, HEAD_DIM = 4, OUTPUT_DIM = 4,
            INPUT_DIM = HEADS * HEAD_DIM, PADDED_ROWS = 128 };
@@ -1920,6 +2015,7 @@ int main(void) {
     if (test_linear_int8(gpu) != 0) return 1;
     if (test_linear_int8_head_major(gpu) != 0) return 1;
     if (test_mlp_int8(gpu) != 0) return 1;
+    if (test_grouped_qkv_linear_rope_int8(gpu) != 0) return 1;
     if (test_silu(gpu) != 0) return 1;
     if (test_swiglu(gpu) != 0) return 1;
     h3_gpu_free(gpu);
