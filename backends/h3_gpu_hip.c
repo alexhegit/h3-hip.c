@@ -326,6 +326,17 @@ int h3_gpu_tensor_read_bf16(const h3_gpu_tensor *tensor, uint16_t *values,
     return 1;
 }
 
+int h3_gpu_tensor_read_i8(const h3_gpu_tensor *tensor, int8_t *values,
+                          size_t elements) {
+    struct h3_gpu_tensor *obj = tensor_ptr(tensor);
+    if (!obj || obj->dtype != H3_GPU_I8 || !values ||
+        elements > obj->elements) {
+        return 0;
+    }
+    memcpy(values, obj->host, elements * sizeof(int8_t));
+    return 1;
+}
+
 int h3_gpu_tensor_write_f32(h3_gpu_tensor *tensor, const float *values,
                             size_t elements) {
     struct h3_gpu_tensor *obj = tensor_ptr(tensor);
@@ -499,6 +510,19 @@ int h3_gpu_copy_bf16(h3_gpu *gpu, h3_gpu_tensor *destination,
 static int h3_hip_require_u32(struct h3_gpu *gpu, const h3_gpu_tensor *tensor,
                               size_t elements, const char *label) {
     if (!tensor || tensor_ptr(tensor)->dtype != H3_GPU_U32) {
+        h3_hip_set_error(gpu, "%s tensor dtype mismatch", label);
+        return 0;
+    }
+    if (elements && h3_gpu_tensor_elements(tensor) < elements) {
+        h3_hip_set_error(gpu, "%s tensor is too small", label);
+        return 0;
+    }
+    return 1;
+}
+
+static int h3_hip_require_i8(struct h3_gpu *gpu, const h3_gpu_tensor *tensor,
+                             size_t elements, const char *label) {
+    if (!tensor || tensor_ptr(tensor)->dtype != H3_GPU_I8) {
         h3_hip_set_error(gpu, "%s tensor dtype mismatch", label);
         return 0;
     }
@@ -1438,6 +1462,26 @@ int h3_gpu_gqa_causal_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         (const uint16_t *)tensor_ptr(value)->host,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
         "h3_gqa_causal_bf16");
+}
+
+int h3_gpu_quantize_weight_int8(h3_gpu *gpu, h3_gpu_tensor *output,
+                                h3_gpu_tensor *scales,
+                                const h3_gpu_tensor *input, uint32_t rows,
+                                uint32_t columns) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * columns;
+    if (!ctx || !rows || !columns ||
+        !h3_hip_require_bf16(ctx, input, count, "BF16 weight to quantize") ||
+        !h3_hip_require_i8(ctx, output, count, "int8 quantized output") ||
+        !h3_hip_require_f32(ctx, scales, rows, "int8 quantization scales")) {
+        return 0;
+    }
+    h3_int8_quant_args args = {rows, columns, 1.0f};
+    return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_int8_rows(
+        (const uint16_t *)tensor_ptr(input)->host,
+        (int8_t *)tensor_ptr(output)->host,
+        (float *)tensor_ptr(scales)->host, &args, rows, ctx->stream),
+        "h3_quantize_bf16_int8_rows");
 }
 
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name) {
