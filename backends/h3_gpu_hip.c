@@ -1051,6 +1051,47 @@ int h3_gpu_mlp_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     return ok;
 }
 
+int h3_gpu_mlp_nax_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                        h3_gpu_tensor *activated,
+                        const h3_gpu_tensor *input,
+                        const h3_gpu_tensor *fc1_weight,
+                        const h3_gpu_tensor *fc2_weight, uint32_t rows,
+                        uint32_t input_dim, uint32_t hidden_dim,
+                        uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * hidden_dim;
+    if (!ctx || !rows || !input_dim || !hidden_dim || !output_dim ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                             "NAX MLP input") ||
+        !h3_hip_require_bf16(ctx, fc1_weight,
+                             (size_t)hidden_dim * 2 * input_dim,
+                             "NAX MLP FC1 weight") ||
+        !h3_hip_require_bf16(ctx, fc2_weight,
+                             (size_t)output_dim * hidden_dim,
+                             "NAX MLP FC2 weight") ||
+        !h3_hip_require_bf16(ctx, activated, count, "NAX MLP activated") ||
+        !h3_hip_require_bf16(ctx, output, (size_t)rows * output_dim,
+                             "NAX MLP output")) {
+        return 0;
+    }
+    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(
+        gpu, (size_t)rows * hidden_dim * 2);
+    if (!fc1_out) {
+        h3_hip_set_error(ctx, "NAX MLP FC1 temporary allocation failed");
+        return 0;
+    }
+    int ok = h3_gpu_linear_bf16(gpu, fc1_out, input, fc1_weight, NULL, rows,
+                                input_dim, hidden_dim * 2) &&
+             h3_gpu_swiglu_bf16(gpu, activated, fc1_out, rows, hidden_dim) &&
+             h3_gpu_linear_bf16(gpu, output, activated, fc2_weight, NULL,
+                                rows, hidden_dim, output_dim);
+    h3_gpu_tensor_free(fc1_out);
+    if (!ok) {
+        h3_hip_set_error(ctx, "h3_mlp_nax_bf16 failed");
+    }
+    return ok;
+}
+
 int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
                       size_t sample_offset, const h3_gpu_tensor *last,
                       const h3_gpu_tensor *previous, uint32_t elements,
