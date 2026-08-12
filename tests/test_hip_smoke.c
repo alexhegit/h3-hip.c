@@ -47,6 +47,40 @@ int main(void) {
         }
     }
 
+    const uint16_t silu_in[2] = {0x0000, 0x3f80};
+    h3_gpu_tensor *silu_input = h3_gpu_tensor_from_bf16(gpu, silu_in, 2);
+    h3_gpu_tensor *silu_output = h3_gpu_tensor_new_bf16(gpu, 2);
+    CHECK(silu_input && silu_output);
+    CHECK(h3_gpu_begin(gpu));
+    CHECK(h3_gpu_silu_bf16(gpu, silu_output, silu_input, 2));
+    CHECK(h3_gpu_submit(gpu));
+    uint16_t silu_bf16[2];
+    CHECK(h3_gpu_tensor_read_bf16(silu_output, silu_bf16, 2));
+    CHECK(silu_bf16[0] == 0x0000);
+
+    const uint16_t linear_input[4] = {0x3f80, 0x0000, 0x4000, 0x0000};
+    const uint16_t linear_weight[8] = {
+        0x3f80, 0x0000, 0x0000, 0x3f80,
+        0x0000, 0x3f80, 0x3f80, 0x0000
+    };
+    h3_gpu_tensor *lin_in = h3_gpu_tensor_from_bf16(gpu, linear_input, 4);
+    h3_gpu_tensor *lin_w = h3_gpu_tensor_from_bf16(gpu, linear_weight, 8);
+    h3_gpu_tensor *lin_out = h3_gpu_tensor_new_bf16(gpu, 4);
+    CHECK(lin_in && lin_w && lin_out);
+    CHECK(h3_gpu_begin(gpu));
+    CHECK(h3_gpu_linear_bf16(gpu, lin_out, lin_in, lin_w, NULL, 2, 2, 2));
+    CHECK(h3_gpu_submit(gpu));
+    uint16_t linear_out[4];
+    CHECK(h3_gpu_tensor_read_bf16(lin_out, linear_out, 4));
+    CHECK(linear_out[0] == 0x3f80);
+    CHECK(linear_out[2] == 0x4000);
+
+    h3_gpu_tensor_free(silu_input);
+    h3_gpu_tensor_free(silu_output);
+    h3_gpu_tensor_free(lin_in);
+    h3_gpu_tensor_free(lin_w);
+    h3_gpu_tensor_free(lin_out);
+
     h3_gpu_tensor_free(left);
     h3_gpu_tensor_free(right);
     h3_gpu_tensor_free(left_bf16);

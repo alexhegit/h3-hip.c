@@ -69,7 +69,7 @@ h3_metal_tests: tests/test_metal.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)
 
 h3_bf16_tests: tests/test_bf16.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_tokenizer_tests: tests/test_tokenizer.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)

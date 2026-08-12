@@ -52,7 +52,9 @@ h3/
 
 ## Phase 0 — Infrastructure (1–2 weeks)
 
-**Status (local `hip` branch):** initial skeleton landed.
+**Status (local `hip` branch):** Phase 1A core BF16 kernels landed (elementwise,
+norms, linear, AdaLN/gate, QKV+RoPE, SDPA, MLP composition, Euler). Token-reduction
+and patch-projection kernels remain stubbed.
 
 - `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
 - `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`
