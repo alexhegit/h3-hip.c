@@ -1051,6 +1051,45 @@ int h3_gpu_mlp_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     return ok;
 }
 
+static int h3_hip_fc1_swiglu_nax_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, uint32_t rows, uint32_t input_dim,
+    uint32_t hidden_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !rows || !input_dim || !hidden_dim ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                             "NAX FC1 input") ||
+        !h3_hip_require_bf16(ctx, weight,
+                             (size_t)hidden_dim * 2 * input_dim,
+                             "NAX FC1 weight") ||
+        !h3_hip_require_bf16(ctx, output, (size_t)rows * hidden_dim,
+                             "NAX FC1 output")) {
+        return 0;
+    }
+    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(
+        gpu, (size_t)rows * hidden_dim * 2);
+    if (!fc1_out) {
+        h3_hip_set_error(ctx, "NAX FC1 temporary allocation failed");
+        return 0;
+    }
+    int ok = h3_gpu_linear_bf16(gpu, fc1_out, input, weight, NULL, rows,
+                                input_dim, hidden_dim * 2) &&
+             h3_gpu_swiglu_bf16(gpu, output, fc1_out, rows, hidden_dim);
+    h3_gpu_tensor_free(fc1_out);
+    if (!ok) {
+        h3_hip_set_error(ctx, "h3_fc1_swiglu_nax_bf16 failed");
+    }
+    return ok;
+}
+
+int h3_hip_fc1_swiglu_nax_bf16_dispatch(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, uint32_t rows, uint32_t input_dim,
+    uint32_t hidden_dim) {
+    return h3_hip_fc1_swiglu_nax_bf16(gpu, output, input, weight, rows,
+                                      input_dim, hidden_dim);
+}
+
 int h3_gpu_mlp_nax_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                         h3_gpu_tensor *activated,
                         const h3_gpu_tensor *input,
@@ -1074,18 +1113,10 @@ int h3_gpu_mlp_nax_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              "NAX MLP output")) {
         return 0;
     }
-    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(
-        gpu, (size_t)rows * hidden_dim * 2);
-    if (!fc1_out) {
-        h3_hip_set_error(ctx, "NAX MLP FC1 temporary allocation failed");
-        return 0;
-    }
-    int ok = h3_gpu_linear_bf16(gpu, fc1_out, input, fc1_weight, NULL, rows,
-                                input_dim, hidden_dim * 2) &&
-             h3_gpu_swiglu_bf16(gpu, activated, fc1_out, rows, hidden_dim) &&
-             h3_gpu_linear_bf16(gpu, output, activated, fc2_weight, NULL,
-                                rows, hidden_dim, output_dim);
-    h3_gpu_tensor_free(fc1_out);
+    int ok = h3_hip_fc1_swiglu_nax_bf16(gpu, activated, input, fc1_weight, rows,
+                                        input_dim, hidden_dim) &&
+             h3_gpu_linear_bf16(gpu, output, activated, fc2_weight, NULL, rows,
+                                hidden_dim, output_dim);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_mlp_nax_bf16 failed");
     }

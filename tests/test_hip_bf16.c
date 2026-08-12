@@ -623,6 +623,47 @@ static int test_mlp(h3_gpu *gpu) {
     return 0;
 }
 
+extern int h3_hip_fc1_swiglu_nax_bf16_dispatch(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, uint32_t rows, uint32_t input_dim,
+    uint32_t hidden_dim);
+
+static int test_fc1_swiglu_nax(h3_gpu *gpu) {
+    enum { ROWS = 2, INPUT_DIM = 4, HIDDEN = 4 };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM, FC1_ELEMS = HIDDEN * 2 * INPUT_DIM };
+    uint16_t input_bf16[INPUT_ELEMS], fc1_w_bf16[FC1_ELEMS];
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input_bf16[i] = f32_to_bf16((float)((int)(i % 5) - 2) * 0.25f);
+    for (size_t i = 0; i < FC1_ELEMS; i++)
+        fc1_w_bf16[i] = f32_to_bf16((float)((int)(i % 7) - 3) * 0.0625f);
+    h3_gpu_tensor *input = h3_gpu_tensor_from_bf16(gpu, input_bf16, INPUT_ELEMS);
+    h3_gpu_tensor *fc1_w = h3_gpu_tensor_from_bf16(gpu, fc1_w_bf16, FC1_ELEMS);
+    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(gpu, ROWS * HIDDEN * 2);
+    h3_gpu_tensor *reference = h3_gpu_tensor_new_bf16(gpu, ROWS * HIDDEN);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * HIDDEN);
+    CHECK(input && fc1_w && fc1_out && reference && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin fc1 swiglu nax"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_bf16(
+        gpu, fc1_out, input, fc1_w, NULL, ROWS, INPUT_DIM, HIDDEN * 2),
+        "fc1 swiglu nax fc1"));
+    CHECK(!require_gpu(gpu, h3_gpu_swiglu_bf16(
+        gpu, reference, fc1_out, ROWS, HIDDEN), "fc1 swiglu nax reference"));
+    CHECK(!require_gpu(gpu, h3_hip_fc1_swiglu_nax_bf16_dispatch(
+        gpu, output, input, fc1_w, ROWS, INPUT_DIM, HIDDEN),
+        "fc1 swiglu nax"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit fc1 swiglu nax"));
+    uint16_t got[ROWS * HIDDEN], got_ref[ROWS * HIDDEN];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * HIDDEN));
+    CHECK(h3_gpu_tensor_read_bf16(reference, got_ref, ROWS * HIDDEN));
+    CHECK(memcmp(got, got_ref, sizeof(got)) == 0);
+    h3_gpu_tensor_free(input);
+    h3_gpu_tensor_free(fc1_w);
+    h3_gpu_tensor_free(fc1_out);
+    h3_gpu_tensor_free(reference);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_mlp_nax(h3_gpu *gpu) {
     enum { ROWS = 2, INPUT_DIM = 4, HIDDEN = 4, OUTPUT_DIM = 4 };
     enum { INPUT_ELEMS = ROWS * INPUT_DIM, FC1_ELEMS = HIDDEN * 2 * INPUT_DIM,
@@ -2189,6 +2230,7 @@ int main(void) {
     if (test_cast(gpu) != 0) return 1;
     if (test_mlp(gpu) != 0) return 1;
     if (test_mlp_nax(gpu) != 0) return 1;
+    if (test_fc1_swiglu_nax(gpu) != 0) return 1;
     if (test_adaln_linear(gpu) != 0) return 1;
     if (test_embedding(gpu) != 0) return 1;
     if (test_silu_mul(gpu) != 0) return 1;
