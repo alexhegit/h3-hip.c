@@ -1615,6 +1615,35 @@ static int test_quantize_weight_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_add_bf16(h3_gpu *gpu) {
+    enum { COUNT = 4 };
+    const float left_f[COUNT] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float right_f[COUNT] = {0.5f, 1.5f, 2.5f, 3.5f};
+    uint16_t left[COUNT], right[COUNT], expected[COUNT];
+    for (size_t i = 0; i < COUNT; i++) {
+        left[i] = f32_to_bf16(left_f[i]);
+        right[i] = f32_to_bf16(right_f[i]);
+        expected[i] = f32_to_bf16(left_f[i] + right_f[i]);
+    }
+    h3_gpu_tensor *gpu_left = h3_gpu_tensor_from_bf16(gpu, left, COUNT);
+    h3_gpu_tensor *gpu_right = h3_gpu_tensor_from_bf16(gpu, right, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    CHECK(gpu_left && gpu_right && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin add bf16"));
+    CHECK(!require_gpu(gpu, h3_gpu_add_bf16(
+        gpu, output, gpu_left, gpu_right, COUNT), "add bf16"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit add bf16"));
+    uint16_t got[COUNT];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i])) < 0.02f);
+    }
+    h3_gpu_tensor_free(gpu_left);
+    h3_gpu_tensor_free(gpu_right);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 int main(void) {
     char error[256];
     h3_gpu *gpu = h3_gpu_create("kernels/h3_kernels.hip", error, sizeof(error));
@@ -1645,6 +1674,7 @@ int main(void) {
     if (test_sub_bf16(gpu) != 0) return 1;
     if (test_gelu(gpu) != 0) return 1;
     if (test_quantize_weight_int8(gpu) != 0) return 1;
+    if (test_add_bf16(gpu) != 0) return 1;
     h3_gpu_free(gpu);
     puts("h3_hip_bf16_tests ok");
     return 0;
