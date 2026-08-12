@@ -936,6 +936,288 @@ int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
         "h3_euler_bf16");
 }
 
+int h3_gpu_adaln_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                             h3_gpu_tensor *inverse,
+                             const h3_gpu_tensor *input, size_t input_offset,
+                             const h3_gpu_tensor *norm_weight,
+                             const h3_gpu_tensor *modulation,
+                             const h3_gpu_tensor *row_map,
+                             const h3_gpu_tensor *weight,
+                             const h3_gpu_tensor *bias, uint32_t rows,
+                             uint32_t width, uint32_t output_dim,
+                             uint32_t slots, uint32_t shift_slot,
+                             uint32_t scale_slot, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t input_count = (size_t)rows * width;
+    size_t weight_count = (size_t)output_dim * width;
+    size_t output_count = (size_t)rows * output_dim;
+    if (!ctx || !rows || !width || !output_dim || shift_slot >= slots ||
+        scale_slot >= slots ||
+        input_offset + input_count > tensor_ptr(input)->elements ||
+        !h3_hip_require_bf16(ctx, norm_weight, width, "adaln linear norm") ||
+        !h3_hip_require_bf16(ctx, modulation, 1, "adaln linear modulation") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "adaln linear row map") ||
+        !h3_hip_require_bf16(ctx, weight, weight_count, "adaln linear weight") ||
+        !h3_hip_require_bf16(ctx, output, output_count, "adaln linear output") ||
+        !h3_hip_require_f32(ctx, inverse, rows, "adaln linear inverse") ||
+        (bias && !h3_hip_require_bf16(ctx, bias, output_dim,
+                                      "adaln linear bias"))) {
+        return 0;
+    }
+    const h3_gpu_tensor *bias_tensor = bias ? bias : input;
+    h3_norm_args rms_args = {rows, width, epsilon};
+    const uint16_t *input_ptr =
+        (const uint16_t *)tensor_ptr(input)->host + input_offset;
+    if (!h3_hip_launch_ok(ctx, h3_launch_rms_inverse_bf16(
+            input_ptr, (float *)tensor_ptr(inverse)->host, &rms_args,
+            ctx->stream), "h3_rms_inverse_bf16")) {
+        return 0;
+    }
+    h3_adaln_linear_args args = {rows, width, output_dim, slots, shift_slot,
+                                 scale_slot, bias ? 1u : 0u};
+    return h3_hip_launch_ok(ctx, h3_launch_adaln_linear_bf16(
+        input_ptr, (const float *)tensor_ptr(inverse)->host,
+        (const uint16_t *)tensor_ptr(norm_weight)->host,
+        (const uint16_t *)tensor_ptr(modulation)->host,
+        (const uint32_t *)tensor_ptr(row_map)->host,
+        (const uint16_t *)tensor_ptr(weight)->host,
+        (const uint16_t *)tensor_ptr(bias_tensor)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_adaln_linear_bf16");
+}
+
+int h3_gpu_grouped_qkv_linear_rope_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key,
+    h3_gpu_tensor *value, h3_gpu_tensor *qkv, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *q_norm,
+    const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos,
+    const h3_gpu_tensor *rope_sin, uint32_t rows, uint32_t input_dim,
+    uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon) {
+    uint32_t inner = heads * head_dim;
+    return h3_gpu_linear_bf16(gpu, qkv, input, weight, NULL, rows, input_dim,
+                                inner * 3) &&
+           h3_gpu_grouped_qkv_rope_bf16(gpu, query, key, value, qkv, q_norm,
+                                        k_norm, rope_cos, rope_sin, rows,
+                                        heads, head_dim, rope_half, epsilon);
+}
+
+int h3_gpu_embedding_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                          const h3_gpu_tensor *weight,
+                          const h3_gpu_tensor *token_ids, uint32_t tokens,
+                          uint32_t vocab_size, uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !tokens || !width || !vocab_size ||
+        !h3_hip_require_bf16(ctx, weight, (size_t)vocab_size * width,
+                             "embedding weight") ||
+        !h3_hip_require_u32(ctx, token_ids, tokens, "embedding token ids") ||
+        !h3_hip_require_bf16(ctx, output, (size_t)tokens * width,
+                             "embedding output")) {
+        return 0;
+    }
+    h3_embedding_args args = {tokens, vocab_size, width};
+    return h3_hip_launch_ok(ctx, h3_launch_embedding_bf16(
+        (const uint16_t *)tensor_ptr(weight)->host,
+        (const uint32_t *)tensor_ptr(token_ids)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_embedding_bf16");
+}
+
+int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                         const h3_gpu_tensor *gate, const h3_gpu_tensor *up,
+                         uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_bf16(ctx, gate, elements, "SiLU mul gate") ||
+        !h3_hip_require_bf16(ctx, up, elements, "SiLU mul up") ||
+        !h3_hip_require_bf16(ctx, output, elements, "SiLU mul output")) {
+        return 0;
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_silu_mul_bf16(
+        (const uint16_t *)tensor_ptr(gate)->host,
+        (const uint16_t *)tensor_ptr(up)->host,
+        (uint16_t *)tensor_ptr(output)->host, elements, ctx->stream),
+        "h3_silu_mul_bf16");
+}
+
+int h3_gpu_token_pool_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *input, size_t input_offset,
+                           h3_gpu_tensor *original, size_t original_offset,
+                           h3_gpu_tensor *baseline, size_t baseline_offset,
+                           const h3_gpu_tensor *baseline_indices,
+                           const h3_gpu_tensor *pairs, uint32_t input_rows,
+                           uint32_t rows, uint32_t baseline_rows,
+                           uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t elements = (size_t)rows * width;
+    if (!ctx || !input_rows || !rows || rows > input_rows || !width ||
+        !h3_hip_require_bf16(ctx, output, elements, "token pool output") ||
+        !h3_hip_require_bf16(ctx, input, input_offset + (size_t)input_rows * width,
+                             "token pool input") ||
+        !h3_hip_require_bf16(ctx, original,
+                             original_offset + (size_t)input_rows * width,
+                             "token pool original") ||
+        !h3_hip_require_bf16(ctx, baseline,
+                             baseline_offset + (size_t)baseline_rows * width,
+                             "token pool baseline") ||
+        !h3_hip_require_u32(ctx, baseline_indices, rows,
+                            "token pool baseline indices") ||
+        !h3_hip_require_u32(ctx, pairs, (size_t)rows * 2, "token pool pairs")) {
+        return 0;
+    }
+    h3_token_pool_args args = {
+        (uint32_t)input_offset, (uint32_t)original_offset,
+        (uint32_t)baseline_offset, rows, width
+    };
+    return h3_hip_launch_ok(ctx, h3_launch_token_pool_bf16(
+        (const uint16_t *)tensor_ptr(input)->host,
+        (const uint32_t *)tensor_ptr(pairs)->host,
+        (uint16_t *)tensor_ptr(output)->host,
+        (uint16_t *)tensor_ptr(baseline)->host,
+        (const uint32_t *)tensor_ptr(baseline_indices)->host,
+        (uint16_t *)tensor_ptr(original)->host, &args, ctx->stream),
+        "h3_token_pool_bf16");
+}
+
+int h3_gpu_token_pool_adaln_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *residual, h3_gpu_tensor *output,
+    const h3_gpu_tensor *input, size_t input_offset, h3_gpu_tensor *original,
+    size_t original_offset, h3_gpu_tensor *baseline, size_t baseline_offset,
+    const h3_gpu_tensor *baseline_indices, const h3_gpu_tensor *pairs,
+    const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *modulation,
+    const h3_gpu_tensor *row_map, uint32_t input_rows, uint32_t rows,
+    uint32_t baseline_rows, uint32_t width, uint32_t slots,
+    uint32_t shift_slot, uint32_t scale_slot, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t elements = (size_t)rows * width;
+    if (!ctx || !rows || !width || width > 5376u || shift_slot >= slots ||
+        scale_slot >= slots ||
+        !h3_hip_require_bf16(ctx, residual, elements, "token pool residual") ||
+        !h3_hip_require_bf16(ctx, output, elements, "token pool output") ||
+        !h3_hip_require_bf16(ctx, input,
+                             input_offset + (size_t)input_rows * width,
+                             "token pool input") ||
+        !h3_hip_require_bf16(ctx, original,
+                             original_offset + (size_t)input_rows * width,
+                             "token pool original") ||
+        !h3_hip_require_bf16(ctx, baseline,
+                             baseline_offset + (size_t)baseline_rows * width,
+                             "token pool baseline") ||
+        !h3_hip_require_u32(ctx, baseline_indices, rows,
+                            "token pool baseline indices") ||
+        !h3_hip_require_u32(ctx, pairs, (size_t)rows * 2, "token pool pairs") ||
+        !h3_hip_require_bf16(ctx, norm_weight, width, "token pool norm") ||
+        !h3_hip_require_bf16(ctx, modulation, 1, "token pool modulation") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "token pool row map")) {
+        return 0;
+    }
+    h3_token_pool_adaln_args args = {
+        (uint32_t)input_offset, (uint32_t)original_offset,
+        (uint32_t)baseline_offset, rows, width, slots, shift_slot,
+        scale_slot, epsilon
+    };
+    return h3_hip_launch_ok(ctx, h3_launch_token_pool_adaln_bf16(
+        (const uint16_t *)tensor_ptr(input)->host,
+        (const uint32_t *)tensor_ptr(pairs)->host,
+        (uint16_t *)tensor_ptr(residual)->host,
+        (uint16_t *)tensor_ptr(baseline)->host,
+        (const uint32_t *)tensor_ptr(baseline_indices)->host,
+        (uint16_t *)tensor_ptr(original)->host,
+        (const uint16_t *)tensor_ptr(norm_weight)->host,
+        (const uint16_t *)tensor_ptr(modulation)->host,
+        (const uint32_t *)tensor_ptr(row_map)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_token_pool_adaln_bf16");
+}
+
+int h3_gpu_token_expand_delta_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *original,
+    size_t original_offset, const h3_gpu_tensor *reduced,
+    const h3_gpu_tensor *baseline, size_t baseline_offset,
+    const h3_gpu_tensor *baseline_indices, const h3_gpu_tensor *parents,
+    uint32_t rows, uint32_t reduced_rows, uint32_t baseline_rows,
+    uint32_t width, uint32_t exact_prefix_rows, float update_scale) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t elements = (size_t)rows * width;
+    if (!ctx || !rows || !width ||
+        !h3_hip_require_bf16(ctx, output, elements, "token expand output") ||
+        !h3_hip_require_bf16(ctx, original, original_offset + elements,
+                             "token expand original") ||
+        !h3_hip_require_bf16(ctx, reduced, (size_t)reduced_rows * width,
+                             "token expand reduced") ||
+        !h3_hip_require_bf16(ctx, baseline,
+                             baseline_offset + (size_t)baseline_rows * width,
+                             "token expand baseline") ||
+        !h3_hip_require_u32(ctx, baseline_indices, reduced_rows,
+                            "token expand baseline indices") ||
+        !h3_hip_require_u32(ctx, parents, rows, "token expand parents")) {
+        return 0;
+    }
+    h3_token_expand_args args = {
+        (uint32_t)original_offset, (uint32_t)baseline_offset,
+        rows, width, exact_prefix_rows, update_scale
+    };
+    return h3_hip_launch_ok(ctx, h3_launch_token_expand_delta_bf16(
+        (const uint16_t *)tensor_ptr(original)->host,
+        (const uint16_t *)tensor_ptr(reduced)->host,
+        (const uint16_t *)tensor_ptr(baseline)->host,
+        (const uint32_t *)tensor_ptr(baseline_indices)->host,
+        (const uint32_t *)tensor_ptr(parents)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_token_expand_delta_bf16");
+}
+
+int h3_gpu_token_expand_adaln_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *residual, h3_gpu_tensor *output,
+    const h3_gpu_tensor *original, size_t original_offset,
+    const h3_gpu_tensor *reduced, const h3_gpu_tensor *baseline,
+    size_t baseline_offset, const h3_gpu_tensor *baseline_indices,
+    const h3_gpu_tensor *parents, const h3_gpu_tensor *norm_weight,
+    const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map,
+    uint32_t rows, uint32_t reduced_rows, uint32_t baseline_rows,
+    uint32_t width, uint32_t exact_prefix_rows, float update_scale,
+    uint32_t slots, uint32_t shift_slot, uint32_t scale_slot,
+    float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t elements = (size_t)rows * width;
+    if (!ctx || !rows || !width || width > 5376u || shift_slot >= slots ||
+        scale_slot >= slots ||
+        !h3_hip_require_bf16(ctx, residual, elements,
+                             "token expand residual") ||
+        !h3_hip_require_bf16(ctx, output, elements, "token expand output") ||
+        !h3_hip_require_bf16(ctx, original, original_offset + elements,
+                             "token expand original") ||
+        !h3_hip_require_bf16(ctx, reduced, (size_t)reduced_rows * width,
+                             "token expand reduced") ||
+        !h3_hip_require_bf16(ctx, baseline,
+                             baseline_offset + (size_t)baseline_rows * width,
+                             "token expand baseline") ||
+        !h3_hip_require_u32(ctx, baseline_indices, reduced_rows,
+                            "token expand baseline indices") ||
+        !h3_hip_require_u32(ctx, parents, rows, "token expand parents") ||
+        !h3_hip_require_bf16(ctx, norm_weight, width, "token expand norm") ||
+        !h3_hip_require_bf16(ctx, modulation, 1, "token expand modulation") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "token expand row map")) {
+        return 0;
+    }
+    h3_token_expand_adaln_args args = {
+        (uint32_t)original_offset, (uint32_t)baseline_offset,
+        rows, width, exact_prefix_rows, slots, shift_slot, scale_slot,
+        update_scale, epsilon
+    };
+    return h3_hip_launch_ok(ctx, h3_launch_token_expand_adaln_bf16(
+        (const uint16_t *)tensor_ptr(original)->host,
+        (const uint16_t *)tensor_ptr(reduced)->host,
+        (const uint16_t *)tensor_ptr(baseline)->host,
+        (const uint32_t *)tensor_ptr(baseline_indices)->host,
+        (const uint32_t *)tensor_ptr(parents)->host,
+        (uint16_t *)tensor_ptr(residual)->host,
+        (const uint16_t *)tensor_ptr(norm_weight)->host,
+        (const uint16_t *)tensor_ptr(modulation)->host,
+        (const uint32_t *)tensor_ptr(row_map)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_token_expand_adaln_bf16");
+}
+
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name) {
     h3_hip_set_error(gpu, "HIP backend: %s is not implemented yet", name);
     return 0;

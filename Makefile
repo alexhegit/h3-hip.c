@@ -25,7 +25,8 @@ ifeq ($(H3_BACKEND),hip)
   LDLIBS := -L$(ROCM_PATH)/lib -lamdhip64 -lm
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \
 	backends/h3_hip_probe.o backends/h3_device.o \
-	backends/h3_tokenizer_stub.o kernels/h3_kernels.o
+	backends/h3_tokenizer_stub.o kernels/h3_kernels.o \
+	kernels/h3_kernels_extra.o
   LINK := $(HIPCC)
 else
   CFLAGS := -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow \
@@ -58,6 +59,11 @@ libh3.a: $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
 hip-smoke: h3_hip_smoke
+
+hip-bf16: h3_hip_bf16_tests
+
+h3_hip_bf16_tests: tests/test_hip_bf16.o $(LIB_GPU)
+	$(HIPCC) -o $@ $^ $(LDLIBS)
 
 h3_hip_smoke: tests/test_hip_smoke.o $(LIB_GPU)
 	$(HIPCC) -o $@ $^ $(LDLIBS)
@@ -240,6 +246,9 @@ backends/%.o: backends/%.c
 
 kernels/h3_kernels.o: kernels/h3_kernels.hip kernels/h3_kernels.h
 	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
+
+kernels/h3_kernels_extra.o: kernels/h3_kernels_extra.hip kernels/h3_kernels.h
+	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
 else
 %.o: %.m
 	$(CC) $(OBJCFLAGS) -I. -c $< -o $@
@@ -252,7 +261,7 @@ linenoise.o: CFLAGS += -Wno-conversion -Wno-variadic-macro-arguments-omitted
 -include $(wildcard *.d tests/*.d backends/*.d kernels/*.d)
 
 clean:
-	rm -f h3 h3_tests h3_hip_smoke h3_metal_tests h3_bf16_tests h3_tokenizer_tests \
+	rm -f h3 h3_tests h3_hip_smoke h3_hip_bf16_tests h3_metal_tests h3_bf16_tests h3_tokenizer_tests \
 		h3_text_tests h3_real_prompt_test h3_real_dit_block_test \
 		h3_audio_gpu_tests h3_real_audio_vae_test h3_real_audio_encoder_test \
 		h3_av_mux_test \

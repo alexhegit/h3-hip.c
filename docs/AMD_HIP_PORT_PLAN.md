@@ -52,9 +52,11 @@ h3/
 
 ## Phase 0 — Infrastructure (1–2 weeks)
 
-**Status (local `hip` branch):** Phase 1A core BF16 kernels landed (elementwise,
-norms, linear, AdaLN/gate, QKV+RoPE, SDPA, MLP composition, Euler). Token-reduction
-and patch-projection kernels remain stubbed.
+**Status (local `hip` branch):** Phase 1A/1B core BF16 kernels landed; token-reduction
+fusion (`pool/expand/pool_adaln/expand_adaln`), `adaln_linear`, `embedding`,
+`silu_mul`, and `grouped_qkv_linear_rope` composition added. Self-contained
+`./h3_hip_bf16_tests` covers Euler + token pool/expand without MLX fixtures.
+Patch-projection and int8 fast-path kernels remain stubbed.
 
 - `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
 - `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`
@@ -205,7 +207,7 @@ Keep `--use-slower-bf16-*` flags as oracle fallbacks.
 | Layer | Tests |
 |-------|-------|
 | Host | `make test` → `h3_tests` |
-| GPU unit | new `h3_hip_tests` per kernel |
+| GPU unit | `./h3_hip_smoke`, `./h3_hip_bf16_tests` (no fixtures); per-kernel as needed |
 | Block parity | `h3_bf16_tests`, `h3_real_dit_block_test` |
 | Module | `h3_text_tests`, `h3_real_*_vae_test`, etc. |
 | E2E | fox 512² prompt → MP4 |
