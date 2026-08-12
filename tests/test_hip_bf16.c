@@ -1561,6 +1561,60 @@ static int test_gelu(h3_gpu *gpu) {
     return 0;
 }
 
+static void cpu_quantize_weight_int8(const uint16_t *input, int8_t *output,
+                                     float *scales, uint32_t rows,
+                                     uint32_t columns, float clip) {
+    for (uint32_t row = 0; row < rows; row++) {
+        float max_abs = 0.0f;
+        for (uint32_t column = 0; column < columns; column++) {
+            float value = bf16_to_f32(input[row * columns + column]);
+            max_abs = fmaxf(max_abs, fabsf(value));
+        }
+        float clipped_max = max_abs * clip;
+        float scale = clipped_max > 0.0f ? clipped_max / 127.0f : 1.0f / 127.0f;
+        float inverse = clipped_max > 0.0f ? 127.0f / clipped_max : 127.0f;
+        scales[row] = scale;
+        for (uint32_t column = 0; column < columns; column++) {
+            int quantized = (int)rintf(
+                bf16_to_f32(input[row * columns + column]) * inverse);
+            if (quantized > 127) quantized = 127;
+            if (quantized < -127) quantized = -127;
+            output[row * columns + column] = (int8_t)quantized;
+        }
+    }
+}
+
+static int test_quantize_weight_int8(h3_gpu *gpu) {
+    enum { ROWS = 2, COLS = 8 };
+    enum { COUNT = ROWS * COLS };
+    uint16_t input[COUNT];
+    int8_t expected[COUNT];
+    float expected_scales[ROWS];
+    for (size_t i = 0; i < COUNT; i++)
+        input[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.125f);
+    cpu_quantize_weight_int8(input, expected, expected_scales, ROWS, COLS, 1.0f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_i8(gpu, COUNT);
+    h3_gpu_tensor *scales = h3_gpu_tensor_new_f32(gpu, ROWS);
+    CHECK(gpu_input && output && scales);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin quantize weight"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, output, scales, gpu_input, ROWS, COLS), "quantize weight"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit quantize weight"));
+    int8_t got[COUNT];
+    float got_scales[ROWS];
+    CHECK(h3_gpu_tensor_read_i8(output, got, COUNT));
+    CHECK(h3_gpu_tensor_read_f32(scales, got_scales, ROWS));
+    for (uint32_t row = 0; row < ROWS; row++) {
+        CHECK(fabsf(got_scales[row] - expected_scales[row]) < 1e-5f);
+    }
+    CHECK(memcmp(got, expected, sizeof(got)) == 0);
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(scales);
+    return 0;
+}
+
 int main(void) {
     char error[256];
     h3_gpu *gpu = h3_gpu_create("kernels/h3_kernels.hip", error, sizeof(error));
@@ -1590,6 +1644,7 @@ int main(void) {
     if (test_copy_bf16(gpu) != 0) return 1;
     if (test_sub_bf16(gpu) != 0) return 1;
     if (test_gelu(gpu) != 0) return 1;
+    if (test_quantize_weight_int8(gpu) != 0) return 1;
     h3_gpu_free(gpu);
     puts("h3_hip_bf16_tests ok");
     return 0;

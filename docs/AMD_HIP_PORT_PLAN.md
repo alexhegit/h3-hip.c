@@ -56,8 +56,9 @@ h3/
 GPU APIs): norms, linear, AdaLN/gate fusions, QKV+RoPE (plain/grouped/linear),
 SDPA, MLP, token pool/expand, patch projection (`patch_linear_bf16` + `_map`),
 `copy_f32`, text encoder (`text_qk_rope`, `head_rms_norm`, `rope_text`,
-`gqa_causal`). `./h3_hip_bf16_tests` runs 25 CPU-oracle checks without MLX
-fixtures. int8 fast path, F32 conv/VAE, and NAX kernels remain stubbed.
+`gqa_causal`). `./h3_hip_bf16_tests` runs 26 CPU-oracle checks without MLX
+fixtures. Phase 5 int8 started: `quantize_weight_int8` scalar row quantizer.
+F32 conv/VAE and remaining int8 matmul kernels remain stubbed.
 
 - `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
 - `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`

@@ -168,6 +168,12 @@ typedef struct {
     float epsilon;
 } h3_head_norm_args;
 
+typedef struct {
+    uint32_t rows;
+    uint32_t columns;
+    float clip;
+} h3_int8_quant_args;
+
 int h3_launch_cast_f32_to_bf16(const float *input, uint16_t *output,
                                uint32_t count, hipStream_t stream);
 int h3_launch_cast_bf16_to_f32(const uint16_t *input, float *output,
@@ -277,6 +283,11 @@ int h3_launch_rope_text_bf16(uint16_t *query, uint16_t *key,
 int h3_launch_gqa_causal_bf16(const uint16_t *query, const uint16_t *key,
                               const uint16_t *value, uint16_t *output,
                               const h3_gqa_args *args, hipStream_t stream);
+int h3_launch_quantize_bf16_int8_rows(const uint16_t *input, int8_t *output,
+                                      float *scales,
+                                      const h3_int8_quant_args *args,
+                                      uint32_t dispatch_rows,
+                                      hipStream_t stream);
 
 #ifdef __cplusplus
 }

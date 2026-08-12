@@ -721,3 +721,57 @@ extern "C" int h3_launch_gqa_causal_bf16(const uint16_t *query,
                reinterpret_cast<const void *>(h3_gqa_causal_bf16_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
+
+__global__ void h3_quantize_bf16_int8_rows_kernel(
+    const uint16_t *input, int8_t *output, float *scales,
+    h3_int8_quant_args args) {
+    __shared__ float reductions[256];
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    uint32_t base = row * args.columns;
+    if (row >= args.rows) {
+        for (uint32_t column = tid; column < args.columns; column += threads)
+            output[base + column] = 0;
+        if (tid == 0) scales[row] = 1.0f;
+        return;
+    }
+    float local_max = 0.0f;
+    for (uint32_t column = tid; column < args.columns; column += threads) {
+        local_max = fmaxf(local_max,
+                          fabsf(h3_bf16_to_f32(input[base + column])));
+    }
+    reductions[tid] = local_max;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) {
+            reductions[tid] = fmaxf(reductions[tid], reductions[tid + stride]);
+        }
+        __syncthreads();
+    }
+    float clipped_max = reductions[0] * args.clip;
+    float scale = clipped_max > 0.0f ? clipped_max / 127.0f : 1.0f / 127.0f;
+    float inverse = clipped_max > 0.0f ? 127.0f / clipped_max : 127.0f;
+    if (tid == 0) scales[row] = scale;
+    for (uint32_t column = tid; column < args.columns; column += threads) {
+        int quantized =
+            (int)rintf(h3_bf16_to_f32(input[base + column]) * inverse);
+        if (quantized > 127) quantized = 127;
+        if (quantized < -127) quantized = -127;
+        output[base + column] = (int8_t)quantized;
+    }
+}
+
+extern "C" int h3_launch_quantize_bf16_int8_rows(
+    const uint16_t *input, int8_t *output, float *scales,
+    const h3_int8_quant_args *args, uint32_t dispatch_rows,
+    hipStream_t stream) {
+    h3_int8_quant_args host_args = *args;
+    void *kernel_args[] = {&input, &output, &scales, &host_args};
+    dim3 block(256, 1, 1);
+    dim3 grid(dispatch_rows, 1, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_quantize_bf16_int8_rows_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}

@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 #define CHECK(cond) do { \
     if (!(cond)) { \
@@ -74,6 +75,23 @@ int main(void) {
     CHECK(h3_gpu_tensor_read_bf16(lin_out, linear_out, 4));
     CHECK(linear_out[0] == 0x3f80);
     CHECK(linear_out[2] == 0x4000);
+
+    const uint16_t sub_left[2] = {0x4000, 0x3f80};
+    const uint16_t sub_right[2] = {0x3f80, 0x0000};
+    h3_gpu_tensor *sub_a = h3_gpu_tensor_from_bf16(gpu, sub_left, 2);
+    h3_gpu_tensor *sub_b = h3_gpu_tensor_from_bf16(gpu, sub_right, 2);
+    h3_gpu_tensor *sub_out = h3_gpu_tensor_new_bf16(gpu, 2);
+    CHECK(sub_a && sub_b && sub_out);
+    CHECK(h3_gpu_begin(gpu));
+    CHECK(h3_gpu_sub_bf16(gpu, sub_out, sub_a, sub_b, 2));
+    CHECK(h3_gpu_submit(gpu));
+    uint16_t sub_bf16[2];
+    CHECK(h3_gpu_tensor_read_bf16(sub_out, sub_bf16, 2));
+    CHECK(sub_bf16[0] == 0x3f80);
+    CHECK(sub_bf16[1] == 0x3f80);
+    h3_gpu_tensor_free(sub_a);
+    h3_gpu_tensor_free(sub_b);
+    h3_gpu_tensor_free(sub_out);
 
     h3_gpu_tensor_free(silu_input);
     h3_gpu_tensor_free(silu_output);
