@@ -1476,6 +1476,91 @@ static int test_rope_text(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_copy_bf16(h3_gpu *gpu) {
+    enum { PADDING = 2, COUNT = 4 };
+    uint16_t source[PADDING + COUNT];
+    for (size_t i = 0; i < PADDING; i++)
+        source[i] = f32_to_bf16(-99.0f);
+    for (size_t i = 0; i < COUNT; i++)
+        source[PADDING + i] = f32_to_bf16((float)(i + 1) * 0.5f);
+    h3_gpu_tensor *gpu_source = h3_gpu_tensor_from_bf16(
+        gpu, source, PADDING + COUNT);
+    h3_gpu_tensor *dest = h3_gpu_tensor_new_bf16(gpu, PADDING + COUNT);
+    CHECK(gpu_source && dest);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin copy bf16"));
+    CHECK(!require_gpu(gpu, h3_gpu_copy_bf16(
+        gpu, dest, PADDING, gpu_source, PADDING, COUNT), "copy bf16"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit copy bf16"));
+    uint16_t got[PADDING + COUNT];
+    CHECK(h3_gpu_tensor_read_bf16(dest, got, PADDING + COUNT));
+    CHECK(memcmp(got + PADDING, source + PADDING, COUNT * sizeof(uint16_t)) == 0);
+    h3_gpu_tensor_free(gpu_source);
+    h3_gpu_tensor_free(dest);
+    return 0;
+}
+
+static int test_sub_bf16(h3_gpu *gpu) {
+    enum { COUNT = 4 };
+    const float left_f[COUNT] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float right_f[COUNT] = {0.5f, 1.5f, 2.5f, 3.5f};
+    uint16_t left[COUNT], right[COUNT], expected[COUNT];
+    for (size_t i = 0; i < COUNT; i++) {
+        left[i] = f32_to_bf16(left_f[i]);
+        right[i] = f32_to_bf16(right_f[i]);
+        expected[i] = f32_to_bf16(left_f[i] - right_f[i]);
+    }
+    h3_gpu_tensor *gpu_left = h3_gpu_tensor_from_bf16(gpu, left, COUNT);
+    h3_gpu_tensor *gpu_right = h3_gpu_tensor_from_bf16(gpu, right, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    CHECK(gpu_left && gpu_right && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sub bf16"));
+    CHECK(!require_gpu(gpu, h3_gpu_sub_bf16(
+        gpu, output, gpu_left, gpu_right, COUNT), "sub bf16"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sub bf16"));
+    uint16_t got[COUNT];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i])) < 0.02f);
+    }
+    h3_gpu_tensor_free(gpu_left);
+    h3_gpu_tensor_free(gpu_right);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static float cpu_gelu_approx(float value) {
+    float inner = 0.7978845608028654f *
+        (value + 0.044715f * value * value * value);
+    if (inner <= -10.0f) return 0.0f;
+    if (inner >= 10.0f) return value;
+    return 0.5f * value * (1.0f + tanhf(inner));
+}
+
+static int test_gelu(h3_gpu *gpu) {
+    enum { COUNT = 4 };
+    const float values[COUNT] = {-2.0f, -0.5f, 0.0f, 1.5f};
+    uint16_t input[COUNT], expected[COUNT];
+    for (size_t i = 0; i < COUNT; i++) {
+        input[i] = f32_to_bf16(values[i]);
+        expected[i] = f32_to_bf16(cpu_gelu_approx(values[i]));
+    }
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    CHECK(gpu_input && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin gelu"));
+    CHECK(!require_gpu(gpu, h3_gpu_gelu_bf16(gpu, output, gpu_input, COUNT, 1),
+                       "gelu"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit gelu"));
+    uint16_t got[COUNT];
+    CHECK(h3_gpu_tensor_read_bf16(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i])) < 0.02f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 int main(void) {
     char error[256];
     h3_gpu *gpu = h3_gpu_create("kernels/h3_kernels.hip", error, sizeof(error));
@@ -1502,6 +1587,9 @@ int main(void) {
     if (test_gqa_causal(gpu) != 0) return 1;
     if (test_head_rms_norm(gpu) != 0) return 1;
     if (test_rope_text(gpu) != 0) return 1;
+    if (test_copy_bf16(gpu) != 0) return 1;
+    if (test_sub_bf16(gpu) != 0) return 1;
+    if (test_gelu(gpu) != 0) return 1;
     h3_gpu_free(gpu);
     puts("h3_hip_bf16_tests ok");
     return 0;

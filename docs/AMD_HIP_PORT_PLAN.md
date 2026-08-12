@@ -52,11 +52,12 @@ h3/
 
 ## Phase 0 — Infrastructure (1–2 weeks)
 
-**Status (local `hip` branch):** Phase 1A/1B core BF16 kernels landed; token-reduction
-fusion (`pool/expand/pool_adaln/expand_adaln`), `adaln_linear`, `embedding`,
-`silu_mul`, and `grouped_qkv_linear_rope` composition added. Self-contained
-`./h3_hip_bf16_tests` covers Euler + token pool/expand without MLX fixtures.
-Patch-projection and int8 fast-path kernels remain stubbed.
+**Status (local `hip` branch):** Phase 0 complete. Phase 1A/1B largely done (~41/88
+GPU APIs): norms, linear, AdaLN/gate fusions, QKV+RoPE (plain/grouped/linear),
+SDPA, MLP, token pool/expand, patch projection (`patch_linear_bf16` + `_map`),
+`copy_f32`, text encoder (`text_qk_rope`, `head_rms_norm`, `rope_text`,
+`gqa_causal`). `./h3_hip_bf16_tests` runs 25 CPU-oracle checks without MLX
+fixtures. int8 fast path, F32 conv/VAE, and NAX kernels remain stubbed.
 
 - `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
 - `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`
