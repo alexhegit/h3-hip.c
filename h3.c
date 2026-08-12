@@ -3,7 +3,7 @@
 #include "h3_host.h"
 #include "h3_dit.h"
 #include "h3_ffmpeg.h"
-#include "h3_metal.h"
+#include "backends/h3_device.h"
 #include "h3_multimodal.h"
 #include "h3_safetensors.h"
 #include "h3_text_encoder.h"
@@ -132,8 +132,13 @@ static int h3_key_file(h3_key *key, const char *role, const char *path) {
                              strlen(path), path);
     return h3_key_append(key, "|%s=%zu:%s:%lld:%lld:%ld", role, strlen(path),
                          path, (long long)status.st_size,
+#if defined(__APPLE__)
                          (long long)status.st_mtimespec.tv_sec,
                          status.st_mtimespec.tv_nsec);
+#else
+                         (long long)status.st_mtim.tv_sec,
+                         status.st_mtim.tv_nsec);
+#endif
 }
 
 static char *h3_conditioning_key(const char *prompt, const h3_params *params,
@@ -450,7 +455,7 @@ h3_ctx *h3_load_dir(const char *model_dir) {
         return NULL;
     }
     char metal_error[256];
-    if (!h3_metal_probe(&ctx->device, metal_error, sizeof(metal_error))) {
+    if (!h3_device_probe(&ctx->device, metal_error, sizeof(metal_error))) {
         h3_set_error(ctx, "%s", metal_error);
         snprintf(h3_global_error, sizeof(h3_global_error), "%s", ctx->error);
         h3_free(ctx);

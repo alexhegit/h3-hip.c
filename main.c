@@ -126,14 +126,23 @@ static void print_component(const char *label, const h3_component_info *item) {
 static void print_info(const h3_ctx *ctx) {
     const h3_device_info *device = h3_device(ctx);
     const h3_model_info *model = h3_model(ctx);
+#ifdef H3_HIP
+    printf("h3-hip %s\n", H3_VERSION);
+#else
     printf("h3-metal %s\n", H3_VERSION);
+#endif
     printf("Device: %s (%s)\n", device->name, device->architecture);
     printf("  physical memory       %.1f GiB\n", gib(device->physical_memory));
     printf("  recommended GPU set   %.1f GiB\n", gib(device->recommended_working_set));
+#ifdef H3_HIP
+    printf("  max HIP buffer        %.1f GiB\n", gib(device->max_buffer_length));
+    printf("  unified memory        %s\n", device->unified_memory ? "yes" : "no");
+#else
     printf("  max Metal buffer      %.1f GiB\n", gib(device->max_buffer_length));
     printf("  Apple GPU family      %d\n", device->apple_gpu_family);
     printf("  Metal 4               %s\n", device->metal4 ? "yes" : "no");
     printf("  unified memory        %s\n", device->unified_memory ? "yes" : "no");
+#endif
     printf("Native checkpoint inventory (header-only):\n");
     print_component("Qwen3-VL encoder", &model->text_encoder);
     print_component("FL2VA DiT", &model->fl2va_transformer);
