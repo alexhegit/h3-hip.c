@@ -174,6 +174,14 @@ typedef struct {
     float clip;
 } h3_int8_quant_args;
 
+typedef struct {
+    uint32_t rows;
+    uint32_t padded_rows;
+    uint32_t heads;
+    uint32_t head_dim;
+    float clip;
+} h3_int8_head_major_quant_args;
+
 int h3_launch_cast_f32_to_bf16(const float *input, uint16_t *output,
                                uint32_t count, hipStream_t stream);
 int h3_launch_cast_bf16_to_f32(const uint16_t *input, float *output,
@@ -288,6 +296,9 @@ int h3_launch_quantize_bf16_int8_rows(const uint16_t *input, int8_t *output,
                                       const h3_int8_quant_args *args,
                                       uint32_t dispatch_rows,
                                       hipStream_t stream);
+int h3_launch_quantize_bf16_int8_head_major_rows(
+    const uint16_t *input, int8_t *output, float *scales,
+    const h3_int8_head_major_quant_args *args, hipStream_t stream);
 int h3_launch_linear_int8_bf16_naive(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, const h3_linear_args *args,

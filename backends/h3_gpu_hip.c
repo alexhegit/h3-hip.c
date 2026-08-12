@@ -1511,6 +1511,20 @@ static int h3_hip_quantize_bf16_int8_rows(
         ctx->stream), "h3_quantize_bf16_int8_rows");
 }
 
+static int h3_hip_quantize_bf16_int8_head_major_rows(
+    struct h3_gpu *ctx, h3_gpu_tensor *quantized,
+    h3_gpu_tensor *scales, const h3_gpu_tensor *input, uint32_t rows,
+    uint32_t padded_rows, uint32_t heads, uint32_t head_dim) {
+    h3_int8_head_major_quant_args quant_args = {
+        rows, padded_rows, heads, head_dim, 1.0f
+    };
+    return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_int8_head_major_rows(
+        (const uint16_t *)tensor_ptr(input)->host,
+        (int8_t *)tensor_ptr(quantized)->host,
+        (float *)tensor_ptr(scales)->host, &quant_args, ctx->stream),
+        "h3_quantize_bf16_int8_head_major_rows");
+}
+
 int h3_gpu_linear_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                             h3_gpu_tensor *quantized_input,
                             h3_gpu_tensor *input_scales,
@@ -1636,6 +1650,41 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         h3_hip_set_error(ctx, "h3_mlp_int8_bf16 failed");
     }
     return ok;
+}
+
+int h3_gpu_linear_int8_head_major_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *quantized_input,
+    h3_gpu_tensor *input_scales, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
+    uint32_t rows, uint32_t heads, uint32_t head_dim, uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t input_dim = heads * head_dim;
+    uint32_t padded_rows = (rows + 127u) & ~127u;
+    size_t activation_count = (size_t)padded_rows * input_dim;
+    size_t weight_count = (size_t)output_dim * input_dim;
+    size_t output_count = (size_t)rows * output_dim;
+    if (!ctx || !rows || !heads || !head_dim || !output_dim ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                             "head-major int8 linear input") ||
+        !h3_hip_require_i8(ctx, weight, weight_count, "int8 linear weight") ||
+        !h3_hip_require_f32(ctx, weight_scales, output_dim,
+                            "int8 linear weight scales") ||
+        !h3_hip_require_i8(ctx, quantized_input, activation_count,
+                           "head-major int8 quantized input") ||
+        !h3_hip_require_f32(ctx, input_scales, padded_rows,
+                            "head-major int8 input scales") ||
+        !h3_hip_require_bf16(ctx, output, output_count,
+                             "head-major int8 linear output")) {
+        return 0;
+    }
+    if (!h3_hip_quantize_bf16_int8_head_major_rows(
+            ctx, quantized_input, input_scales, input, rows, padded_rows,
+            heads, head_dim)) {
+        return 0;
+    }
+    return h3_hip_launch_linear_int8_prequant(
+        ctx, output, quantized_input, input_scales, weight, weight_scales,
+        rows, input_dim, output_dim);
 }
 
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name) {
