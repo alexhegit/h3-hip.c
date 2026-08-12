@@ -775,3 +775,33 @@ extern "C" int h3_launch_quantize_bf16_int8_rows(
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
 }
+
+__global__ void h3_linear_int8_bf16_naive_kernel(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output, h3_linear_args args) {
+    uint32_t row = blockIdx.y;
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= args.rows || column >= args.output_dim) return;
+    int32_t acc = 0;
+    for (uint32_t k = 0; k < args.input_dim; k++) {
+        acc += (int32_t)input[row * args.input_dim + k] *
+               (int32_t)weight[column * args.input_dim + k];
+    }
+    float value = (float)acc * input_scales[row] * weight_scales[column];
+    output[row * args.output_dim + column] = h3_f32_to_bf16(value);
+}
+
+extern "C" int h3_launch_linear_int8_bf16_naive(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output, const h3_linear_args *args,
+    hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
+                           &output, &host_args};
+    dim3 block(16, 1, 1);
+    dim3 grid((host_args.output_dim + 15) / 16, host_args.rows, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_linear_int8_bf16_naive_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}
