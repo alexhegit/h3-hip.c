@@ -1206,3 +1206,104 @@ extern "C" int h3_launch_fc1_swiglu_int8_nax_r128(
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
 }
+
+__global__ void h3_linear_int8_grouped_naive_kernel(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    h3_linear_int8_grouped_args args) {
+    uint32_t row = blockIdx.y;
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= args.rows || column >= args.output_dim) return;
+    uint32_t scale_groups = args.input_dim / args.group_size;
+    float total = 0.0f;
+    for (uint32_t group = 0; group < scale_groups; group++) {
+        uint32_t k0 = group * args.group_size;
+        int32_t acc = 0;
+        for (uint32_t k = 0; k < args.group_size; k++) {
+            acc += (int32_t)input[row * args.input_dim + k0 + k] *
+                   (int32_t)weight[column * args.input_dim + k0 + k];
+        }
+        total = fmaf((float)acc,
+                     input_scales[row * scale_groups + group] *
+                         weight_scales[column],
+                     total);
+    }
+    output[row * args.output_dim + column] = h3_f32_to_bf16(total);
+}
+
+__global__ void h3_linear_int8_grouped_nax_r128x64_kernel(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    h3_linear_int8_grouped_args args) {
+    __shared__ int8_t input_tile[16][16];
+    __shared__ int8_t weight_tile[16][16];
+    uint32_t row = blockIdx.y * 16 + threadIdx.y;
+    uint32_t column = blockIdx.x * 16 + threadIdx.x;
+    uint32_t scale_groups = args.input_dim / args.group_size;
+    float total = 0.0f;
+    for (uint32_t group = 0; group < scale_groups; group++) {
+        uint32_t k0 = group * args.group_size;
+        int32_t sum = 0;
+        uint32_t tile_count = args.group_size / 16;
+        for (uint32_t tile = 0; tile < tile_count; tile++) {
+            uint32_t input_k = k0 + tile * 16 + threadIdx.x;
+            input_tile[threadIdx.y][threadIdx.x] =
+                row < args.rows && input_k < args.input_dim ?
+                input[row * args.input_dim + input_k] : (int8_t)0;
+            uint32_t weight_k = k0 + tile * 16 + threadIdx.y;
+            weight_tile[threadIdx.y][threadIdx.x] =
+                column < args.output_dim && weight_k < args.input_dim ?
+                weight[column * args.input_dim + weight_k] : (int8_t)0;
+            __syncthreads();
+            for (uint32_t k = 0; k < 16; k++) {
+                sum += (int32_t)input_tile[threadIdx.y][k] *
+                       (int32_t)weight_tile[k][threadIdx.x];
+            }
+            __syncthreads();
+        }
+        if (row < args.rows && column < args.output_dim) {
+            total = fmaf((float)sum,
+                         input_scales[row * scale_groups + group] *
+                             weight_scales[column],
+                         total);
+        }
+    }
+    if (row < args.rows && column < args.output_dim) {
+        output[row * args.output_dim + column] = h3_f32_to_bf16(total);
+    }
+}
+
+extern "C" int h3_launch_linear_int8_grouped_naive(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_int8_grouped_args *args, hipStream_t stream) {
+    h3_linear_int8_grouped_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
+                           &output, &host_args};
+    dim3 block(16, 1, 1);
+    dim3 grid((host_args.output_dim + 15) / 16, host_args.rows, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_linear_int8_grouped_naive_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}
+
+extern "C" int h3_launch_linear_int8_grouped_nax_r128x64(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_int8_grouped_args *args, hipStream_t stream) {
+    if (args->input_dim % 128 || args->output_dim % 64 ||
+        args->group_size % 1024 || args->input_dim % args->group_size) {
+        return 0;
+    }
+    h3_linear_int8_grouped_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
+                           &output, &host_args};
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.output_dim + 15) / 16, (host_args.rows + 15) / 16, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_linear_int8_grouped_nax_r128x64_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}

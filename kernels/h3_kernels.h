@@ -290,6 +290,13 @@ typedef struct {
     uint32_t groups;
 } h3_int8_group_quant_args;
 
+typedef struct {
+    uint32_t rows;
+    uint32_t input_dim;
+    uint32_t output_dim;
+    uint32_t group_size;
+} h3_linear_int8_grouped_args;
+
 int h3_launch_cast_f32_to_bf16(const float *input, uint16_t *output,
                                uint32_t count, hipStream_t stream);
 int h3_launch_cast_bf16_to_f32(const uint16_t *input, float *output,
@@ -508,6 +515,14 @@ int h3_launch_fc1_swiglu_int8_nax_r128(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, const h3_linear_args *args,
     hipStream_t stream);
+int h3_launch_linear_int8_grouped_nax_r128x64(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_int8_grouped_args *args, hipStream_t stream);
+int h3_launch_linear_int8_grouped_naive(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_int8_grouped_args *args, hipStream_t stream);
 
 #ifdef __cplusplus
 }
