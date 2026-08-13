@@ -877,6 +877,49 @@ int h3_gpu_layer_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_layer_norm_bf16");
 }
 
+int h3_gpu_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                        const h3_gpu_tensor *input,
+                        const h3_gpu_tensor *weight, uint32_t rows,
+                        uint32_t width, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    if (!ctx || !rows || !width ||
+        !h3_hip_require_f32(ctx, input, count, "RMSNorm input") ||
+        !h3_hip_require_f32(ctx, weight, width, "RMSNorm weight") ||
+        !h3_hip_require_f32(ctx, output, count, "RMSNorm output")) {
+        return 0;
+    }
+    h3_norm_args args = {rows, width, epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_rms_norm_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_rms_norm_f32");
+}
+
+int h3_gpu_layer_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                          const h3_gpu_tensor *input,
+                          const h3_gpu_tensor *weight,
+                          const h3_gpu_tensor *bias, uint32_t rows,
+                          uint32_t width, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    if (!ctx || !rows || !width ||
+        !h3_hip_require_f32(ctx, input, count, "LayerNorm input") ||
+        !h3_hip_require_f32(ctx, weight, width, "LayerNorm weight") ||
+        !h3_hip_require_f32(ctx, bias, width, "LayerNorm bias") ||
+        !h3_hip_require_f32(ctx, output, count, "LayerNorm output")) {
+        return 0;
+    }
+    h3_norm_args args = {rows, width, epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_layer_norm_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host,
+        (const float *)tensor_ptr(bias)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_layer_norm_f32");
+}
+
 int h3_gpu_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                        const h3_gpu_tensor *input,
                        const h3_gpu_tensor *weight,

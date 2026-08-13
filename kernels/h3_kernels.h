@@ -230,9 +230,15 @@ int h3_launch_scale_add_f32(const float *residual, const float *branch,
 int h3_launch_rms_norm_bf16(const uint16_t *input, const uint16_t *weight,
                             uint16_t *output, const h3_norm_args *args,
                             hipStream_t stream);
+int h3_launch_rms_norm_f32(const float *input, const float *weight,
+                           float *output, const h3_norm_args *args,
+                           hipStream_t stream);
 int h3_launch_layer_norm_bf16(const uint16_t *input, const uint16_t *weight,
                               const uint16_t *bias, uint16_t *output,
                               const h3_norm_args *args, hipStream_t stream);
+int h3_launch_layer_norm_f32(const float *input, const float *weight,
+                             const float *bias, float *output,
+                             const h3_norm_args *args, hipStream_t stream);
 int h3_launch_linear_bf16(const uint16_t *input, const uint16_t *weight,
                           const uint16_t *bias, uint16_t *output,
                           const h3_linear_args *args, hipStream_t stream);

@@ -1150,6 +1150,105 @@ static void cpu_layer_norm_bf16(const uint16_t *input, const uint16_t *weight,
     }
 }
 
+static void cpu_rms_norm_f32(const float *input, const float *weight,
+                             float *output, uint32_t rows, uint32_t width,
+                             float epsilon) {
+    for (uint32_t row = 0; row < rows; row++) {
+        const float *x = input + row * width;
+        float sum = 0.0f;
+        for (uint32_t column = 0; column < width; column++) {
+            sum = fmaf(x[column], x[column], sum);
+        }
+        float inverse = 1.0f / sqrtf(sum / (float)width + epsilon);
+        for (uint32_t column = 0; column < width; column++) {
+            output[row * width + column] =
+                x[column] * inverse * weight[column];
+        }
+    }
+}
+
+static void cpu_layer_norm_f32(const float *input, const float *weight,
+                               const float *bias, float *output,
+                               uint32_t rows, uint32_t width, float epsilon) {
+    for (uint32_t row = 0; row < rows; row++) {
+        const float *x = input + row * width;
+        float sum = 0.0f;
+        for (uint32_t column = 0; column < width; column++) {
+            sum += x[column];
+        }
+        float mean = sum / (float)width;
+        float square = 0.0f;
+        for (uint32_t column = 0; column < width; column++) {
+            float centered = x[column] - mean;
+            square = fmaf(centered, centered, square);
+        }
+        float inverse = 1.0f / sqrtf(square / (float)width + epsilon);
+        for (uint32_t column = 0; column < width; column++) {
+            float normalized = (x[column] - mean) * inverse;
+            output[row * width + column] =
+                fmaf(normalized, weight[column], bias[column]);
+        }
+    }
+}
+
+static int test_rms_norm_f32(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 4 };
+    const float input[ROWS * WIDTH] = {
+        1.0f, 2.0f, 3.0f, 4.0f, -1.0f, 0.5f, 1.5f, 2.5f
+    };
+    const float weight[WIDTH] = {1.0f, 0.5f, 1.5f, 2.0f};
+    float expected[ROWS * WIDTH];
+    cpu_rms_norm_f32(input, weight, expected, ROWS, WIDTH, 1e-5f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, ROWS * WIDTH);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, WIDTH);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, ROWS * WIDTH);
+    CHECK(gpu_input && gpu_weight && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin rms norm f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_rms_norm_f32(
+        gpu, output, gpu_input, gpu_weight, ROWS, WIDTH, 1e-5f), "rms norm f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit rms norm f32"));
+    float got[ROWS * WIDTH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, ROWS * WIDTH));
+    for (size_t i = 0; i < ROWS * WIDTH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_layer_norm_f32(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 4 };
+    const float input[ROWS * WIDTH] = {
+        1.0f, 2.0f, 3.0f, 4.0f, -1.0f, 0.5f, 1.5f, 2.5f
+    };
+    const float weight[WIDTH] = {1.0f, 0.5f, 1.5f, 2.0f};
+    const float bias[WIDTH] = {0.1f, -0.2f, 0.3f, -0.4f};
+    float expected[ROWS * WIDTH];
+    cpu_layer_norm_f32(input, weight, bias, expected, ROWS, WIDTH, 1e-5f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, ROWS * WIDTH);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, WIDTH);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, WIDTH);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, ROWS * WIDTH);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin layer norm f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_layer_norm_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, ROWS, WIDTH, 1e-5f),
+        "layer norm f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit layer norm f32"));
+    float got[ROWS * WIDTH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, ROWS * WIDTH));
+    for (size_t i = 0; i < ROWS * WIDTH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_rms_norm(h3_gpu *gpu) {
     enum { ROWS = 2, WIDTH = 4 };
     const float input_f[ROWS * WIDTH] = {
@@ -2539,7 +2638,9 @@ int main(void) {
     if (test_silu_mul(gpu) != 0) return 1;
     if (test_grouped_qkv_rope(gpu) != 0) return 1;
     if (test_rms_norm(gpu) != 0) return 1;
+    if (test_rms_norm_f32(gpu) != 0) return 1;
     if (test_layer_norm(gpu) != 0) return 1;
+    if (test_layer_norm_f32(gpu) != 0) return 1;
     if (test_grouped_qkv_linear_rope(gpu) != 0) return 1;
     if (test_gate(gpu) != 0) return 1;
     if (test_adaln_offset(gpu) != 0) return 1;
