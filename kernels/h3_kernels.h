@@ -259,10 +259,18 @@ int h3_launch_gate_bf16(const uint16_t *residual, const uint16_t *branch,
                         const uint16_t *modulation, const uint32_t *row_map,
                         uint16_t *output, const h3_gate_args *args,
                         hipStream_t stream);
+int h3_launch_gate_f32(const float *residual, const float *branch,
+                       const float *modulation, const uint32_t *row_map,
+                       float *output, const h3_gate_args *args,
+                       hipStream_t stream);
 int h3_launch_adaln_bf16(const uint16_t *input, const uint16_t *weight,
                          const uint16_t *modulation, const uint32_t *row_map,
                          uint16_t *output, const h3_adaln_args *args,
                          hipStream_t stream);
+int h3_launch_adaln_f32(const float *input, const float *weight,
+                        const float *modulation, const uint32_t *row_map,
+                        float *output, const h3_adaln_args *args,
+                        hipStream_t stream);
 int h3_launch_gate_adaln_bf16(const uint16_t *residual, const uint16_t *branch,
                               const uint16_t *gate_modulation,
                               const uint32_t *row_map, const uint16_t *weight,
