@@ -360,6 +360,49 @@ __global__ void h3_gate_bf16_kernel(const uint16_t *residual,
     output[index] = h3_f32_to_bf16(value);
 }
 
+__global__ void h3_gate_f32_kernel(const float *residual, const float *branch,
+                                   const float *modulation,
+                                   const uint32_t *row_map, float *output,
+                                   h3_gate_args args) {
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= args.rows || column >= args.width) return;
+    uint32_t base = row_map[row] * args.slots * args.width;
+    float gate = modulation[base + args.gate_slot * args.width + column];
+    uint32_t index = row * args.width + column;
+    output[index] = residual[index] + branch[index] * gate;
+}
+
+__global__ void h3_adaln_f32_kernel(const float *input, const float *weight,
+                                    const float *modulation,
+                                    const uint32_t *row_map, float *output,
+                                    h3_adaln_args args) {
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    if (row >= args.rows) return;
+    __shared__ float reductions[256];
+    const float *x = input + row * args.width;
+    float local_sum = 0.0f;
+    for (uint32_t k = tid; k < args.width; k += threads) {
+        local_sum = fmaf(x[k], x[k], local_sum);
+    }
+    reductions[tid] = local_sum;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] += reductions[tid + stride];
+        __syncthreads();
+    }
+    float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
+    uint32_t base = row_map[row] * args.slots * args.width;
+    for (uint32_t column = tid; column < args.width; column += threads) {
+        float normalized = x[column] * inverse * weight[column];
+        float shift = modulation[base + args.shift_slot * args.width + column];
+        float scale = modulation[base + args.scale_slot * args.width + column];
+        output[row * args.width + column] = normalized * (1.0f + scale) + shift;
+    }
+}
+
 __global__ void h3_adaln_bf16_kernel(const uint16_t *input,
                                      const uint16_t *weight,
                                      const uint16_t *modulation,
@@ -833,6 +876,20 @@ extern "C" int h3_launch_gate_bf16(const uint16_t *residual,
                kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
+extern "C" int h3_launch_gate_f32(const float *residual, const float *branch,
+                                  const float *modulation,
+                                  const uint32_t *row_map, float *output,
+                                  const h3_gate_args *args, hipStream_t stream) {
+    h3_gate_args host_args = *args;
+    void *kernel_args[] = {&residual, &branch, &modulation, &row_map, &output,
+                           &host_args};
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.width + 15) / 16, (host_args.rows + 15) / 16, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_gate_f32_kernel), grid, block,
+               kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
 extern "C" int h3_launch_adaln_bf16(const uint16_t *input,
                                     const uint16_t *weight,
                                     const uint16_t *modulation,
@@ -845,6 +902,21 @@ extern "C" int h3_launch_adaln_bf16(const uint16_t *input,
     uint32_t threads = h3_row_threads(host_args.width);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_adaln_bf16_kernel),
+               dim3(host_args.rows), dim3(threads), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_adaln_f32(const float *input, const float *weight,
+                                   const float *modulation,
+                                   const uint32_t *row_map, float *output,
+                                   const h3_adaln_args *args,
+                                   hipStream_t stream) {
+    h3_adaln_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &modulation, &row_map, &output,
+                           &host_args};
+    uint32_t threads = h3_row_threads(host_args.width);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_adaln_f32_kernel),
                dim3(host_args.rows), dim3(threads), kernel_args,
                sizeof(kernel_args), stream) == hipSuccess;
 }

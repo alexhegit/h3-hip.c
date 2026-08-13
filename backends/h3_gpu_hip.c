@@ -1009,6 +1009,32 @@ int h3_gpu_gate_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_gate_bf16");
 }
 
+int h3_gpu_gate_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                    const h3_gpu_tensor *residual,
+                    const h3_gpu_tensor *branch,
+                    const h3_gpu_tensor *modulation,
+                    const h3_gpu_tensor *row_map, uint32_t rows,
+                    uint32_t width, uint32_t slots, uint32_t gate_slot) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    if (!ctx || !rows || !width || gate_slot >= slots ||
+        !h3_hip_require_f32(ctx, residual, count, "gate residual") ||
+        !h3_hip_require_f32(ctx, branch, count, "gate branch") ||
+        !h3_hip_require_f32(ctx, modulation, 1, "gate modulation") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "gate row map") ||
+        !h3_hip_require_f32(ctx, output, count, "gate output")) {
+        return 0;
+    }
+    h3_gate_args args = {rows, width, slots, gate_slot};
+    return h3_hip_launch_ok(ctx, h3_launch_gate_f32(
+        (const float *)tensor_ptr(residual)->host,
+        (const float *)tensor_ptr(branch)->host,
+        (const float *)tensor_ptr(modulation)->host,
+        (const uint32_t *)tensor_ptr(row_map)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_gate_f32");
+}
+
 int h3_gpu_adaln_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                       const h3_gpu_tensor *input,
                       const h3_gpu_tensor *norm_weight,
@@ -1036,6 +1062,35 @@ int h3_gpu_adaln_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         (const uint32_t *)tensor_ptr(row_map)->host,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
         "h3_adaln_bf16");
+}
+
+int h3_gpu_adaln_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                     const h3_gpu_tensor *input,
+                     const h3_gpu_tensor *norm_weight,
+                     const h3_gpu_tensor *modulation,
+                     const h3_gpu_tensor *row_map, uint32_t rows,
+                     uint32_t width, uint32_t slots, uint32_t shift_slot,
+                     uint32_t scale_slot, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    if (!ctx || !rows || !width || shift_slot >= slots ||
+        scale_slot >= slots ||
+        !h3_hip_require_f32(ctx, input, count, "AdaLN input") ||
+        !h3_hip_require_f32(ctx, norm_weight, width, "AdaLN norm") ||
+        !h3_hip_require_f32(ctx, modulation, 1, "AdaLN modulation") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "AdaLN row map") ||
+        !h3_hip_require_f32(ctx, output, count, "AdaLN output")) {
+        return 0;
+    }
+    h3_adaln_args args = {rows, width, slots, shift_slot, scale_slot,
+                          epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_adaln_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(norm_weight)->host,
+        (const float *)tensor_ptr(modulation)->host,
+        (const uint32_t *)tensor_ptr(row_map)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_adaln_f32");
 }
 
 int h3_gpu_adaln_bf16_offset(h3_gpu *gpu, h3_gpu_tensor *output,

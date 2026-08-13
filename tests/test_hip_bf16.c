@@ -1438,6 +1438,120 @@ static void cpu_adaln_bf16(const uint16_t *input, const uint16_t *weight,
     }
 }
 
+static void cpu_gate_f32(const float *residual, const float *branch,
+                         const float *modulation, const uint32_t *row_map,
+                         float *output, uint32_t rows, uint32_t width,
+                         uint32_t slots, uint32_t gate_slot) {
+    for (uint32_t row = 0; row < rows; row++) {
+        uint32_t base = row_map[row] * slots * width;
+        for (uint32_t column = 0; column < width; column++) {
+            float gate = modulation[base + gate_slot * width + column];
+            uint32_t index = row * width + column;
+            output[index] = residual[index] + branch[index] * gate;
+        }
+    }
+}
+
+static void cpu_adaln_f32(const float *input, const float *weight,
+                          const float *modulation, const uint32_t *row_map,
+                          float *output, uint32_t rows, uint32_t width,
+                          uint32_t slots, uint32_t shift_slot,
+                          uint32_t scale_slot, float epsilon) {
+    for (uint32_t row = 0; row < rows; row++) {
+        const float *x = input + row * width;
+        float sum = 0.0f;
+        for (uint32_t column = 0; column < width; column++) {
+            sum = fmaf(x[column], x[column], sum);
+        }
+        float inverse = 1.0f / sqrtf(sum / (float)width + epsilon);
+        uint32_t base = row_map[row] * slots * width;
+        for (uint32_t column = 0; column < width; column++) {
+            float normalized = x[column] * inverse * weight[column];
+            float shift = modulation[base + shift_slot * width + column];
+            float scale = modulation[base + scale_slot * width + column];
+            output[row * width + column] =
+                normalized * (1.0f + scale) + shift;
+        }
+    }
+}
+
+static int test_gate_f32(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 4, SLOTS = 2 };
+    const float residual[ROWS * WIDTH] = {
+        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f
+    };
+    const float branch[ROWS * WIDTH] = {
+        0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f
+    };
+    const float mod[ROWS * SLOTS * WIDTH] = {
+        0.5f, 0.5f, 0.5f, 0.5f, 0.25f, 0.25f, 0.25f, 0.25f,
+        0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f
+    };
+    const uint32_t row_map[ROWS] = {0, 1};
+    float expected[ROWS * WIDTH];
+    cpu_gate_f32(residual, branch, mod, row_map, expected, ROWS, WIDTH, SLOTS, 0);
+    h3_gpu_tensor *gpu_residual = h3_gpu_tensor_from_f32(gpu, residual, ROWS * WIDTH);
+    h3_gpu_tensor *gpu_branch = h3_gpu_tensor_from_f32(gpu, branch, ROWS * WIDTH);
+    h3_gpu_tensor *gpu_mod = h3_gpu_tensor_from_f32(gpu, mod, ROWS * SLOTS * WIDTH);
+    h3_gpu_tensor *gpu_row_map = h3_gpu_tensor_from_u32(gpu, row_map, ROWS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, ROWS * WIDTH);
+    CHECK(gpu_residual && gpu_branch && gpu_mod && gpu_row_map && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin gate f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_gate_f32(
+        gpu, output, gpu_residual, gpu_branch, gpu_mod, gpu_row_map, ROWS, WIDTH,
+        SLOTS, 0), "gate f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit gate f32"));
+    float got[ROWS * WIDTH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, ROWS * WIDTH));
+    for (size_t i = 0; i < ROWS * WIDTH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-5f);
+    }
+    h3_gpu_tensor_free(gpu_residual);
+    h3_gpu_tensor_free(gpu_branch);
+    h3_gpu_tensor_free(gpu_mod);
+    h3_gpu_tensor_free(gpu_row_map);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_adaln_f32(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 4, SLOTS = 2 };
+    const float input[ROWS * WIDTH] = {
+        1.0f, 2.0f, 3.0f, 4.0f, -1.0f, 0.5f, 1.5f, 2.5f
+    };
+    const float weight[WIDTH] = {1.0f, 0.5f, 1.5f, 2.0f};
+    const float mod[ROWS * SLOTS * WIDTH] = {
+        0.25f, -0.5f, 0.75f, -1.0f, 0.0f, 0.5f, 0.25f, -0.25f,
+        -0.75f, 0.5f, 0.25f, 1.0f, 0.25f, 0.0f, 0.75f, -0.5f
+    };
+    const uint32_t row_map[ROWS] = {0, 1};
+    float expected[ROWS * WIDTH];
+    cpu_adaln_f32(input, weight, mod, row_map, expected, ROWS, WIDTH, SLOTS,
+                  0, 1, 1e-5f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, ROWS * WIDTH);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, WIDTH);
+    h3_gpu_tensor *gpu_mod = h3_gpu_tensor_from_f32(gpu, mod, ROWS * SLOTS * WIDTH);
+    h3_gpu_tensor *gpu_row_map = h3_gpu_tensor_from_u32(gpu, row_map, ROWS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, ROWS * WIDTH);
+    CHECK(gpu_input && gpu_weight && gpu_mod && gpu_row_map && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin adaln f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_adaln_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_mod, gpu_row_map, ROWS, WIDTH,
+        SLOTS, 0, 1, 1e-5f), "adaln f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit adaln f32"));
+    float got[ROWS * WIDTH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, ROWS * WIDTH));
+    for (size_t i = 0; i < ROWS * WIDTH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_mod);
+    h3_gpu_tensor_free(gpu_row_map);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_gate(h3_gpu *gpu) {
     enum { ROWS = 2, WIDTH = 4, SLOTS = 2 };
     const float residual_f[ROWS * WIDTH] = {
@@ -2716,7 +2830,9 @@ int main(void) {
     if (test_layer_norm_f32(gpu) != 0) return 1;
     if (test_grouped_qkv_linear_rope(gpu) != 0) return 1;
     if (test_gate(gpu) != 0) return 1;
+    if (test_gate_f32(gpu) != 0) return 1;
     if (test_adaln_offset(gpu) != 0) return 1;
+    if (test_adaln_f32(gpu) != 0) return 1;
     if (test_linear_bias(gpu) != 0) return 1;
     if (test_text_qk_rope(gpu) != 0) return 1;
     if (test_gqa_causal(gpu) != 0) return 1;
