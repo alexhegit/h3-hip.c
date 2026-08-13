@@ -232,6 +232,11 @@ int h3_launch_qkv_rope_bf16(const uint16_t *qkv, const uint16_t *q_weight,
                             const uint16_t *rope_sin, uint16_t *query,
                             uint16_t *key, uint16_t *value,
                             const h3_qkv_args *args, hipStream_t stream);
+int h3_launch_vision_qkv_rope_bf16(const uint16_t *qkv,
+                                   const uint16_t *rope_cos,
+                                   const uint16_t *rope_sin, uint16_t *query,
+                                   uint16_t *key, uint16_t *value,
+                                   const h3_qkv_args *args, hipStream_t stream);
 int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                         const uint16_t *value, uint16_t *output,
                         const h3_sdpa_args *args, hipStream_t stream);
