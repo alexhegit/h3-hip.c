@@ -145,7 +145,7 @@ int h3_gpu_is_m5(const h3_gpu *gpu) {
 
 int h3_gpu_has_nax_mlp(const h3_gpu *gpu) {
     (void)gpu;
-    return 0;
+    return 1;
 }
 
 int h3_gpu_has_int8_mlp(const h3_gpu *gpu) {
@@ -2308,13 +2308,22 @@ static int h3_hip_launch_linear_int8_prequant(
     const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
     uint32_t rows, uint32_t input_dim, uint32_t output_dim) {
     h3_linear_args args = {rows, input_dim, output_dim, 0};
+    const int8_t *input_ptr =
+        (const int8_t *)tensor_ptr(quantized_input)->host;
+    const int8_t *weight_ptr = (const int8_t *)tensor_ptr(weight)->host;
+    const float *input_scale_ptr =
+        (const float *)tensor_ptr(input_scales)->host;
+    const float *weight_scale_ptr =
+        (const float *)tensor_ptr(weight_scales)->host;
+    uint16_t *output_ptr = (uint16_t *)tensor_ptr(output)->host;
+    if (!(input_dim % 128) && !(output_dim % 128)) {
+        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_nax_r128(
+            input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
+            output_ptr, &args, ctx->stream), "h3_linear_int8_nax_r128");
+    }
     return h3_hip_launch_ok(ctx, h3_launch_linear_int8_bf16_naive(
-        (const int8_t *)tensor_ptr(quantized_input)->host,
-        (const int8_t *)tensor_ptr(weight)->host,
-        (const float *)tensor_ptr(input_scales)->host,
-        (const float *)tensor_ptr(weight_scales)->host,
-        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
-        "h3_linear_int8_bf16_naive");
+        input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr, output_ptr,
+        &args, ctx->stream), "h3_linear_int8_bf16_naive");
 }
 
 static int h3_hip_quantize_bf16_int8_rows(

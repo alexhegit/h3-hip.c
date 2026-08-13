@@ -3364,6 +3364,63 @@ static int test_linear_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_linear_int8_nax_r128(h3_gpu *gpu) {
+    enum { ROWS = 4, INPUT_DIM = 128, OUTPUT_DIM = 128, PADDED_ROWS = 128 };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM,
+           WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM,
+           Q_ELEMS = PADDED_ROWS * INPUT_DIM };
+    uint16_t *input = calloc(INPUT_ELEMS, sizeof(*input));
+    uint16_t *weight_bf16 = calloc(WEIGHT_ELEMS, sizeof(*weight_bf16));
+    CHECK(input && weight_bf16);
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input[i] = f32_to_bf16((float)((int)(i % 17) - 8) * 0.03125f);
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.0625f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, INPUT_ELEMS);
+    h3_gpu_tensor *gpu_weight_bf16 = h3_gpu_tensor_from_bf16(
+        gpu, weight_bf16, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight = h3_gpu_tensor_new_i8(gpu, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight_scales = h3_gpu_tensor_new_f32(gpu, OUTPUT_DIM);
+    h3_gpu_tensor *quantized = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32(gpu, PADDED_ROWS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    h3_gpu_tensor *reference = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    CHECK(gpu_input && gpu_weight_bf16 && weight && weight_scales &&
+          quantized && input_scales && output && reference);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin linear int8 nax setup"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, weight, weight_scales, gpu_weight_bf16, OUTPUT_DIM, INPUT_DIM),
+        "quantize int8 nax weight"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_bf16(
+        gpu, reference, gpu_input, gpu_weight_bf16, NULL, ROWS, INPUT_DIM,
+        OUTPUT_DIM), "reference bf16 linear nax"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_int8_bf16(
+        gpu, output, quantized, input_scales, gpu_input, weight, weight_scales,
+        ROWS, INPUT_DIM, OUTPUT_DIM, 0), "linear int8 nax r128"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit linear int8 nax"));
+    uint16_t *got = calloc(ROWS * OUTPUT_DIM, sizeof(*got));
+    uint16_t *got_ref = calloc(ROWS * OUTPUT_DIM, sizeof(*got_ref));
+    CHECK(got && got_ref);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * OUTPUT_DIM));
+    CHECK(h3_gpu_tensor_read_bf16(reference, got_ref, ROWS * OUTPUT_DIM));
+    for (size_t i = 0; i < (size_t)ROWS * OUTPUT_DIM; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(got_ref[i])) < 0.2f);
+    }
+    free(input);
+    free(weight_bf16);
+    free(got);
+    free(got_ref);
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight_bf16);
+    h3_gpu_tensor_free(weight);
+    h3_gpu_tensor_free(weight_scales);
+    h3_gpu_tensor_free(quantized);
+    h3_gpu_tensor_free(input_scales);
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(reference);
+    return 0;
+}
+
 static int test_grouped_qkv_linear_rope_int8(h3_gpu *gpu) {
     enum { ROWS = 2, INPUT_DIM = 8, HEADS = 2, HEAD_DIM = 4, ROPE_HALF = 2,
            PADDED_ROWS = 128 };
@@ -3920,6 +3977,7 @@ int main(void) {
     if (test_quantize_bf16_int8_groups(gpu) != 0) return 1;
     if (test_add_bf16(gpu) != 0) return 1;
     if (test_linear_int8(gpu) != 0) return 1;
+    if (test_linear_int8_nax_r128(gpu) != 0) return 1;
     if (test_linear_int8_head_major(gpu) != 0) return 1;
     if (test_mlp_int8(gpu) != 0) return 1;
     if (test_grouped_qkv_linear_rope_int8(gpu) != 0) return 1;
