@@ -3,10 +3,6 @@
 struct h3_gpu;
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name);
 
-int h3_gpu_qkv_rope_f32(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, const h3_gpu_tensor *qkv, const h3_gpu_tensor *q_norm, const h3_gpu_tensor *k_norm, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_qkv_rope_f32"); }
-
-int h3_gpu_sdpa_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query, const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t sequence, uint32_t heads, uint32_t head_dim, float scale) { return h3_hip_unimplemented(NULL, "h3_gpu_sdpa_f32"); }
-
 int h3_gpu_video_qkv_rope_f32(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, const h3_gpu_tensor *qkv, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_video_qkv_rope_f32"); }
 
 int h3_gpu_conv1d_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch, uint32_t length, uint32_t input_channels, uint32_t output_channels, uint32_t kernel, uint32_t padding, uint32_t dilation) { return h3_hip_unimplemented(NULL, "h3_gpu_conv1d_f32"); }

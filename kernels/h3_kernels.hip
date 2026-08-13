@@ -550,6 +550,60 @@ __global__ void h3_qkv_rope_bf16_kernel(const uint16_t *qkv,
     value[output_index] = qkv[v_base + dimension];
 }
 
+__global__ void h3_qkv_rope_f32_kernel(const float *qkv, const float *q_weight,
+                                       const float *k_weight,
+                                       const float *rope_cos,
+                                       const float *rope_sin, float *query,
+                                       float *key, float *value,
+                                       h3_qkv_args args) {
+    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t row = blockIdx.z;
+    if (dimension >= args.head_dim || head >= args.heads ||
+        row >= args.sequence) return;
+    uint32_t inner = args.heads * args.head_dim;
+    uint32_t row_base = row * inner * 3;
+    uint32_t q_base = row_base + head * args.head_dim;
+    uint32_t k_base = q_base + inner;
+    uint32_t v_base = q_base + inner * 2;
+    if (args.grouped) {
+        q_base = row_base + head * args.head_dim * 3;
+        k_base = q_base + args.head_dim;
+        v_base = k_base + args.head_dim;
+    }
+    float q_sum = 0.0f;
+    float k_sum = 0.0f;
+    for (uint32_t d = 0; d < args.head_dim; d++) {
+        q_sum = fmaf(qkv[q_base + d], qkv[q_base + d], q_sum);
+        k_sum = fmaf(qkv[k_base + d], qkv[k_base + d], k_sum);
+    }
+    float q_inverse = rsqrtf(q_sum / float(args.head_dim) + args.epsilon);
+    float k_inverse = rsqrtf(k_sum / float(args.head_dim) + args.epsilon);
+    float q0 = qkv[q_base + dimension] * q_inverse * q_weight[dimension];
+    float k0 = qkv[k_base + dimension] * k_inverse * k_weight[dimension];
+    if (dimension < args.rope_half) {
+        uint32_t pair = dimension + args.rope_half;
+        float q1 = qkv[q_base + pair] * q_inverse * q_weight[pair];
+        float k1 = qkv[k_base + pair] * k_inverse * k_weight[pair];
+        float c = rope_cos[row * args.rope_half + dimension];
+        float s = rope_sin[row * args.rope_half + dimension];
+        q0 = q0 * c - q1 * s;
+        k0 = k0 * c - k1 * s;
+    } else if (dimension < args.rope_half * 2) {
+        uint32_t pair = dimension - args.rope_half;
+        float q1 = qkv[q_base + pair] * q_inverse * q_weight[pair];
+        float k1 = qkv[k_base + pair] * k_inverse * k_weight[pair];
+        float c = rope_cos[row * args.rope_half + pair];
+        float s = rope_sin[row * args.rope_half + pair];
+        q0 = q0 * c + q1 * s;
+        k0 = k0 * c + k1 * s;
+    }
+    uint32_t output_index = (row * args.heads + head) * args.head_dim + dimension;
+    query[output_index] = q0;
+    key[output_index] = k0;
+    value[output_index] = qkv[v_base + dimension];
+}
+
 __global__ void h3_vision_qkv_rope_bf16_kernel(
     const uint16_t *qkv, const uint16_t *rope_cos, const uint16_t *rope_sin,
     uint16_t *query, uint16_t *key, uint16_t *value, h3_qkv_args args) {
@@ -620,6 +674,46 @@ __global__ void h3_sdpa_bf16_kernel(const uint16_t *query, const uint16_t *key,
         uint32_t out_index =
             (q_pos * args.heads + head) * args.head_dim + d;
         output[out_index] = h3_f32_to_bf16(acc);
+    }
+}
+
+__global__ void h3_sdpa_f32_kernel(const float *query, const float *key,
+                                   const float *value, float *output,
+                                   h3_sdpa_args args) {
+    uint32_t head = blockIdx.x;
+    uint32_t q_pos = blockIdx.y;
+    if (head >= args.heads || q_pos >= args.sequence) return;
+
+    float scores[512];
+    float max_score = -1e30f;
+    for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
+        float dot = 0.0f;
+        for (uint32_t d = 0; d < args.head_dim; d++) {
+            uint32_t q_index =
+                (q_pos * args.heads + head) * args.head_dim + d;
+            uint32_t k_index =
+                (k_pos * args.heads + head) * args.head_dim + d;
+            dot = fmaf(query[q_index], key[k_index], dot);
+        }
+        scores[k_pos] = dot * args.scale;
+        max_score = fmaxf(max_score, scores[k_pos]);
+    }
+    float sum = 0.0f;
+    for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
+        scores[k_pos] = expf(scores[k_pos] - max_score);
+        sum += scores[k_pos];
+    }
+    float inv_sum = sum > 0.0f ? 1.0f / sum : 0.0f;
+    for (uint32_t d = 0; d < args.head_dim; d++) {
+        float acc = 0.0f;
+        for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
+            uint32_t v_index =
+                (k_pos * args.heads + head) * args.head_dim + d;
+            acc = fmaf(scores[k_pos] * inv_sum, value[v_index], acc);
+        }
+        uint32_t out_index =
+            (q_pos * args.heads + head) * args.head_dim + d;
+        output[out_index] = acc;
     }
 }
 
@@ -961,6 +1055,24 @@ extern "C" int h3_launch_qkv_rope_bf16(const uint16_t *qkv,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
+extern "C" int h3_launch_qkv_rope_f32(const float *qkv, const float *q_weight,
+                                      const float *k_weight,
+                                      const float *rope_cos,
+                                      const float *rope_sin, float *query,
+                                      float *key, float *value,
+                                      const h3_qkv_args *args,
+                                      hipStream_t stream) {
+    h3_qkv_args host_args = *args;
+    void *kernel_args[] = {&qkv, &q_weight, &k_weight, &rope_cos, &rope_sin,
+                           &query, &key, &value, &host_args};
+    dim3 block(host_args.head_dim, 1, 1);
+    dim3 grid(1, host_args.heads, host_args.sequence);
+    if (host_args.head_dim > 256) return 0;
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_qkv_rope_f32_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
 extern "C" int h3_launch_vision_qkv_rope_bf16(
     const uint16_t *qkv, const uint16_t *rope_cos, const uint16_t *rope_sin,
     uint16_t *query, uint16_t *key, uint16_t *value, const h3_qkv_args *args,
@@ -987,6 +1099,19 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
     dim3 grid(host_args.heads, host_args.sequence, 1);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_sdpa_bf16_kernel), grid,
+               dim3(1), kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
+                                  const float *value, float *output,
+                                  const h3_sdpa_args *args,
+                                  hipStream_t stream) {
+    if (args->sequence > 512) return 0;
+    h3_sdpa_args host_args = *args;
+    void *kernel_args[] = {&query, &key, &value, &output, &host_args};
+    dim3 grid(host_args.heads, host_args.sequence, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_sdpa_f32_kernel), grid,
                dim3(1), kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
