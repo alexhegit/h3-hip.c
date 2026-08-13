@@ -62,6 +62,12 @@ typedef struct {
 } h3_conv1d_args;
 
 typedef struct {
+    uint32_t batch;
+    uint32_t length;
+    uint32_t channels;
+} h3_audio_activation_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -323,6 +329,13 @@ int h3_launch_conv_transpose1d_f32(const float *input, const float *weight,
                                    const float *bias, float *output,
                                    const h3_conv1d_args *args,
                                    hipStream_t stream);
+int h3_launch_alias_free_snake_f32(
+    const float *input, const float *alpha_log, const float *beta_log,
+    const float *upsample_filter, const float *downsample_filter, float *output,
+    const h3_audio_activation_args *args, hipStream_t stream);
+int h3_launch_snake1d_f32(const float *input, const float *alpha, float *output,
+                          const h3_audio_activation_args *args,
+                          hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);
