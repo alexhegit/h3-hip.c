@@ -2319,6 +2319,138 @@ static int test_mlp_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_silu_f32(h3_gpu *gpu) {
+    enum { COUNT = 3 };
+    const float input[COUNT] = {-1.0f, 0.0f, 2.0f};
+    float expected[COUNT];
+    for (size_t i = 0; i < COUNT; i++) {
+        expected[i] = input[i] / (1.0f + expf(-input[i]));
+    }
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_input && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin silu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_silu_f32(gpu, output, gpu_input, COUNT),
+                       "silu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit silu f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-5f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_swiglu_f32(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 3 };
+    enum { FUSED = ROWS * WIDTH * 2 };
+    const float fused[FUSED] = {
+        0.0f, 1.0f, -1.0f, 2.0f, 3.0f, 4.0f,
+        -0.5f, 0.5f, 1.5f, 1.0f, -1.0f, 2.0f
+    };
+    float expected[ROWS * WIDTH];
+    for (uint32_t row = 0; row < ROWS; row++) {
+        for (uint32_t col = 0; col < WIDTH; col++) {
+            uint32_t base = row * WIDTH * 2;
+            float gate = fused[base + col];
+            float up = fused[base + WIDTH + col];
+            expected[row * WIDTH + col] =
+                gate / (1.0f + expf(-gate)) * up;
+        }
+    }
+    h3_gpu_tensor *gpu_fused = h3_gpu_tensor_from_f32(gpu, fused, FUSED);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, ROWS * WIDTH);
+    CHECK(gpu_fused && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin swiglu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_swiglu_f32(gpu, output, gpu_fused, ROWS,
+                                                WIDTH), "swiglu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit swiglu f32"));
+    float got[ROWS * WIDTH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, ROWS * WIDTH));
+    for (size_t i = 0; i < ROWS * WIDTH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_fused);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_clip_f32(h3_gpu *gpu) {
+    enum { COUNT = 4 };
+    const float input[COUNT] = {-2.0f, -0.5f, 0.5f, 2.0f};
+    const float expected[COUNT] = {-1.0f, -0.5f, 0.5f, 1.0f};
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_input && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin clip f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_clip_f32(gpu, output, gpu_input, COUNT,
+                                              -1.0f, 1.0f), "clip f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit clip f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-6f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_add_scaled_f32(h3_gpu *gpu) {
+    enum { COUNT = 3 };
+    const float left[COUNT] = {1.0f, 2.0f, 3.0f};
+    const float right[COUNT] = {4.0f, 5.0f, 6.0f};
+    const float expected[COUNT] = {2.5f, 3.5f, 4.5f};
+    h3_gpu_tensor *gpu_left = h3_gpu_tensor_from_f32(gpu, left, COUNT);
+    h3_gpu_tensor *gpu_right = h3_gpu_tensor_from_f32(gpu, right, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_left && gpu_right && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin add scaled f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_add_scaled_f32(
+        gpu, output, gpu_left, gpu_right, 0.5f, 0.5f, COUNT), "add scaled f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit add scaled f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-5f);
+    }
+    h3_gpu_tensor_free(gpu_left);
+    h3_gpu_tensor_free(gpu_right);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_scale_add_f32(h3_gpu *gpu) {
+    enum { ROWS = 2, WIDTH = 2 };
+    enum { COUNT = ROWS * WIDTH };
+    const float residual[COUNT] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float branch[COUNT] = {0.5f, 1.0f, 1.5f, 2.0f};
+    const float scale[WIDTH] = {2.0f, 0.5f};
+    const float expected[COUNT] = {2.0f, 2.5f, 6.0f, 5.0f};
+    h3_gpu_tensor *gpu_residual = h3_gpu_tensor_from_f32(gpu, residual, COUNT);
+    h3_gpu_tensor *gpu_branch = h3_gpu_tensor_from_f32(gpu, branch, COUNT);
+    h3_gpu_tensor *gpu_scale = h3_gpu_tensor_from_f32(gpu, scale, WIDTH);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_residual && gpu_branch && gpu_scale && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin scale add f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_scale_add_f32(
+        gpu, output, gpu_residual, gpu_branch, gpu_scale, ROWS, WIDTH),
+        "scale add f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit scale add f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-5f);
+    }
+    h3_gpu_tensor_free(gpu_residual);
+    h3_gpu_tensor_free(gpu_branch);
+    h3_gpu_tensor_free(gpu_scale);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_silu(h3_gpu *gpu) {
     enum { COUNT = 3 };
     const float values[COUNT] = {-1.0f, 0.0f, 2.0f};
@@ -2397,6 +2529,11 @@ int main(void) {
     if (test_fc1_swiglu_nax(gpu) != 0) return 1;
     if (test_linear_bf16_nax(gpu) != 0) return 1;
     if (test_linear_f32(gpu) != 0) return 1;
+    if (test_silu_f32(gpu) != 0) return 1;
+    if (test_swiglu_f32(gpu) != 0) return 1;
+    if (test_clip_f32(gpu) != 0) return 1;
+    if (test_add_scaled_f32(gpu) != 0) return 1;
+    if (test_scale_add_f32(gpu) != 0) return 1;
     if (test_adaln_linear(gpu) != 0) return 1;
     if (test_embedding(gpu) != 0) return 1;
     if (test_silu_mul(gpu) != 0) return 1;

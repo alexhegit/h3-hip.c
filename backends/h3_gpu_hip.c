@@ -710,6 +710,20 @@ int h3_gpu_silu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_silu_bf16");
 }
 
+int h3_gpu_silu_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                    const h3_gpu_tensor *input, uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, input, elements, "SiLU input") ||
+        !h3_hip_require_f32(ctx, output, elements, "SiLU output")) {
+        return 0;
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_silu_f32(
+        (const float *)tensor_ptr(input)->host,
+        (float *)tensor_ptr(output)->host, elements, ctx->stream),
+        "h3_silu_f32");
+}
+
 int h3_gpu_gelu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *input, uint32_t elements,
                      int approximate) {
@@ -742,6 +756,82 @@ int h3_gpu_swiglu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         (const uint16_t *)tensor_ptr(fused)->host,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
         "h3_swiglu_bf16");
+}
+
+int h3_gpu_swiglu_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                      const h3_gpu_tensor *fused, uint32_t rows,
+                      uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t fused_count = (size_t)rows * width * 2;
+    size_t out_count = (size_t)rows * width;
+    if (!ctx || !rows || !width ||
+        !h3_hip_require_f32(ctx, fused, fused_count, "SwiGLU input") ||
+        !h3_hip_require_f32(ctx, output, out_count, "SwiGLU output")) {
+        return 0;
+    }
+    h3_swiglu_args args = {rows, width};
+    return h3_hip_launch_ok(ctx, h3_launch_swiglu_f32(
+        (const float *)tensor_ptr(fused)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_swiglu_f32");
+}
+
+int h3_gpu_scale_add_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                         const h3_gpu_tensor *residual,
+                         const h3_gpu_tensor *branch,
+                         const h3_gpu_tensor *scale, uint32_t rows,
+                         uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    if (!ctx || !rows || !width ||
+        !h3_hip_require_f32(ctx, residual, count, "scale-add residual") ||
+        !h3_hip_require_f32(ctx, branch, count, "scale-add branch") ||
+        !h3_hip_require_f32(ctx, scale, width, "scale-add scale") ||
+        !h3_hip_require_f32(ctx, output, count, "scale-add output")) {
+        return 0;
+    }
+    h3_swiglu_args args = {rows, width};
+    return h3_hip_launch_ok(ctx, h3_launch_scale_add_f32(
+        (const float *)tensor_ptr(residual)->host,
+        (const float *)tensor_ptr(branch)->host,
+        (const float *)tensor_ptr(scale)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_scale_add_f32");
+}
+
+int h3_gpu_add_scaled_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                          const h3_gpu_tensor *left,
+                          const h3_gpu_tensor *right, float left_scale,
+                          float right_scale, uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, left, elements, "add-scaled left") ||
+        !h3_hip_require_f32(ctx, right, elements, "add-scaled right") ||
+        !h3_hip_require_f32(ctx, output, elements, "add-scaled output")) {
+        return 0;
+    }
+    h3_add_scaled_f32_args args = {elements, left_scale, right_scale};
+    return h3_hip_launch_ok(ctx, h3_launch_add_scaled_f32(
+        (const float *)tensor_ptr(left)->host,
+        (const float *)tensor_ptr(right)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_add_scaled_f32");
+}
+
+int h3_gpu_clip_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                    const h3_gpu_tensor *input, uint32_t elements,
+                    float minimum, float maximum) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, input, elements, "clip input") ||
+        !h3_hip_require_f32(ctx, output, elements, "clip output")) {
+        return 0;
+    }
+    h3_clip_f32_args args = {elements, minimum, maximum};
+    return h3_hip_launch_ok(ctx, h3_launch_clip_f32(
+        (const float *)tensor_ptr(input)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_clip_f32");
 }
 
 int h3_gpu_rms_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
