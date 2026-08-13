@@ -63,11 +63,11 @@ SDPA, MLP, token pool/expand, patch projection (`patch_linear_bf16` + `_map`),
 `conv_transpose1d_f32`, `alias_free_snake_f32`, `snake1d_f32`,
 `audio_qkv_split_f32`, `sdpa_causal_f32`, `audio_attention_pool_f32`,
 `vae_encoder_pad_f32`, `conv3d_f32`, `vae_encoder_group_norm_silu_f32`).
-`./h3_hip_bf16_tests` runs 66 CPU-oracle checks without MLX fixtures. Phase 5
+`./h3_hip_bf16_tests` runs 67 CPU-oracle checks without MLX fixtures. Phase 5
 int8 and reference NAX paths (`mlp_nax_bf16`, `fc1_swiglu_nax_bf16`,
-`linear_bf16_nax`, grouped quantize, int8 MLP/QKV, `linear_int8_nax_r128`
-tiled fast path) are in place; shape-specialized NAX kernels still TODO.
-Remaining Apple-only TensorOps kernels remain deferred.
+`linear_bf16_nax`, grouped quantize, int8 MLP/QKV, `linear_int8_nax_r128`,
+`fc1_swiglu_int8_nax_r128` tiled fast paths) are in place; shape-specialized NAX
+kernels still TODO. Remaining Apple-only TensorOps kernels remain deferred.
 
 - `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
 - `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`
