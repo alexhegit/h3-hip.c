@@ -2326,6 +2326,22 @@ static int h3_hip_launch_linear_int8_prequant(
         &args, ctx->stream), "h3_linear_int8_bf16_naive");
 }
 
+static int h3_hip_launch_fc1_swiglu_int8_prequant(
+    struct h3_gpu *ctx, h3_gpu_tensor *output,
+    const h3_gpu_tensor *quantized_input, const h3_gpu_tensor *input_scales,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
+    uint32_t rows, uint32_t input_dim, uint32_t hidden_dim) {
+    if (input_dim % 128 || hidden_dim % 128) return 0;
+    h3_linear_args args = {rows, input_dim, hidden_dim, 0};
+    return h3_hip_launch_ok(ctx, h3_launch_fc1_swiglu_int8_nax_r128(
+        (const int8_t *)tensor_ptr(quantized_input)->host,
+        (const int8_t *)tensor_ptr(weight)->host,
+        (const float *)tensor_ptr(input_scales)->host,
+        (const float *)tensor_ptr(weight_scales)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_fc1_swiglu_int8_nax_r128");
+}
+
 static int h3_hip_quantize_bf16_int8_rows(
     struct h3_gpu *ctx, h3_gpu_tensor *quantized,
     h3_gpu_tensor *scales, const h3_gpu_tensor *input, uint32_t rows,
@@ -2501,13 +2517,16 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
             padded_rows, input_dim)) {
         ok = 0;
     }
-    if (ok && !h3_hip_launch_linear_int8_prequant(
-            ctx, fc1_out, quantized_activation, activation_scales, fc1_weight,
-            fc1_scales, rows, input_dim, fc1_output_dim)) {
-        ok = 0;
-    }
-    if (ok && !h3_gpu_swiglu_bf16(gpu, activated, fc1_out, rows, hidden_dim)) {
-        ok = 0;
+    if (ok &&
+        !h3_hip_launch_fc1_swiglu_int8_prequant(
+            ctx, activated, quantized_activation, activation_scales,
+            fc1_weight, fc1_scales, rows, input_dim, hidden_dim)) {
+        if (!h3_hip_launch_linear_int8_prequant(
+                ctx, fc1_out, quantized_activation, activation_scales,
+                fc1_weight, fc1_scales, rows, input_dim, fc1_output_dim) ||
+            !h3_gpu_swiglu_bf16(gpu, activated, fc1_out, rows, hidden_dim)) {
+            ok = 0;
+        }
     }
     if (ok && !use_int8_row_fc2 && hidden_dim % 1024u == 0 &&
         !h3_hip_quantize_bf16_int8_groups(
