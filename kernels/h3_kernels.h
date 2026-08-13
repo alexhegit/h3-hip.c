@@ -283,6 +283,11 @@ int h3_launch_qkv_rope_bf16(const uint16_t *qkv, const uint16_t *q_weight,
                             const uint16_t *rope_sin, uint16_t *query,
                             uint16_t *key, uint16_t *value,
                             const h3_qkv_args *args, hipStream_t stream);
+int h3_launch_qkv_rope_f32(const float *qkv, const float *q_weight,
+                           const float *k_weight, const float *rope_cos,
+                           const float *rope_sin, float *query, float *key,
+                           float *value, const h3_qkv_args *args,
+                           hipStream_t stream);
 int h3_launch_vision_qkv_rope_bf16(const uint16_t *qkv,
                                    const uint16_t *rope_cos,
                                    const uint16_t *rope_sin, uint16_t *query,
@@ -291,6 +296,9 @@ int h3_launch_vision_qkv_rope_bf16(const uint16_t *qkv,
 int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                         const uint16_t *value, uint16_t *output,
                         const h3_sdpa_args *args, hipStream_t stream);
+int h3_launch_sdpa_f32(const float *query, const float *key, const float *value,
+                       float *output, const h3_sdpa_args *args,
+                       hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);

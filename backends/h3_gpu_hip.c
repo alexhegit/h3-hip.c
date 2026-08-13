@@ -1221,6 +1221,60 @@ int h3_gpu_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
                                        epsilon);
 }
 
+static int h3_gpu_qkv_rope_f32_layout(h3_gpu *gpu, h3_gpu_tensor *query,
+                                      h3_gpu_tensor *key,
+                                      h3_gpu_tensor *value,
+                                      const h3_gpu_tensor *qkv,
+                                      const h3_gpu_tensor *q_norm,
+                                      const h3_gpu_tensor *k_norm,
+                                      const h3_gpu_tensor *rope_cos,
+                                      const h3_gpu_tensor *rope_sin,
+                                      uint32_t sequence, uint32_t heads,
+                                      uint32_t head_dim, uint32_t rope_half,
+                                      uint32_t grouped, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t inner = (size_t)heads * head_dim;
+    size_t projected = (size_t)sequence * inner;
+    size_t rope_count = (size_t)sequence * rope_half;
+    if (!ctx || !sequence || !heads || !head_dim ||
+        !h3_hip_require_f32(ctx, qkv, projected * 3, "QKV input") ||
+        !h3_hip_require_f32(ctx, q_norm, head_dim, "Q norm") ||
+        !h3_hip_require_f32(ctx, k_norm, head_dim, "K norm") ||
+        !h3_hip_require_f32(ctx, rope_cos, rope_count, "RoPE cosine") ||
+        !h3_hip_require_f32(ctx, rope_sin, rope_count, "RoPE sine") ||
+        !h3_hip_require_f32(ctx, query, projected, "query output") ||
+        !h3_hip_require_f32(ctx, key, projected, "key output") ||
+        !h3_hip_require_f32(ctx, value, projected, "value output")) {
+        return 0;
+    }
+    h3_qkv_args args = {sequence, heads, head_dim, rope_half, grouped,
+                        epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_qkv_rope_f32(
+        (const float *)tensor_ptr(qkv)->host,
+        (const float *)tensor_ptr(q_norm)->host,
+        (const float *)tensor_ptr(k_norm)->host,
+        (const float *)tensor_ptr(rope_cos)->host,
+        (const float *)tensor_ptr(rope_sin)->host,
+        (float *)tensor_ptr(query)->host,
+        (float *)tensor_ptr(key)->host,
+        (float *)tensor_ptr(value)->host, &args, ctx->stream),
+        "h3_qkv_rope_f32");
+}
+
+int h3_gpu_qkv_rope_f32(h3_gpu *gpu, h3_gpu_tensor *query,
+                        h3_gpu_tensor *key, h3_gpu_tensor *value,
+                        const h3_gpu_tensor *qkv,
+                        const h3_gpu_tensor *q_norm,
+                        const h3_gpu_tensor *k_norm,
+                        const h3_gpu_tensor *rope_cos,
+                        const h3_gpu_tensor *rope_sin, uint32_t sequence,
+                        uint32_t heads, uint32_t head_dim,
+                        uint32_t rope_half, float epsilon) {
+    return h3_gpu_qkv_rope_f32_layout(gpu, query, key, value, qkv, q_norm,
+                                      k_norm, rope_cos, rope_sin, sequence,
+                                      heads, head_dim, rope_half, 0, epsilon);
+}
+
 int h3_gpu_grouped_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
                                 h3_gpu_tensor *key, h3_gpu_tensor *value,
                                 const h3_gpu_tensor *qkv,
@@ -1287,6 +1341,28 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         (const uint16_t *)tensor_ptr(value)->host,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
         "h3_sdpa_bf16");
+}
+
+int h3_gpu_sdpa_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                    const h3_gpu_tensor *query, const h3_gpu_tensor *key,
+                    const h3_gpu_tensor *value, uint32_t sequence,
+                    uint32_t heads, uint32_t head_dim, float scale) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)sequence * heads * head_dim;
+    if (!ctx || !sequence || !heads || !head_dim ||
+        !h3_hip_require_f32(ctx, query, count, "SDPA query") ||
+        !h3_hip_require_f32(ctx, key, count, "SDPA key") ||
+        !h3_hip_require_f32(ctx, value, count, "SDPA value") ||
+        !h3_hip_require_f32(ctx, output, count, "SDPA output")) {
+        return 0;
+    }
+    h3_sdpa_args args = {sequence, heads, head_dim, scale};
+    return h3_hip_launch_ok(ctx, h3_launch_sdpa_f32(
+        (const float *)tensor_ptr(query)->host,
+        (const float *)tensor_ptr(key)->host,
+        (const float *)tensor_ptr(value)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_sdpa_f32");
 }
 
 int h3_gpu_sdpa_bf16_head_major_output(h3_gpu *gpu, h3_gpu_tensor *output,
