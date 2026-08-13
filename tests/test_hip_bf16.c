@@ -1500,6 +1500,86 @@ static int test_conv3d_f32(h3_gpu *gpu) {
     return 0;
 }
 
+static void cpu_vae_encoder_group_norm_silu_f32(
+    const float *input, const float *weight, const float *bias, float *output,
+    uint32_t batch, uint32_t depth, uint32_t height, uint32_t width,
+    uint32_t channels, uint32_t groups, float epsilon) {
+    uint32_t channels_per_group = channels / groups;
+    uint32_t elements = height * width * channels_per_group;
+    for (uint32_t temporal_plane = 0;
+         temporal_plane < batch * depth; temporal_plane++) {
+        for (uint32_t group_index = 0; group_index < groups; group_index++) {
+            float sum = 0.0f;
+            for (uint32_t index = 0; index < elements; index++) {
+                uint32_t spatial = index / channels_per_group;
+                uint32_t channel = group_index * channels_per_group +
+                                   index % channels_per_group;
+                size_t source = ((size_t)temporal_plane * height * width +
+                                 spatial) * channels + channel;
+                sum += input[source];
+            }
+            float mean = sum / (float)elements;
+            float square_sum = 0.0f;
+            for (uint32_t index = 0; index < elements; index++) {
+                uint32_t spatial = index / channels_per_group;
+                uint32_t channel = group_index * channels_per_group +
+                                   index % channels_per_group;
+                size_t source = ((size_t)temporal_plane * height * width +
+                                 spatial) * channels + channel;
+                float centered = input[source] - mean;
+                square_sum = fmaf(centered, centered, square_sum);
+            }
+            float inverse = 1.0f / sqrtf(square_sum / (float)elements + epsilon);
+            for (uint32_t index = 0; index < elements; index++) {
+                uint32_t spatial = index / channels_per_group;
+                uint32_t channel = group_index * channels_per_group +
+                                   index % channels_per_group;
+                size_t destination = ((size_t)temporal_plane * height * width +
+                                      spatial) * channels + channel;
+                float value = (input[destination] - mean) * inverse *
+                              weight[channel] + bias[channel];
+                output[destination] = value / (1.0f + expf(-value));
+            }
+        }
+    }
+}
+
+static int test_vae_encoder_group_norm_silu_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, DEPTH = 1, HEIGHT = 2, WIDTH = 2, CHANNELS = 4 };
+    enum { GROUPS = 2 };
+    enum { COUNT = BATCH * DEPTH * HEIGHT * WIDTH * CHANNELS };
+    const float input[] = {
+        0.2f, -0.3f, 0.5f, 0.1f, -0.4f, 0.7f, 0.8f, -0.2f,
+        0.3f, -0.1f, 0.6f, 0.4f, -0.5f, 0.9f, 0.2f, -0.6f
+    };
+    const float weight[] = {1.0f, 0.5f, 1.2f, 0.8f};
+    const float bias[] = {0.1f, -0.2f, 0.05f, 0.15f};
+    float expected[COUNT];
+    cpu_vae_encoder_group_norm_silu_f32(input, weight, bias, expected, BATCH,
+                                        DEPTH, HEIGHT, WIDTH, CHANNELS, GROUPS,
+                                        1e-5f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, COUNT);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, CHANNELS);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, CHANNELS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin vae group norm silu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_vae_encoder_group_norm_silu_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, BATCH, DEPTH, HEIGHT,
+        WIDTH, CHANNELS, GROUPS, 1e-5f), "vae group norm silu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit vae group norm silu f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_sdpa_causal_f32(h3_gpu *gpu) {
     enum { BATCH = 2, SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { SLICE = SEQUENCE * HEADS * HEAD_DIM, COUNT = BATCH * SLICE };
@@ -3799,6 +3879,7 @@ int main(void) {
     if (test_audio_attention_pool_f32(gpu) != 0) return 1;
     if (test_vae_encoder_pad_f32(gpu) != 0) return 1;
     if (test_conv3d_f32(gpu) != 0) return 1;
+    if (test_vae_encoder_group_norm_silu_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;

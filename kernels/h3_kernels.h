@@ -123,6 +123,16 @@ typedef struct {
 } h3_conv3d_args;
 
 typedef struct {
+    uint32_t batch;
+    uint32_t depth;
+    uint32_t height;
+    uint32_t width;
+    uint32_t channels;
+    uint32_t groups;
+    float epsilon;
+} h3_vae_encoder_norm_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -408,6 +418,9 @@ int h3_launch_vae_encoder_pad_f32(const float *input, float *output,
 int h3_launch_conv3d_f32(const float *input, const float *weight,
                          const float *bias, float *output,
                          const h3_conv3d_args *args, hipStream_t stream);
+int h3_launch_vae_encoder_group_norm_silu_f32(
+    const float *input, const float *weight, const float *bias, float *output,
+    const h3_vae_encoder_norm_args *args, hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);

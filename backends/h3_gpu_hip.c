@@ -1653,6 +1653,33 @@ int h3_gpu_conv3d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_conv3d_f32");
 }
 
+int h3_gpu_vae_encoder_group_norm_silu_f32(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch,
+    uint32_t depth, uint32_t height, uint32_t width, uint32_t channels,
+    uint32_t groups, float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)batch * depth * height * width * channels;
+    if (!ctx || !batch || !depth || !height || !width || !channels ||
+        !groups || channels % groups || !(epsilon > 0.0f) ||
+        !h3_hip_require_f32(ctx, input, count, "VAE encoder norm input") ||
+        !h3_hip_require_f32(ctx, weight, channels, "VAE encoder norm weight") ||
+        !h3_hip_require_f32(ctx, bias, channels, "VAE encoder norm bias") ||
+        !h3_hip_require_f32(ctx, output, count, "VAE encoder norm output")) {
+        return 0;
+    }
+    uint64_t rows = (uint64_t)batch * depth * groups;
+    if (rows > UINT32_MAX) return 0;
+    h3_vae_encoder_norm_args args = {batch, depth, height, width, channels,
+                                     groups, epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_vae_encoder_group_norm_silu_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host,
+        (const float *)tensor_ptr(bias)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_vae_encoder_group_norm_silu_f32");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,
