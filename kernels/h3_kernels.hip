@@ -296,6 +296,65 @@ __global__ void h3_vae_encoder_pad_f32_kernel(const float *input, float *output,
     output[destination] = input[source];
 }
 
+__global__ void h3_vae_encoder_group_norm_silu_f32_kernel(
+    const float *input, const float *weight, const float *bias, float *output,
+    h3_vae_encoder_norm_args args) {
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    uint32_t rows = args.batch * args.depth * args.groups;
+    if (row >= rows) return;
+    __shared__ float reductions[256];
+    uint32_t channels_per_group = args.channels / args.groups;
+    uint32_t group_index = row % args.groups;
+    uint32_t temporal_plane = row / args.groups;
+    uint32_t elements = args.height * args.width * channels_per_group;
+    float local = 0.0f;
+    for (uint32_t index = tid; index < elements; index += threads) {
+        uint32_t spatial = index / channels_per_group;
+        uint32_t channel = group_index * channels_per_group +
+                           index % channels_per_group;
+        size_t source = ((size_t)temporal_plane * args.height * args.width +
+                         spatial) * args.channels + channel;
+        local += input[source];
+    }
+    reductions[tid] = local;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] += reductions[tid + stride];
+        __syncthreads();
+    }
+    float mean = reductions[0] / float(elements);
+    local = 0.0f;
+    for (uint32_t index = tid; index < elements; index += threads) {
+        uint32_t spatial = index / channels_per_group;
+        uint32_t channel = group_index * channels_per_group +
+                           index % channels_per_group;
+        size_t source = ((size_t)temporal_plane * args.height * args.width +
+                         spatial) * args.channels + channel;
+        float centered = input[source] - mean;
+        local = fmaf(centered, centered, local);
+    }
+    reductions[tid] = local;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] += reductions[tid + stride];
+        __syncthreads();
+    }
+    float inverse = rsqrtf(reductions[0] / float(elements) + args.epsilon);
+    for (uint32_t index = tid; index < elements; index += threads) {
+        uint32_t spatial = index / channels_per_group;
+        uint32_t channel = group_index * channels_per_group +
+                           index % channels_per_group;
+        size_t destination =
+            ((size_t)temporal_plane * args.height * args.width + spatial) *
+            args.channels + channel;
+        float value = (input[destination] - mean) * inverse * weight[channel] +
+                      bias[channel];
+        output[destination] = value / (1.0f + expf(-value));
+    }
+}
+
 __global__ void h3_add_scaled_f32_kernel(const float *left, const float *right,
                                        float *output,
                                        h3_add_scaled_f32_args args) {
@@ -1140,6 +1199,22 @@ extern "C" int h3_launch_vae_encoder_pad_f32(
                reinterpret_cast<const void *>(h3_vae_encoder_pad_f32_kernel),
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
+}
+
+extern "C" int h3_launch_vae_encoder_group_norm_silu_f32(
+    const float *input, const float *weight, const float *bias, float *output,
+    const h3_vae_encoder_norm_args *args, hipStream_t stream) {
+    h3_vae_encoder_norm_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    uint32_t rows = host_args.batch * host_args.depth * host_args.groups;
+    uint32_t elements = host_args.height * host_args.width *
+                        (host_args.channels / host_args.groups);
+    uint32_t threads = h3_row_threads(elements);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_vae_encoder_group_norm_silu_f32_kernel),
+               dim3(rows), dim3(threads), kernel_args, sizeof(kernel_args),
+               stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_add_scaled_f32(const float *left, const float *right,
