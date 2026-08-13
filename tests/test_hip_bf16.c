@@ -1266,6 +1266,55 @@ static int test_audio_qkv_split_f32(h3_gpu *gpu) {
     return 0;
 }
 
+static void cpu_audio_attention_pool_f32(const float *attended, float *output,
+                                         uint32_t batch, uint32_t length,
+                                         uint32_t heads, uint32_t head_dim,
+                                         uint32_t output_dim) {
+    uint32_t pool = head_dim / output_dim;
+    uint32_t count = batch * length * output_dim;
+    for (uint32_t gid = 0; gid < count; gid++) {
+        uint32_t column = gid % output_dim;
+        uint32_t row = gid / output_dim;
+        float sum = 0.0f;
+        for (uint32_t head = 0; head < heads; head++) {
+            uint32_t base =
+                (row * heads + head) * head_dim + column * pool;
+            for (uint32_t item = 0; item < pool; item++)
+                sum += attended[base + item];
+        }
+        output[gid] = sum / (float)(heads * pool);
+    }
+}
+
+static int test_audio_attention_pool_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, LENGTH = 2, HEADS = 2, HEAD_DIM = 4, OUT_DIM = 2 };
+    enum { IN_COUNT = BATCH * LENGTH * HEADS * HEAD_DIM };
+    enum { OUT_COUNT = BATCH * LENGTH * OUT_DIM };
+    const float attended[] = {
+        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f,
+        9.0f, 10.0f, 11.0f, 12.0f, 13.0f, 14.0f, 15.0f, 16.0f
+    };
+    float expected[OUT_COUNT];
+    cpu_audio_attention_pool_f32(attended, expected, BATCH, LENGTH, HEADS,
+                                 HEAD_DIM, OUT_DIM);
+    h3_gpu_tensor *gpu_attended = h3_gpu_tensor_from_f32(gpu, attended, IN_COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, OUT_COUNT);
+    CHECK(gpu_attended && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin audio attention pool f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_audio_attention_pool_f32(
+        gpu, output, gpu_attended, BATCH, LENGTH, HEADS, HEAD_DIM, OUT_DIM),
+        "audio attention pool f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit audio attention pool f32"));
+    float got[OUT_COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, OUT_COUNT));
+    for (size_t i = 0; i < OUT_COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-6f);
+    }
+    h3_gpu_tensor_free(gpu_attended);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_sdpa_causal_f32(h3_gpu *gpu) {
     enum { BATCH = 2, SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { SLICE = SEQUENCE * HEADS * HEAD_DIM, COUNT = BATCH * SLICE };
@@ -3562,6 +3611,7 @@ int main(void) {
     if (test_snake1d_f32(gpu) != 0) return 1;
     if (test_audio_qkv_split_f32(gpu) != 0) return 1;
     if (test_sdpa_causal_f32(gpu) != 0) return 1;
+    if (test_audio_attention_pool_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;
