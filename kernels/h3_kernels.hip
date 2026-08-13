@@ -256,6 +256,46 @@ __global__ void h3_audio_attention_pool_f32_kernel(const float *attended,
     output[gid] = sum / float(args.heads * pool);
 }
 
+__device__ inline int h3_reflect_coordinate(int coordinate, int length) {
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= length) return 2 * length - coordinate - 2;
+    return coordinate;
+}
+
+__global__ void h3_vae_encoder_pad_f32_kernel(const float *input, float *output,
+                                              h3_vae_encoder_pad_args args) {
+    uint32_t channel = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t out_x = blockIdx.y * blockDim.y + threadIdx.y;
+    uint32_t out_height = args.height + args.height_before + args.height_after;
+    uint32_t out_width = args.width + args.width_before + args.width_after;
+    uint32_t out_depth = args.depth + args.depth_front;
+    uint32_t plane = blockIdx.z;
+    if (channel >= args.channels || out_x >= out_width ||
+        plane >= args.batch * out_depth * out_height) {
+        return;
+    }
+    uint32_t out_y = plane % out_height;
+    uint32_t temporal_plane = plane / out_height;
+    uint32_t out_t = temporal_plane % out_depth;
+    uint32_t batch = temporal_plane / out_depth;
+    size_t destination = ((((size_t)batch * out_depth + out_t) * out_height +
+                           out_y) * out_width + out_x) * args.channels +
+                         channel;
+    if (out_t < args.depth_front) {
+        output[destination] = 0.0f;
+        return;
+    }
+    int source_y = h3_reflect_coordinate(
+        (int)out_y - (int)args.height_before, (int)args.height);
+    int source_x = h3_reflect_coordinate(
+        (int)out_x - (int)args.width_before, (int)args.width);
+    uint32_t source_t = out_t - args.depth_front;
+    size_t source = ((((size_t)batch * args.depth + source_t) * args.height +
+                      (uint32_t)source_y) * args.width + (uint32_t)source_x) *
+                    args.channels + channel;
+    output[destination] = input[source];
+}
+
 __global__ void h3_add_scaled_f32_kernel(const float *left, const float *right,
                                        float *output,
                                        h3_add_scaled_f32_args args) {
@@ -1081,6 +1121,25 @@ extern "C" int h3_launch_audio_attention_pool_f32(
                         reinterpret_cast<const void *>(
                             h3_audio_attention_pool_f32_kernel),
                         sizeof(kernel_args), kernel_args);
+}
+
+extern "C" int h3_launch_vae_encoder_pad_f32(
+    const float *input, float *output, const h3_vae_encoder_pad_args *args,
+    hipStream_t stream) {
+    h3_vae_encoder_pad_args host_args = *args;
+    void *kernel_args[] = {&input, &output, &host_args};
+    uint32_t out_height = host_args.height + host_args.height_before +
+                          host_args.height_after;
+    uint32_t out_width = host_args.width + host_args.width_before +
+                         host_args.width_after;
+    uint32_t out_depth = host_args.depth + host_args.depth_front;
+    dim3 block(8, 8, 1);
+    dim3 grid((host_args.channels + 7) / 8, (out_width + 7) / 8,
+              host_args.batch * out_depth * out_height);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_vae_encoder_pad_f32_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
 }
 
 extern "C" int h3_launch_add_scaled_f32(const float *left, const float *right,

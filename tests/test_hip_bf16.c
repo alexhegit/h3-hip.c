@@ -1315,6 +1315,191 @@ static int test_audio_attention_pool_f32(h3_gpu *gpu) {
     return 0;
 }
 
+static int h3_reflect_coordinate(int coordinate, int length) {
+    if (coordinate < 0) return -coordinate;
+    if (coordinate >= length) return 2 * length - coordinate - 2;
+    return coordinate;
+}
+
+static void cpu_vae_encoder_pad_f32(const float *input, float *output,
+                                    uint32_t batch, uint32_t depth,
+                                    uint32_t height, uint32_t width,
+                                    uint32_t channels, uint32_t depth_front,
+                                    uint32_t height_before,
+                                    uint32_t height_after,
+                                    uint32_t width_before,
+                                    uint32_t width_after) {
+    uint32_t out_depth = depth + depth_front;
+    uint32_t out_height = height + height_before + height_after;
+    uint32_t out_width = width + width_before + width_after;
+    for (uint32_t b = 0; b < batch; b++) {
+        for (uint32_t out_t = 0; out_t < out_depth; out_t++) {
+            for (uint32_t out_y = 0; out_y < out_height; out_y++) {
+                for (uint32_t out_x = 0; out_x < out_width; out_x++) {
+                    for (uint32_t channel = 0; channel < channels; channel++) {
+                        size_t destination =
+                            ((((size_t)b * out_depth + out_t) * out_height +
+                              out_y) * out_width + out_x) * channels + channel;
+                        if (out_t < depth_front) {
+                            output[destination] = 0.0f;
+                            continue;
+                        }
+                        int source_y = h3_reflect_coordinate(
+                            (int)out_y - (int)height_before, (int)height);
+                        int source_x = h3_reflect_coordinate(
+                            (int)out_x - (int)width_before, (int)width);
+                        uint32_t source_t = out_t - depth_front;
+                        size_t source =
+                            ((((size_t)b * depth + source_t) * height +
+                              (uint32_t)source_y) * width +
+                             (uint32_t)source_x) * channels + channel;
+                        output[destination] = input[source];
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void cpu_conv3d_f32(const float *input, const float *weight,
+                           const float *bias, float *output, uint32_t batch,
+                           uint32_t depth, uint32_t height, uint32_t width,
+                           uint32_t input_channels, uint32_t output_channels,
+                           uint32_t kernel_depth, uint32_t kernel_height,
+                           uint32_t kernel_width, uint32_t stride_depth,
+                           uint32_t stride_height, uint32_t stride_width) {
+    uint32_t output_depth = (depth - kernel_depth) / stride_depth + 1;
+    uint32_t output_height = (height - kernel_height) / stride_height + 1;
+    uint32_t output_width = (width - kernel_width) / stride_width + 1;
+    for (uint32_t b = 0; b < batch; b++) {
+        for (uint32_t out_t = 0; out_t < output_depth; out_t++) {
+            for (uint32_t out_y = 0; out_y < output_height; out_y++) {
+                for (uint32_t out_x = 0; out_x < output_width; out_x++) {
+                    for (uint32_t out = 0; out < output_channels; out++) {
+                        float sum = bias[out];
+                        for (uint32_t kd = 0; kd < kernel_depth; kd++) {
+                            uint32_t source_t = out_t * stride_depth + kd;
+                            for (uint32_t kh = 0; kh < kernel_height; kh++) {
+                                uint32_t source_y = out_y * stride_height + kh;
+                                for (uint32_t kw = 0; kw < kernel_width; kw++) {
+                                    uint32_t source_x =
+                                        out_x * stride_width + kw;
+                                    for (uint32_t in = 0; in < input_channels;
+                                         in++) {
+                                        size_t input_index =
+                                            (((((size_t)b * depth + source_t) *
+                                                   height + source_y) *
+                                                  width + source_x) *
+                                                 input_channels + in);
+                                        size_t weight_index =
+                                            (((((size_t)out * input_channels +
+                                                    in) * kernel_depth + kd) *
+                                               kernel_height + kh) *
+                                              kernel_width + kw);
+                                        sum = fmaf(input[input_index],
+                                                   weight[weight_index], sum);
+                                    }
+                                }
+                            }
+                        }
+                        size_t output_index =
+                            (((((size_t)b * output_depth + out_t) *
+                                   output_height + out_y) *
+                                  output_width + out_x) *
+                                 output_channels + out);
+                        output[output_index] = sum;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static int test_vae_encoder_pad_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, DEPTH = 1, HEIGHT = 4, WIDTH = 4, CHANNELS = 2 };
+    enum { IN_COUNT = BATCH * DEPTH * HEIGHT * WIDTH * CHANNELS };
+    enum {
+        DEPTH_FRONT = 1, HEIGHT_BEFORE = 1, HEIGHT_AFTER = 1,
+        WIDTH_BEFORE = 1, WIDTH_AFTER = 1
+    };
+    enum {
+        OUT_DEPTH = DEPTH + DEPTH_FRONT,
+        OUT_HEIGHT = HEIGHT + HEIGHT_BEFORE + HEIGHT_AFTER,
+        OUT_WIDTH = WIDTH + WIDTH_BEFORE + WIDTH_AFTER,
+        OUT_COUNT = BATCH * OUT_DEPTH * OUT_HEIGHT * OUT_WIDTH * CHANNELS
+    };
+    float input[IN_COUNT];
+    for (size_t i = 0; i < IN_COUNT; i++) input[i] = (float)(i + 1) * 0.1f;
+    float expected[OUT_COUNT];
+    cpu_vae_encoder_pad_f32(input, expected, BATCH, DEPTH, HEIGHT, WIDTH,
+                            CHANNELS, DEPTH_FRONT, HEIGHT_BEFORE,
+                            HEIGHT_AFTER, WIDTH_BEFORE, WIDTH_AFTER);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, IN_COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, OUT_COUNT);
+    CHECK(gpu_input && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin vae encoder pad f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_vae_encoder_pad_f32(
+        gpu, output, gpu_input, BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS,
+        DEPTH_FRONT, HEIGHT_BEFORE, HEIGHT_AFTER, WIDTH_BEFORE, WIDTH_AFTER),
+        "vae encoder pad f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit vae encoder pad f32"));
+    float got[OUT_COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, OUT_COUNT));
+    for (size_t i = 0; i < OUT_COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-6f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_conv3d_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, DEPTH = 2, HEIGHT = 3, WIDTH = 3 };
+    enum { IN_CH = 2, OUT_CH = 2, KERNEL = 2, STRIDE = 1 };
+    enum { IN_COUNT = BATCH * DEPTH * HEIGHT * WIDTH * IN_CH };
+    enum { OUT_DEPTH = 1, OUT_HEIGHT = 2, OUT_WIDTH = 2 };
+    enum { OUT_COUNT = BATCH * OUT_DEPTH * OUT_HEIGHT * OUT_WIDTH * OUT_CH };
+    const float input[] = {
+        0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f, 0.9f, 1.0f,
+        1.1f, 1.2f, 1.3f, 1.4f, 1.5f, 1.6f, 1.7f, 1.8f, 1.9f, 2.0f,
+        2.1f, 2.2f, 2.3f, 2.4f, 2.5f, 2.6f, 2.7f, 2.8f, 2.9f, 3.0f,
+        3.1f, 3.2f, 3.3f, 3.4f, 3.5f, 3.6f
+    };
+    const float weight[] = {
+        0.2f, -0.1f, 0.3f, 0.4f, -0.5f, 0.6f, -0.2f, 0.7f,
+        0.1f, -0.4f, 0.3f, 0.5f, 0.2f, -0.3f, 0.4f, 0.1f,
+        -0.2f, 0.6f, 0.3f, -0.1f, 0.5f, 0.2f, -0.4f, 0.3f,
+        0.1f, 0.2f, -0.3f, 0.4f, 0.5f, -0.6f, 0.7f, -0.8f
+    };
+    const float bias[] = {0.05f, -0.1f};
+    float expected[OUT_COUNT];
+    cpu_conv3d_f32(input, weight, bias, expected, BATCH, DEPTH, HEIGHT, WIDTH,
+                   IN_CH, OUT_CH, KERNEL, KERNEL, KERNEL, STRIDE, STRIDE,
+                   STRIDE);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, IN_COUNT);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(
+        gpu, weight, OUT_CH * IN_CH * KERNEL * KERNEL * KERNEL);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, OUT_CH);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, OUT_COUNT);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin conv3d f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_conv3d_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, BATCH, DEPTH, HEIGHT,
+        WIDTH, IN_CH, OUT_CH, KERNEL, KERNEL, KERNEL, STRIDE, STRIDE,
+        STRIDE), "conv3d f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit conv3d f32"));
+    float got[OUT_COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, OUT_COUNT));
+    for (size_t i = 0; i < OUT_COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_sdpa_causal_f32(h3_gpu *gpu) {
     enum { BATCH = 2, SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { SLICE = SEQUENCE * HEADS * HEAD_DIM, COUNT = BATCH * SLICE };
@@ -3612,6 +3797,8 @@ int main(void) {
     if (test_audio_qkv_split_f32(gpu) != 0) return 1;
     if (test_sdpa_causal_f32(gpu) != 0) return 1;
     if (test_audio_attention_pool_f32(gpu) != 0) return 1;
+    if (test_vae_encoder_pad_f32(gpu) != 0) return 1;
+    if (test_conv3d_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;

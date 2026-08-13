@@ -91,6 +91,38 @@ typedef struct {
 } h3_audio_pool_args;
 
 typedef struct {
+    uint32_t batch;
+    uint32_t depth;
+    uint32_t height;
+    uint32_t width;
+    uint32_t channels;
+    uint32_t depth_front;
+    uint32_t height_before;
+    uint32_t height_after;
+    uint32_t width_before;
+    uint32_t width_after;
+} h3_vae_encoder_pad_args;
+
+typedef struct {
+    uint32_t batch;
+    uint32_t input_depth;
+    uint32_t input_height;
+    uint32_t input_width;
+    uint32_t output_depth;
+    uint32_t output_height;
+    uint32_t output_width;
+    uint32_t input_channels;
+    uint32_t output_channels;
+    uint32_t kernel_depth;
+    uint32_t kernel_height;
+    uint32_t kernel_width;
+    uint32_t stride_depth;
+    uint32_t stride_height;
+    uint32_t stride_width;
+    uint32_t has_bias;
+} h3_conv3d_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -370,6 +402,12 @@ int h3_launch_sdpa_causal_f32(const float *query, const float *key,
 int h3_launch_audio_attention_pool_f32(const float *attended, float *output,
                                        const h3_audio_pool_args *args,
                                        hipStream_t stream);
+int h3_launch_vae_encoder_pad_f32(const float *input, float *output,
+                                  const h3_vae_encoder_pad_args *args,
+                                  hipStream_t stream);
+int h3_launch_conv3d_f32(const float *input, const float *weight,
+                         const float *bias, float *output,
+                         const h3_conv3d_args *args, hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);

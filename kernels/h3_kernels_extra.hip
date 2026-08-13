@@ -470,6 +470,50 @@ __global__ void h3_conv_transpose1d_f32_kernel(const float *input,
     output[output_batch + time * args.output_channels + out] = sum;
 }
 
+__global__ void h3_conv3d_f32_kernel(const float *input, const float *weight,
+                                     const float *bias, float *output,
+                                     h3_conv3d_args args) {
+    uint32_t out = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t spatial = blockIdx.y;
+    uint32_t batch = blockIdx.z;
+    uint32_t spatial_count =
+        args.output_depth * args.output_height * args.output_width;
+    if (out >= args.output_channels || spatial >= spatial_count ||
+        batch >= args.batch) {
+        return;
+    }
+    uint32_t out_x = spatial % args.output_width;
+    uint32_t plane = spatial / args.output_width;
+    uint32_t out_y = plane % args.output_height;
+    uint32_t out_t = plane / args.output_height;
+    float sum = args.has_bias ? bias[out] : 0.0f;
+    uint32_t input_batch = batch * args.input_depth * args.input_height *
+                           args.input_width * args.input_channels;
+    uint32_t output_batch = batch * spatial_count * args.output_channels;
+    for (uint32_t kd = 0; kd < args.kernel_depth; kd++) {
+        uint32_t source_t = out_t * args.stride_depth + kd;
+        for (uint32_t kh = 0; kh < args.kernel_height; kh++) {
+            uint32_t source_y = out_y * args.stride_height + kh;
+            for (uint32_t kw = 0; kw < args.kernel_width; kw++) {
+                uint32_t source_x = out_x * args.stride_width + kw;
+                for (uint32_t in = 0; in < args.input_channels; in++) {
+                    size_t input_index = input_batch +
+                        (((size_t)source_t * args.input_height + source_y) *
+                             args.input_width + source_x) *
+                            args.input_channels + in;
+                    size_t weight_index =
+                        (((((size_t)out * args.input_channels + in) *
+                               args.kernel_depth + kd) *
+                              args.kernel_height + kh) *
+                             args.kernel_width + kw);
+                    sum = fmaf(input[input_index], weight[weight_index], sum);
+                }
+            }
+        }
+    }
+    output[output_batch + spatial * args.output_channels + out] = sum;
+}
+
 extern "C" int h3_launch_conv1d_f32(const float *input, const float *weight,
                                     const float *bias, float *output,
                                     const h3_conv1d_args *args,
@@ -498,6 +542,22 @@ extern "C" int h3_launch_conv_transpose1d_f32(const float *input,
                reinterpret_cast<const void *>(h3_conv_transpose1d_f32_kernel),
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
+}
+
+extern "C" int h3_launch_conv3d_f32(const float *input, const float *weight,
+                                    const float *bias, float *output,
+                                    const h3_conv3d_args *args,
+                                    hipStream_t stream) {
+    h3_conv3d_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    uint32_t spatial_count = host_args.output_depth * host_args.output_height *
+                             host_args.output_width;
+    dim3 block(16, 1, 1);
+    dim3 grid((host_args.output_channels + 15) / 16, spatial_count,
+              host_args.batch);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_conv3d_f32_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
