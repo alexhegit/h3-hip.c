@@ -627,6 +627,170 @@ static void cpu_vision_qkv_rope_bf16(
     }
 }
 
+static void cpu_video_qkv_rope_f32(const float *qkv, const float *rope_cos,
+                                   const float *rope_sin, float *query,
+                                   float *key, float *value, uint32_t sequence,
+                                   uint32_t heads, uint32_t head_dim,
+                                   uint32_t rope_half, float epsilon) {
+    for (uint32_t row = 0; row < sequence; row++) {
+        for (uint32_t head = 0; head < heads; head++) {
+            uint32_t base = (row * heads + head) * head_dim * 3;
+            float q_sum = 0.0f;
+            float k_sum = 0.0f;
+            for (uint32_t d = 0; d < head_dim; d++) {
+                q_sum = fmaf(qkv[base + d], qkv[base + d], q_sum);
+                k_sum = fmaf(qkv[base + head_dim + d],
+                             qkv[base + head_dim + d], k_sum);
+            }
+            float q_inverse = 1.0f / sqrtf(q_sum / (float)head_dim + epsilon);
+            float k_inverse = 1.0f / sqrtf(k_sum / (float)head_dim + epsilon);
+            for (uint32_t dimension = 0; dimension < head_dim; dimension++) {
+                float q0 = qkv[base + dimension] * q_inverse;
+                float k0 = qkv[base + head_dim + dimension] * k_inverse;
+                if (dimension < rope_half) {
+                    uint32_t pair = dimension + rope_half;
+                    float q1 = qkv[base + pair] * q_inverse;
+                    float k1 = qkv[base + head_dim + pair] * k_inverse;
+                    float c = rope_cos[row * rope_half + dimension];
+                    float s = rope_sin[row * rope_half + dimension];
+                    q0 = q0 * c - q1 * s;
+                    k0 = k0 * c - k1 * s;
+                } else if (dimension < rope_half * 2) {
+                    uint32_t pair = dimension - rope_half;
+                    float q1 = qkv[base + pair] * q_inverse;
+                    float k1 = qkv[base + head_dim + pair] * k_inverse;
+                    float c = rope_cos[row * rope_half + pair];
+                    float s = rope_sin[row * rope_half + pair];
+                    q0 = q0 * c + q1 * s;
+                    k0 = k0 * c + k1 * s;
+                }
+                uint32_t output_index =
+                    (row * heads + head) * head_dim + dimension;
+                query[output_index] = q0;
+                key[output_index] = k0;
+                value[output_index] = qkv[base + head_dim * 2 + dimension];
+            }
+        }
+    }
+}
+
+static int test_video_qkv_rope_f32(h3_gpu *gpu) {
+    enum { SEQUENCE = 2, HEADS = 2, HEAD_DIM = 4, ROPE_HALF = 2 };
+    enum { INNER = HEADS * HEAD_DIM, QKV_ELEMS = SEQUENCE * INNER * 3 };
+    float qkv[QKV_ELEMS];
+    float rope_cos[SEQUENCE * ROPE_HALF], rope_sin[SEQUENCE * ROPE_HALF];
+    for (size_t i = 0; i < QKV_ELEMS; i++) {
+        qkv[i] = (float)((int)(i % 11) - 5) * 0.125f;
+    }
+    for (uint32_t row = 0; row < SEQUENCE; row++) {
+        rope_cos[row * ROPE_HALF + 0] = 0.6f;
+        rope_cos[row * ROPE_HALF + 1] = 0.8f;
+        rope_sin[row * ROPE_HALF + 0] = 0.8f;
+        rope_sin[row * ROPE_HALF + 1] = -0.6f;
+    }
+    float expected_q[SEQUENCE * INNER], expected_k[SEQUENCE * INNER];
+    float expected_v[SEQUENCE * INNER];
+    cpu_video_qkv_rope_f32(qkv, rope_cos, rope_sin, expected_q, expected_k,
+                           expected_v, SEQUENCE, HEADS, HEAD_DIM, ROPE_HALF,
+                           1e-5f);
+    h3_gpu_tensor *gpu_qkv = h3_gpu_tensor_from_f32(gpu, qkv, QKV_ELEMS);
+    h3_gpu_tensor *gpu_cos = h3_gpu_tensor_from_f32(
+        gpu, rope_cos, SEQUENCE * ROPE_HALF);
+    h3_gpu_tensor *gpu_sin = h3_gpu_tensor_from_f32(
+        gpu, rope_sin, SEQUENCE * ROPE_HALF);
+    h3_gpu_tensor *query = h3_gpu_tensor_new_f32(gpu, SEQUENCE * INNER);
+    h3_gpu_tensor *key = h3_gpu_tensor_new_f32(gpu, SEQUENCE * INNER);
+    h3_gpu_tensor *value = h3_gpu_tensor_new_f32(gpu, SEQUENCE * INNER);
+    CHECK(gpu_qkv && gpu_cos && gpu_sin && query && key && value);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin video qkv rope f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_video_qkv_rope_f32(
+        gpu, query, key, value, gpu_qkv, gpu_cos, gpu_sin, SEQUENCE, HEADS,
+        HEAD_DIM, ROPE_HALF, 1e-5f), "video qkv rope f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit video qkv rope f32"));
+    float got_q[SEQUENCE * INNER], got_k[SEQUENCE * INNER];
+    float got_v[SEQUENCE * INNER];
+    CHECK(h3_gpu_tensor_read_f32(query, got_q, SEQUENCE * INNER));
+    CHECK(h3_gpu_tensor_read_f32(key, got_k, SEQUENCE * INNER));
+    CHECK(h3_gpu_tensor_read_f32(value, got_v, SEQUENCE * INNER));
+    for (size_t i = 0; i < SEQUENCE * INNER; i++) {
+        CHECK(fabsf(got_q[i] - expected_q[i]) < 1e-4f);
+        CHECK(fabsf(got_k[i] - expected_k[i]) < 1e-4f);
+        CHECK(fabsf(got_v[i] - expected_v[i]) < 1e-5f);
+    }
+    h3_gpu_tensor_free(gpu_qkv);
+    h3_gpu_tensor_free(gpu_cos);
+    h3_gpu_tensor_free(gpu_sin);
+    h3_gpu_tensor_free(query);
+    h3_gpu_tensor_free(key);
+    h3_gpu_tensor_free(value);
+    return 0;
+}
+
+static void cpu_conv1d_f32(const float *input, const float *weight,
+                           const float *bias, float *output, uint32_t batch,
+                           uint32_t length, uint32_t input_channels,
+                           uint32_t output_channels, uint32_t kernel,
+                           uint32_t padding, uint32_t dilation) {
+    for (uint32_t b = 0; b < batch; b++) {
+        for (uint32_t time = 0; time < length; time++) {
+            for (uint32_t out = 0; out < output_channels; out++) {
+                float sum = bias[out];
+                for (uint32_t k = 0; k < kernel; k++) {
+                    int32_t source = (int32_t)time +
+                        (int32_t)(k * dilation) - (int32_t)padding;
+                    if (source < 0 || source >= (int32_t)length) continue;
+                    for (uint32_t in = 0; in < input_channels; in++) {
+                        sum = fmaf(
+                            input[b * length * input_channels +
+                                  (uint32_t)source * input_channels + in],
+                            weight[(out * input_channels + in) * kernel + k],
+                            sum);
+                    }
+                }
+                output[b * length * output_channels +
+                       time * output_channels + out] = sum;
+            }
+        }
+    }
+}
+
+static int test_conv1d_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, LENGTH = 4, IN_CH = 2, OUT_CH = 2, KERNEL = 3 };
+    enum { PAD = 1, DILATION = 1 };
+    const float input[] = {
+        0.2f, -0.3f, 0.5f, 0.1f, -0.4f, 0.7f, 0.8f, -0.2f
+    };
+    const float weight[] = {
+        0.2f, -0.1f, 0.3f, 0.4f, -0.5f, 0.6f,
+        -0.2f, 0.7f, 0.1f, -0.4f, 0.3f, 0.5f
+    };
+    const float bias[] = {0.1f, -0.2f};
+    float expected[LENGTH * OUT_CH];
+    cpu_conv1d_f32(input, weight, bias, expected, BATCH, LENGTH, IN_CH, OUT_CH,
+                   KERNEL, PAD, DILATION);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, LENGTH * IN_CH);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(
+        gpu, weight, OUT_CH * IN_CH * KERNEL);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, OUT_CH);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, LENGTH * OUT_CH);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin conv1d f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_conv1d_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, BATCH, LENGTH, IN_CH,
+        OUT_CH, KERNEL, PAD, DILATION), "conv1d f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit conv1d f32"));
+    float got[LENGTH * OUT_CH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, LENGTH * OUT_CH));
+    for (size_t i = 0; i < LENGTH * OUT_CH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_vision_qkv_rope(h3_gpu *gpu) {
     enum { SEQUENCE = 2, HEADS = 2, HEAD_DIM = 4, ROPE_HALF = 2 };
     enum { INNER = HEADS * HEAD_DIM, QKV_ELEMS = SEQUENCE * INNER * 3 };
@@ -2999,6 +3163,8 @@ int main(void) {
     if (test_qkv_rope(gpu) != 0) return 1;
     if (test_qkv_rope_f32(gpu) != 0) return 1;
     if (test_vision_qkv_rope(gpu) != 0) return 1;
+    if (test_video_qkv_rope_f32(gpu) != 0) return 1;
+    if (test_conv1d_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;

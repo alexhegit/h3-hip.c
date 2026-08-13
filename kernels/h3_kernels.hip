@@ -604,6 +604,50 @@ __global__ void h3_qkv_rope_f32_kernel(const float *qkv, const float *q_weight,
     value[output_index] = qkv[v_base + dimension];
 }
 
+__global__ void h3_video_qkv_rope_f32_kernel(
+    const float *qkv, const float *rope_cos, const float *rope_sin,
+    float *query, float *key, float *value, h3_qkv_args args) {
+    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t row = blockIdx.z;
+    if (dimension >= args.head_dim || head >= args.heads ||
+        row >= args.sequence) return;
+    uint32_t base = (row * args.heads + head) * args.head_dim * 3;
+    float q_sum = 0.0f;
+    float k_sum = 0.0f;
+    for (uint32_t d = 0; d < args.head_dim; d++) {
+        q_sum = fmaf(qkv[base + d], qkv[base + d], q_sum);
+        k_sum = fmaf(qkv[base + args.head_dim + d],
+                     qkv[base + args.head_dim + d], k_sum);
+    }
+    float q_inverse = rsqrtf(q_sum / float(args.head_dim) + args.epsilon);
+    float k_inverse = rsqrtf(k_sum / float(args.head_dim) + args.epsilon);
+    float q0 = qkv[base + dimension] * q_inverse;
+    float k0 = qkv[base + args.head_dim + dimension] * k_inverse;
+    if (dimension < args.rope_half) {
+        uint32_t pair = dimension + args.rope_half;
+        float q1 = qkv[base + pair] * q_inverse;
+        float k1 = qkv[base + args.head_dim + pair] * k_inverse;
+        float c = rope_cos[row * args.rope_half + dimension];
+        float s = rope_sin[row * args.rope_half + dimension];
+        q0 = q0 * c - q1 * s;
+        k0 = k0 * c - k1 * s;
+    } else if (dimension < args.rope_half * 2) {
+        uint32_t pair = dimension - args.rope_half;
+        float q1 = qkv[base + pair] * q_inverse;
+        float k1 = qkv[base + args.head_dim + pair] * k_inverse;
+        float c = rope_cos[row * args.rope_half + pair];
+        float s = rope_sin[row * args.rope_half + pair];
+        q0 = q0 * c + q1 * s;
+        k0 = k0 * c + k1 * s;
+    }
+    uint32_t output_index =
+        (row * args.heads + head) * args.head_dim + dimension;
+    query[output_index] = q0;
+    key[output_index] = k0;
+    value[output_index] = qkv[base + args.head_dim * 2 + dimension];
+}
+
 __global__ void h3_vision_qkv_rope_bf16_kernel(
     const uint16_t *qkv, const uint16_t *rope_cos, const uint16_t *rope_sin,
     uint16_t *query, uint16_t *key, uint16_t *value, h3_qkv_args args) {
@@ -1071,6 +1115,24 @@ extern "C" int h3_launch_qkv_rope_f32(const float *qkv, const float *q_weight,
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_qkv_rope_f32_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_video_qkv_rope_f32(const float *qkv,
+                                            const float *rope_cos,
+                                            const float *rope_sin,
+                                            float *query, float *key,
+                                            float *value, const h3_qkv_args *args,
+                                            hipStream_t stream) {
+    h3_qkv_args host_args = *args;
+    void *kernel_args[] = {&qkv, &rope_cos, &rope_sin, &query, &key, &value,
+                           &host_args};
+    dim3 block(host_args.head_dim, 1, 1);
+    dim3 grid(1, host_args.heads, host_args.sequence);
+    if (host_args.head_dim > 256) return 0;
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_video_qkv_rope_f32_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
 }
 
 extern "C" int h3_launch_vision_qkv_rope_bf16(
