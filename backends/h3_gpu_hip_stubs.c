@@ -3,10 +3,6 @@
 struct h3_gpu;
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name);
 
-int h3_gpu_audio_qkv_split_f32(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, const h3_gpu_tensor *qkv, const h3_gpu_tensor *q_bias, const h3_gpu_tensor *k_bias, const h3_gpu_tensor *v_bias, uint32_t batch, uint32_t length, uint32_t heads, uint32_t head_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_audio_qkv_split_f32"); }
-
-int h3_gpu_sdpa_causal_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query, const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t batch, uint32_t sequence, uint32_t heads, uint32_t head_dim, float scale) { return h3_hip_unimplemented(NULL, "h3_gpu_sdpa_causal_f32"); }
-
 int h3_gpu_audio_attention_pool_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *attended, uint32_t batch, uint32_t length, uint32_t heads, uint32_t head_dim, uint32_t output_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_audio_attention_pool_f32"); }
 
 int h3_gpu_vae_encoder_pad_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, uint32_t batch, uint32_t depth, uint32_t height, uint32_t width, uint32_t channels, uint32_t depth_front, uint32_t height_before, uint32_t height_after, uint32_t width_before, uint32_t width_after) { return h3_hip_unimplemented(NULL, "h3_gpu_vae_encoder_pad_f32"); }

@@ -1151,6 +1151,163 @@ static void cpu_sdpa_f32(const float *query, const float *key,
     }
 }
 
+static void cpu_audio_qkv_split_f32(const float *qkv, const float *q_bias,
+                                    const float *k_bias, const float *v_bias,
+                                    float *query, float *key, float *value,
+                                    uint32_t batch, uint32_t length,
+                                    uint32_t heads, uint32_t head_dim) {
+    uint32_t width = heads * head_dim;
+    uint32_t count = batch * length * width;
+    for (uint32_t gid = 0; gid < count; gid++) {
+        uint32_t column = gid % width;
+        uint32_t row = gid / width;
+        uint32_t base = row * width * 3;
+        query[gid] = qkv[base + column] + q_bias[column];
+        key[gid] = qkv[base + width + column] + k_bias[column];
+        value[gid] = qkv[base + width * 2 + column] + v_bias[column];
+    }
+}
+
+static void cpu_sdpa_causal_f32(const float *query, const float *key,
+                                const float *value, float *output,
+                                uint32_t batch, uint32_t sequence,
+                                uint32_t heads, uint32_t head_dim,
+                                float scale) {
+    uint32_t slice = sequence * heads * head_dim;
+    for (uint32_t b = 0; b < batch; b++) {
+        const float *q_batch = query + (size_t)b * slice;
+        const float *k_batch = key + (size_t)b * slice;
+        const float *v_batch = value + (size_t)b * slice;
+        float *o_batch = output + (size_t)b * slice;
+        for (uint32_t head = 0; head < heads; head++) {
+            for (uint32_t q_pos = 0; q_pos < sequence; q_pos++) {
+                float scores[512];
+                float max_score = -1e30f;
+                for (uint32_t k_pos = 0; k_pos <= q_pos; k_pos++) {
+                    float dot = 0.0f;
+                    for (uint32_t d = 0; d < head_dim; d++) {
+                        uint32_t q_index =
+                            (q_pos * heads + head) * head_dim + d;
+                        uint32_t k_index =
+                            (k_pos * heads + head) * head_dim + d;
+                        dot = fmaf(q_batch[q_index], k_batch[k_index], dot);
+                    }
+                    scores[k_pos] = dot * scale;
+                    max_score = fmaxf(max_score, scores[k_pos]);
+                }
+                float sum = 0.0f;
+                for (uint32_t k_pos = 0; k_pos <= q_pos; k_pos++) {
+                    scores[k_pos] = expf(scores[k_pos] - max_score);
+                    sum += scores[k_pos];
+                }
+                float inv_sum = sum > 0.0f ? 1.0f / sum : 0.0f;
+                for (uint32_t d = 0; d < head_dim; d++) {
+                    float acc = 0.0f;
+                    for (uint32_t k_pos = 0; k_pos <= q_pos; k_pos++) {
+                        uint32_t v_index =
+                            (k_pos * heads + head) * head_dim + d;
+                        acc = fmaf(v_batch[v_index], scores[k_pos] * inv_sum,
+                                   acc);
+                    }
+                    uint32_t out_index =
+                        (q_pos * heads + head) * head_dim + d;
+                    o_batch[out_index] = acc;
+                }
+            }
+        }
+    }
+}
+
+static int test_audio_qkv_split_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, LENGTH = 2, HEADS = 2, HEAD_DIM = 2 };
+    enum { WIDTH = HEADS * HEAD_DIM, COUNT = BATCH * LENGTH * WIDTH };
+    const float qkv[] = {
+        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f, 11.0f,
+        12.0f, 13.0f, 14.0f, 15.0f, 16.0f, 17.0f, 18.0f, 19.0f, 20.0f, 21.0f,
+        22.0f, 23.0f, 24.0f
+    };
+    const float q_bias[] = {0.1f, 0.2f, 0.3f, 0.4f};
+    const float k_bias[] = {-0.1f, -0.2f, -0.3f, -0.4f};
+    const float v_bias[] = {0.05f, 0.15f, 0.25f, 0.35f};
+    float expected_q[COUNT], expected_k[COUNT], expected_v[COUNT];
+    cpu_audio_qkv_split_f32(qkv, q_bias, k_bias, v_bias, expected_q,
+                            expected_k, expected_v, BATCH, LENGTH, HEADS,
+                            HEAD_DIM);
+    h3_gpu_tensor *gpu_qkv = h3_gpu_tensor_from_f32(gpu, qkv, COUNT * 3);
+    h3_gpu_tensor *gpu_q_bias = h3_gpu_tensor_from_f32(gpu, q_bias, WIDTH);
+    h3_gpu_tensor *gpu_k_bias = h3_gpu_tensor_from_f32(gpu, k_bias, WIDTH);
+    h3_gpu_tensor *gpu_v_bias = h3_gpu_tensor_from_f32(gpu, v_bias, WIDTH);
+    h3_gpu_tensor *query = h3_gpu_tensor_new_f32(gpu, COUNT);
+    h3_gpu_tensor *key = h3_gpu_tensor_new_f32(gpu, COUNT);
+    h3_gpu_tensor *value = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_qkv && gpu_q_bias && gpu_k_bias && gpu_v_bias && query && key &&
+          value);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin audio qkv split f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_audio_qkv_split_f32(
+        gpu, query, key, value, gpu_qkv, gpu_q_bias, gpu_k_bias, gpu_v_bias,
+        BATCH, LENGTH, HEADS, HEAD_DIM), "audio qkv split f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit audio qkv split f32"));
+    float got_q[COUNT], got_k[COUNT], got_v[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(query, got_q, COUNT));
+    CHECK(h3_gpu_tensor_read_f32(key, got_k, COUNT));
+    CHECK(h3_gpu_tensor_read_f32(value, got_v, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got_q[i] - expected_q[i]) < 1e-6f);
+        CHECK(fabsf(got_k[i] - expected_k[i]) < 1e-6f);
+        CHECK(fabsf(got_v[i] - expected_v[i]) < 1e-6f);
+    }
+    h3_gpu_tensor_free(gpu_qkv);
+    h3_gpu_tensor_free(gpu_q_bias);
+    h3_gpu_tensor_free(gpu_k_bias);
+    h3_gpu_tensor_free(gpu_v_bias);
+    h3_gpu_tensor_free(query);
+    h3_gpu_tensor_free(key);
+    h3_gpu_tensor_free(value);
+    return 0;
+}
+
+static int test_sdpa_causal_f32(h3_gpu *gpu) {
+    enum { BATCH = 2, SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
+    enum { SLICE = SEQUENCE * HEADS * HEAD_DIM, COUNT = BATCH * SLICE };
+    float query[COUNT], key[COUNT], value[COUNT];
+    for (uint32_t b = 0; b < BATCH; b++) {
+        for (uint32_t pos = 0; pos < SEQUENCE; pos++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                uint32_t index = b * SLICE + (pos * HEADS + 0) * HEAD_DIM + d;
+                query[index] = (float)(b + 1) * 0.1f + (float)(pos + 1) * 0.25f +
+                    (float)d * 0.05f;
+                key[index] = (float)(b + 1) * 0.2f + (float)(pos + 1) * 0.5f -
+                    (float)d * 0.03f;
+                value[index] = (float)pos - (float)d * 0.2f + (float)b * 0.1f;
+            }
+        }
+    }
+    float expected[COUNT];
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_sdpa_causal_f32(query, key, value, expected, BATCH, SEQUENCE, HEADS,
+                        HEAD_DIM, scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_f32(gpu, query, COUNT);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_f32(gpu, key, COUNT);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_f32(gpu, value, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa causal f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_causal_f32(
+        gpu, output, gpu_q, gpu_k, gpu_v, BATCH, SEQUENCE, HEADS, HEAD_DIM,
+        scale), "sdpa causal f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa causal f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_sdpa_f32(h3_gpu *gpu) {
     enum { SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
@@ -3403,6 +3560,8 @@ int main(void) {
     if (test_conv_transpose1d_f32(gpu) != 0) return 1;
     if (test_alias_free_snake_f32(gpu) != 0) return 1;
     if (test_snake1d_f32(gpu) != 0) return 1;
+    if (test_audio_qkv_split_f32(gpu) != 0) return 1;
+    if (test_sdpa_causal_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;

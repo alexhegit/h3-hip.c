@@ -68,6 +68,21 @@ typedef struct {
 } h3_audio_activation_args;
 
 typedef struct {
+    uint32_t batch;
+    uint32_t length;
+    uint32_t heads;
+    uint32_t head_dim;
+} h3_audio_qkv_args;
+
+typedef struct {
+    uint32_t batch;
+    uint32_t sequence;
+    uint32_t heads;
+    uint32_t head_dim;
+    float scale;
+} h3_sdpa_causal_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -336,6 +351,14 @@ int h3_launch_alias_free_snake_f32(
 int h3_launch_snake1d_f32(const float *input, const float *alpha, float *output,
                           const h3_audio_activation_args *args,
                           hipStream_t stream);
+int h3_launch_audio_qkv_split_f32(
+    const float *qkv, const float *q_bias, const float *k_bias,
+    const float *v_bias, float *query, float *key, float *value,
+    const h3_audio_qkv_args *args, hipStream_t stream);
+int h3_launch_sdpa_causal_f32(const float *query, const float *key,
+                              const float *value, float *output,
+                              const h3_sdpa_causal_args *args,
+                              hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);
