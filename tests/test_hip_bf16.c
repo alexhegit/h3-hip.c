@@ -726,28 +726,66 @@ static int test_video_qkv_rope_f32(h3_gpu *gpu) {
     return 0;
 }
 
-static void cpu_conv1d_f32(const float *input, const float *weight,
-                           const float *bias, float *output, uint32_t batch,
-                           uint32_t length, uint32_t input_channels,
-                           uint32_t output_channels, uint32_t kernel,
-                           uint32_t padding, uint32_t dilation) {
+static void cpu_conv1d_stride_f32(const float *input, const float *weight,
+                                  const float *bias, float *output,
+                                  uint32_t batch, uint32_t input_length,
+                                  uint32_t output_length,
+                                  uint32_t input_channels,
+                                  uint32_t output_channels, uint32_t kernel,
+                                  uint32_t stride, uint32_t padding,
+                                  uint32_t dilation) {
     for (uint32_t b = 0; b < batch; b++) {
-        for (uint32_t time = 0; time < length; time++) {
+        for (uint32_t time = 0; time < output_length; time++) {
             for (uint32_t out = 0; out < output_channels; out++) {
                 float sum = bias[out];
                 for (uint32_t k = 0; k < kernel; k++) {
-                    int32_t source = (int32_t)time +
+                    int32_t source = (int32_t)time * (int32_t)stride +
                         (int32_t)(k * dilation) - (int32_t)padding;
-                    if (source < 0 || source >= (int32_t)length) continue;
+                    if (source < 0 || source >= (int32_t)input_length) continue;
                     for (uint32_t in = 0; in < input_channels; in++) {
                         sum = fmaf(
-                            input[b * length * input_channels +
+                            input[b * input_length * input_channels +
                                   (uint32_t)source * input_channels + in],
                             weight[(out * input_channels + in) * kernel + k],
                             sum);
                     }
                 }
-                output[b * length * output_channels +
+                output[b * output_length * output_channels +
+                       time * output_channels + out] = sum;
+            }
+        }
+    }
+}
+
+static void cpu_conv_transpose1d_f32(const float *input, const float *weight,
+                                     const float *bias, float *output,
+                                     uint32_t batch, uint32_t input_length,
+                                     uint32_t output_length,
+                                     uint32_t input_channels,
+                                     uint32_t output_channels, uint32_t kernel,
+                                     uint32_t stride, uint32_t padding) {
+    for (uint32_t b = 0; b < batch; b++) {
+        for (uint32_t time = 0; time < output_length; time++) {
+            for (uint32_t out = 0; out < output_channels; out++) {
+                float sum = bias[out];
+                for (uint32_t k = 0; k < kernel; k++) {
+                    int32_t numerator = (int32_t)time + (int32_t)padding -
+                        (int32_t)k;
+                    if (numerator < 0 ||
+                        (uint32_t)numerator % stride) {
+                        continue;
+                    }
+                    int32_t source = numerator / (int32_t)stride;
+                    if (source < 0 || source >= (int32_t)input_length) continue;
+                    for (uint32_t in = 0; in < input_channels; in++) {
+                        sum = fmaf(
+                            input[b * input_length * input_channels +
+                                  (uint32_t)source * input_channels + in],
+                            weight[(in * output_channels + out) * kernel + k],
+                            sum);
+                    }
+                }
+                output[b * output_length * output_channels +
                        time * output_channels + out] = sum;
             }
         }
@@ -766,8 +804,8 @@ static int test_conv1d_f32(h3_gpu *gpu) {
     };
     const float bias[] = {0.1f, -0.2f};
     float expected[LENGTH * OUT_CH];
-    cpu_conv1d_f32(input, weight, bias, expected, BATCH, LENGTH, IN_CH, OUT_CH,
-                   KERNEL, PAD, DILATION);
+    cpu_conv1d_stride_f32(input, weight, bias, expected, BATCH, LENGTH, LENGTH,
+                          IN_CH, OUT_CH, KERNEL, 1, PAD, DILATION);
     h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, LENGTH * IN_CH);
     h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(
         gpu, weight, OUT_CH * IN_CH * KERNEL);
@@ -782,6 +820,77 @@ static int test_conv1d_f32(h3_gpu *gpu) {
     float got[LENGTH * OUT_CH];
     CHECK(h3_gpu_tensor_read_f32(output, got, LENGTH * OUT_CH));
     for (size_t i = 0; i < LENGTH * OUT_CH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_conv1d_stride_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, LENGTH = 4, OUT_LEN = 2, IN_CH = 2, OUT_CH = 2 };
+    enum { KERNEL = 3, STRIDE = 2, PAD = 1, DILATION = 1 };
+    const float input[] = {
+        0.2f, -0.3f, 0.5f, 0.1f, -0.4f, 0.7f, 0.8f, -0.2f
+    };
+    const float weight[] = {
+        0.2f, -0.1f, 0.3f, 0.4f, -0.5f, 0.6f,
+        -0.2f, 0.7f, 0.1f, -0.4f, 0.3f, 0.5f
+    };
+    const float bias[] = {0.1f, -0.2f};
+    float expected[OUT_LEN * OUT_CH];
+    cpu_conv1d_stride_f32(input, weight, bias, expected, BATCH, LENGTH, OUT_LEN,
+                          IN_CH, OUT_CH, KERNEL, STRIDE, PAD, DILATION);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, LENGTH * IN_CH);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(
+        gpu, weight, OUT_CH * IN_CH * KERNEL);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, OUT_CH);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, OUT_LEN * OUT_CH);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin conv1d stride f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_conv1d_stride_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, BATCH, LENGTH, IN_CH,
+        OUT_CH, KERNEL, STRIDE, PAD, DILATION), "conv1d stride f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit conv1d stride f32"));
+    float got[OUT_LEN * OUT_CH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, OUT_LEN * OUT_CH));
+    for (size_t i = 0; i < OUT_LEN * OUT_CH; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_conv_transpose1d_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, LENGTH = 3, OUT_LEN = 6, IN_CH = 2, OUT_CH = 1 };
+    enum { KERNEL = 4, STRIDE = 2, PAD = 1 };
+    const float input[] = {0.2f, -0.3f, 0.5f, 0.1f, -0.4f, 0.7f};
+    const float weight[] = {
+        0.2f, 0.3f, -0.1f, 0.4f, -0.5f, 0.1f, 0.25f, 0.2f
+    };
+    const float bias[] = {0.05f};
+    float expected[OUT_LEN * OUT_CH];
+    cpu_conv_transpose1d_f32(input, weight, bias, expected, BATCH, LENGTH,
+                             OUT_LEN, IN_CH, OUT_CH, KERNEL, STRIDE, PAD);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, LENGTH * IN_CH);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(
+        gpu, weight, IN_CH * OUT_CH * KERNEL);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, OUT_CH);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, OUT_LEN * OUT_CH);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin conv transpose f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_conv_transpose1d_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, BATCH, LENGTH, IN_CH,
+        OUT_CH, KERNEL, STRIDE, PAD), "conv transpose f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit conv transpose f32"));
+    float got[OUT_LEN * OUT_CH];
+    CHECK(h3_gpu_tensor_read_f32(output, got, OUT_LEN * OUT_CH));
+    for (size_t i = 0; i < OUT_LEN * OUT_CH; i++) {
         CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
     }
     h3_gpu_tensor_free(gpu_input);
@@ -3165,6 +3274,8 @@ int main(void) {
     if (test_vision_qkv_rope(gpu) != 0) return 1;
     if (test_video_qkv_rope_f32(gpu) != 0) return 1;
     if (test_conv1d_f32(gpu) != 0) return 1;
+    if (test_conv1d_stride_f32(gpu) != 0) return 1;
+    if (test_conv_transpose1d_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;

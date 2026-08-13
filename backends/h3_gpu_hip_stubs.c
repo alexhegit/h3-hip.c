@@ -3,10 +3,6 @@
 struct h3_gpu;
 int h3_hip_unimplemented(struct h3_gpu *gpu, const char *name);
 
-int h3_gpu_conv1d_stride_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch, uint32_t length, uint32_t input_channels, uint32_t output_channels, uint32_t kernel, uint32_t stride, uint32_t padding, uint32_t dilation) { return h3_hip_unimplemented(NULL, "h3_gpu_conv1d_stride_f32"); }
-
-int h3_gpu_conv_transpose1d_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch, uint32_t length, uint32_t input_channels, uint32_t output_channels, uint32_t kernel, uint32_t stride, uint32_t padding) { return h3_hip_unimplemented(NULL, "h3_gpu_conv_transpose1d_f32"); }
-
 int h3_gpu_alias_free_snake_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *alpha_log, const h3_gpu_tensor *beta_log, const h3_gpu_tensor *upsample_filter, const h3_gpu_tensor *downsample_filter, uint32_t batch, uint32_t length, uint32_t channels) { return h3_hip_unimplemented(NULL, "h3_gpu_alias_free_snake_f32"); }
 
 int h3_gpu_snake1d_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *alpha, uint32_t batch, uint32_t length, uint32_t channels) { return h3_hip_unimplemented(NULL, "h3_gpu_snake1d_f32"); }

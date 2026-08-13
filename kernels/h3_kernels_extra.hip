@@ -418,21 +418,52 @@ __global__ void h3_conv1d_f32_kernel(const float *input, const float *weight,
     uint32_t out = blockIdx.x * blockDim.x + threadIdx.x;
     uint32_t time = blockIdx.y;
     uint32_t batch = blockIdx.z;
-    if (out >= args.output_channels || time >= args.length ||
+    if (out >= args.output_channels || time >= args.output_length ||
         batch >= args.batch) {
         return;
     }
     float sum = args.has_bias ? bias[out] : 0.0f;
-    uint32_t input_batch = batch * args.length * args.input_channels;
-    uint32_t output_batch = batch * args.length * args.output_channels;
+    uint32_t input_batch = batch * args.input_length * args.input_channels;
+    uint32_t output_batch = batch * args.output_length * args.output_channels;
     for (uint32_t k = 0; k < args.kernel; k++) {
-        int32_t source = (int32_t)time + (int32_t)(k * args.dilation) -
-                         (int32_t)args.padding;
-        if (source < 0 || source >= (int32_t)args.length) continue;
+        int32_t source = (int32_t)time * (int32_t)args.stride +
+                         (int32_t)(k * args.dilation) - (int32_t)args.padding;
+        if (source < 0 || source >= (int32_t)args.input_length) continue;
         for (uint32_t in = 0; in < args.input_channels; in++) {
             sum = fmaf(input[input_batch + (uint32_t)source * args.input_channels +
                                in],
                        weight[(out * args.input_channels + in) * args.kernel + k],
+                       sum);
+        }
+    }
+    output[output_batch + time * args.output_channels + out] = sum;
+}
+
+__global__ void h3_conv_transpose1d_f32_kernel(const float *input,
+                                               const float *weight,
+                                               const float *bias, float *output,
+                                               h3_conv1d_args args) {
+    uint32_t out = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t time = blockIdx.y;
+    uint32_t batch = blockIdx.z;
+    if (out >= args.output_channels || time >= args.output_length ||
+        batch >= args.batch) {
+        return;
+    }
+    float sum = args.has_bias ? bias[out] : 0.0f;
+    uint32_t input_batch = batch * args.input_length * args.input_channels;
+    uint32_t output_batch = batch * args.output_length * args.output_channels;
+    for (uint32_t k = 0; k < args.kernel; k++) {
+        int32_t numerator = (int32_t)time + (int32_t)args.padding -
+                            (int32_t)k;
+        if (numerator < 0 || (uint32_t)numerator % args.stride) continue;
+        int32_t source = numerator / (int32_t)args.stride;
+        if (source < 0 || source >= (int32_t)args.input_length) continue;
+        for (uint32_t in = 0; in < args.input_channels; in++) {
+            sum = fmaf(input[input_batch +
+                               (uint32_t)source * args.input_channels + in],
+                       weight[(in * args.output_channels + out) * args.kernel +
+                              k],
                        sum);
         }
     }
@@ -446,11 +477,27 @@ extern "C" int h3_launch_conv1d_f32(const float *input, const float *weight,
     h3_conv1d_args host_args = *args;
     void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
     dim3 block(16, 1, 1);
-    dim3 grid((host_args.output_channels + 15) / 16, host_args.length,
+    dim3 grid((host_args.output_channels + 15) / 16, host_args.output_length,
               host_args.batch);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_conv1d_f32_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_conv_transpose1d_f32(const float *input,
+                                              const float *weight,
+                                              const float *bias, float *output,
+                                              const h3_conv1d_args *args,
+                                              hipStream_t stream) {
+    h3_conv1d_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    dim3 block(16, 1, 1);
+    dim3 grid((host_args.output_channels + 15) / 16, host_args.output_length,
+              host_args.batch);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_conv_transpose1d_f32_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
 }
 
 extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
