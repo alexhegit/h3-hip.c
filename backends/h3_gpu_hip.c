@@ -834,6 +834,43 @@ int h3_gpu_clip_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_clip_f32");
 }
 
+int h3_gpu_weight_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *vector,
+                           const h3_gpu_tensor *magnitude,
+                           uint32_t outer, uint32_t inner) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)outer * inner;
+    if (!ctx || !outer || !inner ||
+        !h3_hip_require_f32(ctx, vector, count, "weight norm vector") ||
+        !h3_hip_require_f32(ctx, magnitude, outer, "weight norm magnitude") ||
+        !h3_hip_require_f32(ctx, output, count, "weight norm output")) {
+        return 0;
+    }
+    h3_weight_norm_args args = {outer, inner};
+    return h3_hip_launch_ok(ctx, h3_launch_weight_norm_f32(
+        (const float *)tensor_ptr(vector)->host,
+        (const float *)tensor_ptr(magnitude)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_weight_norm_f32");
+}
+
+int h3_gpu_geglu_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                     const h3_gpu_tensor *gate,
+                     const h3_gpu_tensor *linear, uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, gate, elements, "GeGLU gate") ||
+        !h3_hip_require_f32(ctx, linear, elements, "GeGLU linear") ||
+        !h3_hip_require_f32(ctx, output, elements, "GeGLU output")) {
+        return 0;
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_geglu_f32(
+        (const float *)tensor_ptr(gate)->host,
+        (const float *)tensor_ptr(linear)->host,
+        (float *)tensor_ptr(output)->host, elements, ctx->stream),
+        "h3_geglu_f32");
+}
+
 int h3_gpu_rms_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          const h3_gpu_tensor *input,
                          const h3_gpu_tensor *weight, uint32_t rows,

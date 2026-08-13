@@ -44,6 +44,11 @@ typedef struct {
 } h3_clip_f32_args;
 
 typedef struct {
+    uint32_t outer;
+    uint32_t inner;
+} h3_weight_norm_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -227,6 +232,11 @@ int h3_launch_add_scaled_f32(const float *left, const float *right,
 int h3_launch_scale_add_f32(const float *residual, const float *branch,
                             const float *scale, float *output,
                             const h3_swiglu_args *args, hipStream_t stream);
+int h3_launch_weight_norm_f32(const float *vector, const float *magnitude,
+                              float *output, const h3_weight_norm_args *args,
+                              hipStream_t stream);
+int h3_launch_geglu_f32(const float *gate, const float *linear, float *output,
+                        uint32_t count, hipStream_t stream);
 int h3_launch_rms_norm_bf16(const uint16_t *input, const uint16_t *weight,
                             uint16_t *output, const h3_norm_args *args,
                             hipStream_t stream);

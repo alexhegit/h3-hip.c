@@ -149,6 +149,34 @@ __global__ void h3_scale_add_f32_kernel(const float *residual,
     output[index] = residual[index] + branch[index] * scale[column];
 }
 
+__global__ void h3_weight_norm_f32_kernel(const float *vector,
+                                          const float *magnitude, float *output,
+                                          h3_weight_norm_args args) {
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= args.outer) return;
+    uint32_t base = row * args.inner;
+    float square_sum = 0.0f;
+    for (uint32_t index = 0; index < args.inner; index++) {
+        float value = vector[base + index];
+        square_sum = fmaf(value, value, square_sum);
+    }
+    float scale = magnitude[row] * rsqrtf(square_sum);
+    for (uint32_t index = 0; index < args.inner; index++) {
+        output[base + index] = vector[base + index] * scale;
+    }
+}
+
+__global__ void h3_geglu_f32_kernel(const float *gate, const float *linear,
+                                    float *output, uint32_t count) {
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= count) return;
+    float x = gate[gid];
+    float cube = x * x * x;
+    float gelu = 0.5f * x *
+        (1.0f + tanhf(0.7978845608028654f * (x + 0.044715f * cube)));
+    output[gid] = gelu * linear[gid];
+}
+
 __global__ void h3_rms_norm_f32_kernel(const float *input, const float *weight,
                                        float *output, h3_norm_args args) {
     uint32_t row = blockIdx.x;
@@ -700,6 +728,26 @@ extern "C" int h3_launch_scale_add_f32(const float *residual,
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_scale_add_f32_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_weight_norm_f32(const float *vector,
+                                         const float *magnitude, float *output,
+                                         const h3_weight_norm_args *args,
+                                         hipStream_t stream) {
+    h3_weight_norm_args host_args = *args;
+    void *kernel_args[] = {&vector, &magnitude, &output, &host_args};
+    return h3_launch_1d(args->outer, stream,
+                        reinterpret_cast<const void *>(h3_weight_norm_f32_kernel),
+                        sizeof(kernel_args), kernel_args);
+}
+
+extern "C" int h3_launch_geglu_f32(const float *gate, const float *linear,
+                                   float *output, uint32_t count,
+                                   hipStream_t stream) {
+    void *kernel_args[] = {&gate, &linear, &output, &count};
+    return h3_launch_1d(count, stream,
+                        reinterpret_cast<const void *>(h3_geglu_f32_kernel),
+                        sizeof(kernel_args), kernel_args);
 }
 
 extern "C" int h3_launch_rms_norm_bf16(const uint16_t *input,

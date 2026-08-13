@@ -19,8 +19,6 @@ int h3_gpu_conv1d_stride_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_te
 
 int h3_gpu_conv_transpose1d_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch, uint32_t length, uint32_t input_channels, uint32_t output_channels, uint32_t kernel, uint32_t stride, uint32_t padding) { return h3_hip_unimplemented(NULL, "h3_gpu_conv_transpose1d_f32"); }
 
-int h3_gpu_weight_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *vector, const h3_gpu_tensor *magnitude, uint32_t outer, uint32_t inner) { return h3_hip_unimplemented(NULL, "h3_gpu_weight_norm_f32"); }
-
 int h3_gpu_alias_free_snake_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *alpha_log, const h3_gpu_tensor *beta_log, const h3_gpu_tensor *upsample_filter, const h3_gpu_tensor *downsample_filter, uint32_t batch, uint32_t length, uint32_t channels) { return h3_hip_unimplemented(NULL, "h3_gpu_alias_free_snake_f32"); }
 
 int h3_gpu_snake1d_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *alpha, uint32_t batch, uint32_t length, uint32_t channels) { return h3_hip_unimplemented(NULL, "h3_gpu_snake1d_f32"); }
@@ -30,8 +28,6 @@ int h3_gpu_audio_qkv_split_f32(h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor 
 int h3_gpu_sdpa_causal_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query, const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t batch, uint32_t sequence, uint32_t heads, uint32_t head_dim, float scale) { return h3_hip_unimplemented(NULL, "h3_gpu_sdpa_causal_f32"); }
 
 int h3_gpu_audio_attention_pool_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *attended, uint32_t batch, uint32_t length, uint32_t heads, uint32_t head_dim, uint32_t output_dim) { return h3_hip_unimplemented(NULL, "h3_gpu_audio_attention_pool_f32"); }
-
-int h3_gpu_geglu_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *gate, const h3_gpu_tensor *linear, uint32_t elements) { return h3_hip_unimplemented(NULL, "h3_gpu_geglu_f32"); }
 
 int h3_gpu_vae_encoder_pad_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, uint32_t batch, uint32_t depth, uint32_t height, uint32_t width, uint32_t channels, uint32_t depth_front, uint32_t height_before, uint32_t height_after, uint32_t width_before, uint32_t width_after) { return h3_hip_unimplemented(NULL, "h3_gpu_vae_encoder_pad_f32"); }
 
