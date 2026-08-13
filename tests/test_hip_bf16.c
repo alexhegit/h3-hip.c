@@ -792,6 +792,131 @@ static void cpu_conv_transpose1d_f32(const float *input, const float *weight,
     }
 }
 
+static float cpu_upsample_at(const float *input, const float *filter,
+                             uint32_t length, uint32_t channels,
+                             uint32_t channel, int up_time) {
+    int raw = up_time + 15;
+    float result = 0.0f;
+    for (int k = 0; k < 12; k++) {
+        int numerator = raw - k;
+        if (numerator < 0 || numerator % 2) continue;
+        int source = numerator / 2 - 5;
+        if (source < 0) source = 0;
+        if (source >= (int)length) source = (int)length - 1;
+        result += input[(uint32_t)source * channels + channel] * 2.0f *
+                  filter[k];
+    }
+    return result;
+}
+
+static void cpu_alias_free_snake_f32(const float *input,
+                                     const float *alpha_log,
+                                     const float *beta_log,
+                                     const float *up_filter,
+                                     const float *down_filter, float *output,
+                                     uint32_t batch, uint32_t length,
+                                     uint32_t channels) {
+    for (uint32_t b = 0; b < batch; b++) {
+        for (uint32_t time = 0; time < length; time++) {
+            for (uint32_t channel = 0; channel < channels; channel++) {
+                float alpha = expf(alpha_log[channel]);
+                float beta = expf(beta_log[channel]);
+                float result = 0.0f;
+                for (int k = 0; k < 12; k++) {
+                    int up_time = (int)time * 2 + k - 5;
+                    if (up_time < 0) up_time = 0;
+                    if (up_time >= (int)length * 2) up_time = (int)length * 2 - 1;
+                    float value = cpu_upsample_at(
+                        input + b * length * channels, up_filter, length,
+                        channels, channel, up_time);
+                    float sine = sinf(alpha * value);
+                    value += sine * sine / (beta + 1e-9f);
+                    result += value * down_filter[k];
+                }
+                output[(b * length + time) * channels + channel] = result;
+            }
+        }
+    }
+}
+
+static void cpu_snake1d_f32(const float *input, const float *alpha,
+                            float *output, uint32_t batch, uint32_t length,
+                            uint32_t channels) {
+    uint32_t count = batch * length * channels;
+    for (uint32_t index = 0; index < count; index++) {
+        float a = alpha[index % channels];
+        float x = input[index];
+        float wave = sinf(a * x);
+        output[index] = x + wave * wave / (a + 1e-9f);
+    }
+}
+
+static int test_alias_free_snake_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, LENGTH = 4, CHANNELS = 2 };
+    const float input[] = {
+        0.2f, -0.3f, 0.5f, 0.1f, -0.4f, 0.7f, 0.8f, -0.2f
+    };
+    float filter[12] = {0};
+    filter[5] = filter[6] = 0.5f;
+    const float alpha_log[] = {0.0f, 0.1f};
+    const float beta_log[] = {0.0f, -0.2f};
+    float expected[LENGTH * CHANNELS];
+    cpu_alias_free_snake_f32(input, alpha_log, beta_log, filter, filter,
+                             expected, BATCH, LENGTH, CHANNELS);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(
+        gpu, input, LENGTH * CHANNELS);
+    h3_gpu_tensor *gpu_alpha = h3_gpu_tensor_from_f32(gpu, alpha_log, CHANNELS);
+    h3_gpu_tensor *gpu_beta = h3_gpu_tensor_from_f32(gpu, beta_log, CHANNELS);
+    h3_gpu_tensor *gpu_filter = h3_gpu_tensor_from_f32(gpu, filter, 12);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, LENGTH * CHANNELS);
+    CHECK(gpu_input && gpu_alpha && gpu_beta && gpu_filter && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin alias-free snake f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_alias_free_snake_f32(
+        gpu, output, gpu_input, gpu_alpha, gpu_beta, gpu_filter, gpu_filter,
+        BATCH, LENGTH, CHANNELS), "alias-free snake f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit alias-free snake f32"));
+    float got[LENGTH * CHANNELS];
+    CHECK(h3_gpu_tensor_read_f32(output, got, LENGTH * CHANNELS));
+    for (size_t i = 0; i < LENGTH * CHANNELS; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 2e-5f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_alpha);
+    h3_gpu_tensor_free(gpu_beta);
+    h3_gpu_tensor_free(gpu_filter);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_snake1d_f32(h3_gpu *gpu) {
+    enum { BATCH = 1, LENGTH = 4, CHANNELS = 2 };
+    const float input[] = {
+        0.2f, -0.3f, 0.5f, 0.1f, -0.4f, 0.7f, 0.8f, -0.2f
+    };
+    const float alpha[] = {1.0f, 0.5f};
+    float expected[LENGTH * CHANNELS];
+    cpu_snake1d_f32(input, alpha, expected, BATCH, LENGTH, CHANNELS);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(
+        gpu, input, LENGTH * CHANNELS);
+    h3_gpu_tensor *gpu_alpha = h3_gpu_tensor_from_f32(gpu, alpha, CHANNELS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, LENGTH * CHANNELS);
+    CHECK(gpu_input && gpu_alpha && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin snake1d f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_snake1d_f32(
+        gpu, output, gpu_input, gpu_alpha, BATCH, LENGTH, CHANNELS),
+        "snake1d f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit snake1d f32"));
+    float got[LENGTH * CHANNELS];
+    CHECK(h3_gpu_tensor_read_f32(output, got, LENGTH * CHANNELS));
+    for (size_t i = 0; i < LENGTH * CHANNELS; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-6f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_alpha);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_conv1d_f32(h3_gpu *gpu) {
     enum { BATCH = 1, LENGTH = 4, IN_CH = 2, OUT_CH = 2, KERNEL = 3 };
     enum { PAD = 1, DILATION = 1 };
@@ -3276,6 +3401,8 @@ int main(void) {
     if (test_conv1d_f32(gpu) != 0) return 1;
     if (test_conv1d_stride_f32(gpu) != 0) return 1;
     if (test_conv_transpose1d_f32(gpu) != 0) return 1;
+    if (test_alias_free_snake_f32(gpu) != 0) return 1;
+    if (test_snake1d_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;

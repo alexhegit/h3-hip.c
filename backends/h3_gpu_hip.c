@@ -1448,6 +1448,56 @@ int h3_gpu_conv_transpose1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_conv_transpose1d_f32");
 }
 
+int h3_gpu_alias_free_snake_f32(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *alpha_log, const h3_gpu_tensor *beta_log,
+    const h3_gpu_tensor *upsample_filter,
+    const h3_gpu_tensor *downsample_filter, uint32_t batch, uint32_t length,
+    uint32_t channels) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)batch * length * channels;
+    if (!ctx || !batch || !length || !channels ||
+        !h3_hip_require_f32(ctx, input, count, "alias-free snake input") ||
+        !h3_hip_require_f32(ctx, output, count, "alias-free snake output") ||
+        !h3_hip_require_f32(ctx, alpha_log, channels, "alias-free snake alpha") ||
+        !h3_hip_require_f32(ctx, beta_log, channels, "alias-free snake beta") ||
+        !h3_hip_require_f32(ctx, upsample_filter, 12,
+                            "alias-free snake upsample filter") ||
+        !h3_hip_require_f32(ctx, downsample_filter, 12,
+                            "alias-free snake downsample filter")) {
+        return 0;
+    }
+    h3_audio_activation_args args = {batch, length, channels};
+    return h3_hip_launch_ok(ctx, h3_launch_alias_free_snake_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(alpha_log)->host,
+        (const float *)tensor_ptr(beta_log)->host,
+        (const float *)tensor_ptr(upsample_filter)->host,
+        (const float *)tensor_ptr(downsample_filter)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_alias_free_snake_f32");
+}
+
+int h3_gpu_snake1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                       const h3_gpu_tensor *input,
+                       const h3_gpu_tensor *alpha, uint32_t batch,
+                       uint32_t length, uint32_t channels) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)batch * length * channels;
+    if (!ctx || !batch || !length || !channels || count > UINT32_MAX ||
+        !h3_hip_require_f32(ctx, input, count, "snake1d input") ||
+        !h3_hip_require_f32(ctx, alpha, channels, "snake1d alpha") ||
+        !h3_hip_require_f32(ctx, output, count, "snake1d output")) {
+        return 0;
+    }
+    h3_audio_activation_args args = {batch, length, channels};
+    return h3_hip_launch_ok(ctx, h3_launch_snake1d_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(alpha)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_snake1d_f32");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,

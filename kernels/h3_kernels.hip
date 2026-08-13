@@ -129,6 +129,57 @@ __global__ void h3_clip_f32_kernel(const float *input, float *output,
     output[index] = fminf(fmaxf(value, args.minimum), args.maximum);
 }
 
+__global__ void h3_alias_free_snake_f32_kernel(
+    const float *input, const float *alpha_log, const float *beta_log,
+    const float *upsample_filter, const float *downsample_filter, float *output,
+    h3_audio_activation_args args) {
+    uint32_t channel = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t time = blockIdx.y * blockDim.y + threadIdx.y;
+    uint32_t batch = blockIdx.z;
+    if (channel >= args.channels || time >= args.length || batch >= args.batch)
+        return;
+    float alpha = expf(alpha_log[channel]);
+    float beta = expf(beta_log[channel]);
+    float result = 0.0f;
+    for (int down_k = 0; down_k < 12; down_k++) {
+        int up_time = (int)time * 2 + down_k - 5;
+        up_time = max(up_time, 0);
+        up_time = min(up_time, (int)args.length * 2 - 1);
+        int raw_time = up_time + 15;
+        float upsampled = 0.0f;
+        for (int up_k = 0; up_k < 12; up_k++) {
+            int numerator = raw_time - up_k;
+            if (numerator < 0 || (numerator & 1)) continue;
+            int padded_time = numerator / 2;
+            int source_time = padded_time - 5;
+            source_time = max(source_time, 0);
+            source_time = min(source_time, (int)args.length - 1);
+            uint32_t source = (batch * args.length + (uint32_t)source_time) *
+                              args.channels + channel;
+            upsampled = fmaf(input[source], 2.0f * upsample_filter[up_k],
+                             upsampled);
+        }
+        float sine = sinf(alpha * upsampled);
+        float activated = upsampled + sine * sine / (beta + 1e-9f);
+        result = fmaf(activated, downsample_filter[down_k], result);
+    }
+    uint32_t destination =
+        (batch * args.length + time) * args.channels + channel;
+    output[destination] = result;
+}
+
+__global__ void h3_snake1d_f32_kernel(const float *input, const float *alpha,
+                                      float *output,
+                                      h3_audio_activation_args args) {
+    uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t count = args.batch * args.length * args.channels;
+    if (index >= count) return;
+    float a = alpha[index % args.channels];
+    float x = input[index];
+    float wave = sinf(a * x);
+    output[index] = x + wave * wave / (a + 1e-9f);
+}
+
 __global__ void h3_add_scaled_f32_kernel(const float *left, const float *right,
                                        float *output,
                                        h3_add_scaled_f32_args args) {
@@ -884,6 +935,35 @@ extern "C" int h3_launch_clip_f32(const float *input, float *output,
     void *kernel_args[] = {&input, &output, &host_args};
     return h3_launch_1d(args->elements, stream,
                         reinterpret_cast<const void *>(h3_clip_f32_kernel),
+                        sizeof(kernel_args), kernel_args);
+}
+
+extern "C" int h3_launch_alias_free_snake_f32(
+    const float *input, const float *alpha_log, const float *beta_log,
+    const float *upsample_filter, const float *downsample_filter, float *output,
+    const h3_audio_activation_args *args, hipStream_t stream) {
+    h3_audio_activation_args host_args = *args;
+    void *kernel_args[] = {&input,     &alpha_log, &beta_log,
+                           &upsample_filter, &downsample_filter, &output,
+                           &host_args};
+    dim3 block(8, 8, 1);
+    dim3 grid((host_args.channels + 7) / 8, (host_args.length + 7) / 8,
+              host_args.batch);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_alias_free_snake_f32_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
+}
+
+extern "C" int h3_launch_snake1d_f32(const float *input, const float *alpha,
+                                     float *output,
+                                     const h3_audio_activation_args *args,
+                                     hipStream_t stream) {
+    h3_audio_activation_args host_args = *args;
+    void *kernel_args[] = {&input, &alpha, &output, &host_args};
+    return h3_launch_1d(host_args.batch * host_args.length * host_args.channels,
+                        stream,
+                        reinterpret_cast<const void *>(h3_snake1d_f32_kernel),
                         sizeof(kernel_args), kernel_args);
 }
 
