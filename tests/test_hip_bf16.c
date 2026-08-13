@@ -2418,6 +2418,77 @@ static int test_mlp_int8(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_weight_norm_f32(h3_gpu *gpu) {
+    enum { OUTER = 2, INNER = 6 };
+    enum { COUNT = OUTER * INNER };
+    const float vector[COUNT] = {
+        0.2f, -0.1f, 0.3f, 0.4f, -0.5f, 0.6f,
+        -0.2f, 0.7f, 0.1f, -0.4f, 0.3f, 0.5f
+    };
+    const float magnitude[OUTER] = {1.5f, 0.75f};
+    float expected[COUNT];
+    for (uint32_t outer = 0; outer < OUTER; outer++) {
+        float square = 0.0f;
+        for (uint32_t index = 0; index < INNER; index++) {
+            float value = vector[outer * INNER + index];
+            square = fmaf(value, value, square);
+        }
+        float scale = magnitude[outer] / sqrtf(square);
+        for (uint32_t index = 0; index < INNER; index++) {
+            expected[outer * INNER + index] =
+                vector[outer * INNER + index] * scale;
+        }
+    }
+    h3_gpu_tensor *gpu_vector = h3_gpu_tensor_from_f32(gpu, vector, COUNT);
+    h3_gpu_tensor *gpu_magnitude = h3_gpu_tensor_from_f32(gpu, magnitude, OUTER);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_vector && gpu_magnitude && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin weight norm f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_weight_norm_f32(
+        gpu, output, gpu_vector, gpu_magnitude, OUTER, INNER), "weight norm f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit weight norm f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-5f);
+    }
+    h3_gpu_tensor_free(gpu_vector);
+    h3_gpu_tensor_free(gpu_magnitude);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_geglu_f32(h3_gpu *gpu) {
+    enum { COUNT = 3 };
+    const float gate[COUNT] = {-1.0f, 0.0f, 1.5f};
+    const float linear[COUNT] = {2.0f, -1.0f, 0.5f};
+    float expected[COUNT];
+    for (size_t i = 0; i < COUNT; i++) {
+        float x = gate[i];
+        float cube = x * x * x;
+        float gelu = 0.5f * x *
+            (1.0f + tanhf(0.7978845608028654f * (x + 0.044715f * cube)));
+        expected[i] = gelu * linear[i];
+    }
+    h3_gpu_tensor *gpu_gate = h3_gpu_tensor_from_f32(gpu, gate, COUNT);
+    h3_gpu_tensor *gpu_linear = h3_gpu_tensor_from_f32(gpu, linear, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_gate && gpu_linear && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin geglu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_geglu_f32(gpu, output, gpu_gate, gpu_linear,
+                                              COUNT), "geglu f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit geglu f32"));
+    float got[COUNT];
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-5f);
+    }
+    h3_gpu_tensor_free(gpu_gate);
+    h3_gpu_tensor_free(gpu_linear);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_silu_f32(h3_gpu *gpu) {
     enum { COUNT = 3 };
     const float input[COUNT] = {-1.0f, 0.0f, 2.0f};
@@ -2633,6 +2704,8 @@ int main(void) {
     if (test_clip_f32(gpu) != 0) return 1;
     if (test_add_scaled_f32(gpu) != 0) return 1;
     if (test_scale_add_f32(gpu) != 0) return 1;
+    if (test_weight_norm_f32(gpu) != 0) return 1;
+    if (test_geglu_f32(gpu) != 0) return 1;
     if (test_adaln_linear(gpu) != 0) return 1;
     if (test_embedding(gpu) != 0) return 1;
     if (test_silu_mul(gpu) != 0) return 1;
