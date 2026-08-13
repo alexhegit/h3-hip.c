@@ -2342,6 +2342,62 @@ static int h3_hip_launch_fc1_swiglu_int8_prequant(
         "h3_fc1_swiglu_int8_nax_r128");
 }
 
+static int h3_hip_launch_linear_int8_grouped_prequant(
+    struct h3_gpu *ctx, h3_gpu_tensor *output,
+    const h3_gpu_tensor *quantized_input, const h3_gpu_tensor *input_scales,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
+    uint32_t rows, uint32_t input_dim, uint32_t output_dim,
+    uint32_t group_size) {
+    if (!group_size || input_dim % group_size) return 0;
+    h3_linear_int8_grouped_args args = {rows, input_dim, output_dim,
+                                        group_size};
+    const int8_t *input_ptr =
+        (const int8_t *)tensor_ptr(quantized_input)->host;
+    const int8_t *weight_ptr = (const int8_t *)tensor_ptr(weight)->host;
+    const float *input_scale_ptr =
+        (const float *)tensor_ptr(input_scales)->host;
+    const float *weight_scale_ptr =
+        (const float *)tensor_ptr(weight_scales)->host;
+    uint16_t *output_ptr = (uint16_t *)tensor_ptr(output)->host;
+    if (group_size == 1024u && !(input_dim % 128) && !(output_dim % 64)) {
+        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_grouped_nax_r128x64(
+            input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
+            output_ptr, &args, ctx->stream),
+            "h3_linear_int8_grouped_nax_r128x64");
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_linear_int8_grouped_naive(
+        input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr, output_ptr,
+        &args, ctx->stream), "h3_linear_int8_grouped_naive");
+}
+
+int h3_hip_launch_linear_int8_grouped_dispatch(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *quantized_input,
+    const h3_gpu_tensor *input_scales, const h3_gpu_tensor *weight,
+    const h3_gpu_tensor *weight_scales, uint32_t rows, uint32_t input_dim,
+    uint32_t output_dim, uint32_t group_size) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t scale_groups = input_dim / group_size;
+    if (!ctx || !group_size || !rows || !input_dim || !output_dim ||
+        (input_dim % group_size) ||
+        !h3_hip_require_i8(ctx, quantized_input,
+                           (size_t)((rows + 127u) & ~127u) * input_dim,
+                           "grouped int8 linear input") ||
+        !h3_hip_require_f32(ctx, input_scales,
+                            (size_t)((rows + 127u) & ~127u) * scale_groups,
+                            "grouped int8 linear input scales") ||
+        !h3_hip_require_i8(ctx, weight, (size_t)output_dim * input_dim,
+                           "grouped int8 linear weight") ||
+        !h3_hip_require_f32(ctx, weight_scales, output_dim,
+                            "grouped int8 linear weight scales") ||
+        !h3_hip_require_bf16(ctx, output, (size_t)rows * output_dim,
+                             "grouped int8 linear output")) {
+        return 0;
+    }
+    return h3_hip_launch_linear_int8_grouped_prequant(
+        ctx, output, quantized_input, input_scales, weight, weight_scales,
+        rows, input_dim, output_dim, group_size);
+}
+
 static int h3_hip_quantize_bf16_int8_rows(
     struct h3_gpu *ctx, h3_gpu_tensor *quantized,
     h3_gpu_tensor *scales, const h3_gpu_tensor *input, uint32_t rows,
@@ -2472,6 +2528,7 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          int input_is_quantized) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     uint32_t padded_rows = (rows + 127u) & ~127u;
+    uint32_t fc2_scale_groups = hidden_dim / 1024u;
     uint32_t fc1_output_dim = hidden_dim * 2u;
     size_t activation_capacity = (size_t)padded_rows *
         (input_dim > hidden_dim ? input_dim : hidden_dim);
@@ -2485,7 +2542,9 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     if (!ctx || !rows || !input_dim || !hidden_dim || !output_dim ||
         !h3_hip_require_i8(ctx, quantized_activation, activation_capacity,
                            "int8 MLP activation") ||
-        !h3_hip_require_f32(ctx, activation_scales, padded_rows,
+        !h3_hip_require_f32(ctx, activation_scales,
+                            (size_t)padded_rows *
+                                (fc2_scale_groups > 0 ? fc2_scale_groups : 1u),
                             "int8 MLP activation scales") ||
         !h3_hip_require_i8(ctx, fc1_weight, fc1_weight_count,
                            "int8 MLP FC1 weight") ||
@@ -2538,9 +2597,15 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                    rows, padded_rows, hidden_dim)) {
         ok = 0;
     }
-    if (ok && !h3_hip_launch_linear_int8_prequant(
-            ctx, output, quantized_activation, activation_scales, fc2_weight,
-            fc2_scales, rows, hidden_dim, output_dim)) {
+    if (ok && !use_int8_row_fc2 && hidden_dim % 1024u == 0) {
+        if (!h3_hip_launch_linear_int8_grouped_prequant(
+                ctx, output, quantized_activation, activation_scales,
+                fc2_weight, fc2_scales, rows, hidden_dim, output_dim, 1024u)) {
+            ok = 0;
+        }
+    } else if (ok && !h3_hip_launch_linear_int8_prequant(
+                   ctx, output, quantized_activation, activation_scales,
+                   fc2_weight, fc2_scales, rows, hidden_dim, output_dim)) {
         ok = 0;
     }
     h3_gpu_tensor_free(fc1_out);

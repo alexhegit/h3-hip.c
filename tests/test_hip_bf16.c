@@ -3421,6 +3421,150 @@ static int test_linear_int8_nax_r128(h3_gpu *gpu) {
     return 0;
 }
 
+extern int h3_hip_launch_linear_int8_grouped_dispatch(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *quantized_input,
+    const h3_gpu_tensor *input_scales, const h3_gpu_tensor *weight,
+    const h3_gpu_tensor *weight_scales, uint32_t rows, uint32_t input_dim,
+    uint32_t output_dim, uint32_t group_size);
+
+static int test_linear_int8_grouped(h3_gpu *gpu) {
+    enum { ROWS = 2, INPUT_DIM = 1024, OUTPUT_DIM = 64, GROUP_SIZE = 1024,
+           PADDED_ROWS = 128, SCALE_GROUPS = INPUT_DIM / GROUP_SIZE };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM,
+           WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM,
+           Q_ELEMS = PADDED_ROWS * INPUT_DIM,
+           SCALE_ELEMS = PADDED_ROWS * SCALE_GROUPS };
+    uint16_t *input = calloc(INPUT_ELEMS, sizeof(*input));
+    uint16_t *weight_bf16 = calloc(WEIGHT_ELEMS, sizeof(*weight_bf16));
+    CHECK(input && weight_bf16);
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input[i] = f32_to_bf16((float)((int)(i % 17) - 8) * 0.03125f);
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.0625f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, INPUT_ELEMS);
+    h3_gpu_tensor *gpu_weight_bf16 = h3_gpu_tensor_from_bf16(
+        gpu, weight_bf16, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight = h3_gpu_tensor_new_i8(gpu, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight_scales = h3_gpu_tensor_new_f32(gpu, OUTPUT_DIM);
+    h3_gpu_tensor *quantized = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32(gpu, SCALE_ELEMS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    h3_gpu_tensor *reference = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    CHECK(gpu_input && gpu_weight_bf16 && weight && weight_scales &&
+          quantized && input_scales && output && reference);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin grouped int8 linear"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, weight, weight_scales, gpu_weight_bf16, OUTPUT_DIM, INPUT_DIM),
+        "quantize grouped int8 weight"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_bf16(
+        gpu, reference, gpu_input, gpu_weight_bf16, NULL, ROWS, INPUT_DIM,
+        OUTPUT_DIM), "reference bf16 grouped linear"));
+    CHECK(!require_gpu(gpu, h3_hip_quantize_bf16_int8_groups_dispatch(
+        gpu, quantized, input_scales, gpu_input, ROWS, PADDED_ROWS, INPUT_DIM,
+        GROUP_SIZE), "grouped quantize for linear"));
+    CHECK(!require_gpu(gpu, h3_hip_launch_linear_int8_grouped_dispatch(
+        gpu, output, quantized, input_scales, weight, weight_scales, ROWS,
+        INPUT_DIM, OUTPUT_DIM, GROUP_SIZE), "grouped int8 linear"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit grouped int8 linear"));
+    uint16_t *got = calloc(ROWS * OUTPUT_DIM, sizeof(*got));
+    uint16_t *got_ref = calloc(ROWS * OUTPUT_DIM, sizeof(*got_ref));
+    CHECK(got && got_ref);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * OUTPUT_DIM));
+    CHECK(h3_gpu_tensor_read_bf16(reference, got_ref, ROWS * OUTPUT_DIM));
+    for (size_t i = 0; i < (size_t)ROWS * OUTPUT_DIM; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(got_ref[i])) < 0.25f);
+    }
+    free(input);
+    free(weight_bf16);
+    free(got);
+    free(got_ref);
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight_bf16);
+    h3_gpu_tensor_free(weight);
+    h3_gpu_tensor_free(weight_scales);
+    h3_gpu_tensor_free(quantized);
+    h3_gpu_tensor_free(input_scales);
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(reference);
+    return 0;
+}
+
+static int test_mlp_int8_grouped_fc2(h3_gpu *gpu) {
+    enum { ROWS = 4, INPUT_DIM = 128, HIDDEN = 1024, OUTPUT_DIM = 64,
+           PADDED_ROWS = 128, FC2_SCALE_GROUPS = HIDDEN / 1024 };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM,
+           FC1_ELEMS = HIDDEN * 2 * INPUT_DIM,
+           FC2_ELEMS = OUTPUT_DIM * HIDDEN,
+           Q_ELEMS = PADDED_ROWS * HIDDEN,
+           SCALE_ELEMS = PADDED_ROWS * FC2_SCALE_GROUPS };
+    uint16_t *input_bf16 = calloc(INPUT_ELEMS, sizeof(*input_bf16));
+    uint16_t *fc1_w_bf16 = calloc(FC1_ELEMS, sizeof(*fc1_w_bf16));
+    uint16_t *fc2_w_bf16 = calloc(FC2_ELEMS, sizeof(*fc2_w_bf16));
+    CHECK(input_bf16 && fc1_w_bf16 && fc2_w_bf16);
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input_bf16[i] = f32_to_bf16((float)((int)(i % 11) - 5) * 0.03125f);
+    for (size_t i = 0; i < FC1_ELEMS; i++)
+        fc1_w_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.0625f);
+    for (size_t i = 0; i < FC2_ELEMS; i++)
+        fc2_w_bf16[i] = f32_to_bf16((float)((int)(i % 9) - 4) * 0.03125f);
+    h3_gpu_tensor *input = h3_gpu_tensor_from_bf16(gpu, input_bf16, INPUT_ELEMS);
+    h3_gpu_tensor *fc1_w = h3_gpu_tensor_from_bf16(gpu, fc1_w_bf16, FC1_ELEMS);
+    h3_gpu_tensor *fc2_w = h3_gpu_tensor_from_bf16(gpu, fc2_w_bf16, FC2_ELEMS);
+    h3_gpu_tensor *fc1_int8 = h3_gpu_tensor_new_i8(gpu, FC1_ELEMS);
+    h3_gpu_tensor *fc1_scales = h3_gpu_tensor_new_f32(gpu, HIDDEN * 2);
+    h3_gpu_tensor *fc2_int8 = h3_gpu_tensor_new_i8(gpu, FC2_ELEMS);
+    h3_gpu_tensor *fc2_scales = h3_gpu_tensor_new_f32(gpu, OUTPUT_DIM);
+    h3_gpu_tensor *quantized = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *activation_scales = h3_gpu_tensor_new_f32(gpu, SCALE_ELEMS);
+    h3_gpu_tensor *activated = h3_gpu_tensor_new_bf16(gpu, ROWS * HIDDEN);
+    h3_gpu_tensor *reference = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    CHECK(input && fc1_w && fc2_w && fc1_int8 && fc1_scales && fc2_int8 &&
+          fc2_scales && quantized && activation_scales && activated &&
+          reference && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin mlp grouped fc2"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, fc1_int8, fc1_scales, fc1_w, HIDDEN * 2, INPUT_DIM),
+        "quantize mlp grouped fc1"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, fc2_int8, fc2_scales, fc2_w, OUTPUT_DIM, HIDDEN),
+        "quantize mlp grouped fc2"));
+    CHECK(!require_gpu(gpu, h3_gpu_mlp_bf16(
+        gpu, reference, input, fc1_w, fc2_w, ROWS, INPUT_DIM, HIDDEN,
+        OUTPUT_DIM), "reference bf16 mlp grouped"));
+    CHECK(!require_gpu(gpu, h3_gpu_mlp_int8_bf16(
+        gpu, output, activated, quantized, activation_scales, input,
+        fc1_int8, fc1_scales, fc2_int8, fc2_scales, fc1_w, fc2_w, ROWS,
+        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0), "mlp int8 grouped fc2"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit mlp grouped fc2"));
+    uint16_t *got = calloc(ROWS * OUTPUT_DIM, sizeof(*got));
+    uint16_t *got_ref = calloc(ROWS * OUTPUT_DIM, sizeof(*got_ref));
+    CHECK(got && got_ref);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * OUTPUT_DIM));
+    CHECK(h3_gpu_tensor_read_bf16(reference, got_ref, ROWS * OUTPUT_DIM));
+    for (size_t i = 0; i < (size_t)ROWS * OUTPUT_DIM; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(got_ref[i])) < 0.35f);
+    }
+    free(input_bf16);
+    free(fc1_w_bf16);
+    free(fc2_w_bf16);
+    free(got);
+    free(got_ref);
+    h3_gpu_tensor_free(input);
+    h3_gpu_tensor_free(fc1_w);
+    h3_gpu_tensor_free(fc2_w);
+    h3_gpu_tensor_free(fc1_int8);
+    h3_gpu_tensor_free(fc1_scales);
+    h3_gpu_tensor_free(fc2_int8);
+    h3_gpu_tensor_free(fc2_scales);
+    h3_gpu_tensor_free(quantized);
+    h3_gpu_tensor_free(activation_scales);
+    h3_gpu_tensor_free(activated);
+    h3_gpu_tensor_free(reference);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_grouped_qkv_linear_rope_int8(h3_gpu *gpu) {
     enum { ROWS = 2, INPUT_DIM = 8, HEADS = 2, HEAD_DIM = 4, ROPE_HALF = 2,
            PADDED_ROWS = 128 };
@@ -4053,9 +4197,11 @@ int main(void) {
     if (test_add_bf16(gpu) != 0) return 1;
     if (test_linear_int8(gpu) != 0) return 1;
     if (test_linear_int8_nax_r128(gpu) != 0) return 1;
+    if (test_linear_int8_grouped(gpu) != 0) return 1;
     if (test_linear_int8_head_major(gpu) != 0) return 1;
     if (test_mlp_int8(gpu) != 0) return 1;
     if (test_mlp_int8_nax_r128(gpu) != 0) return 1;
+    if (test_mlp_int8_grouped_fc2(gpu) != 0) return 1;
     if (test_grouped_qkv_linear_rope_int8(gpu) != 0) return 1;
     if (test_silu(gpu) != 0) return 1;
     if (test_swiglu(gpu) != 0) return 1;
