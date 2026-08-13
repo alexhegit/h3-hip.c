@@ -83,6 +83,14 @@ typedef struct {
 } h3_sdpa_causal_args;
 
 typedef struct {
+    uint32_t batch;
+    uint32_t length;
+    uint32_t heads;
+    uint32_t head_dim;
+    uint32_t output_dim;
+} h3_audio_pool_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -359,6 +367,9 @@ int h3_launch_sdpa_causal_f32(const float *query, const float *key,
                               const float *value, float *output,
                               const h3_sdpa_causal_args *args,
                               hipStream_t stream);
+int h3_launch_audio_attention_pool_f32(const float *attended, float *output,
+                                       const h3_audio_pool_args *args,
+                                       hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);

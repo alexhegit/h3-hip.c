@@ -1554,6 +1554,26 @@ int h3_gpu_sdpa_causal_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_sdpa_causal_f32");
 }
 
+int h3_gpu_audio_attention_pool_f32(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *attended,
+    uint32_t batch, uint32_t length, uint32_t heads, uint32_t head_dim,
+    uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t input_count = (size_t)batch * length * heads * head_dim;
+    size_t output_count = (size_t)batch * length * output_dim;
+    if (!ctx || !batch || !length || !heads || !head_dim || !output_dim ||
+        head_dim % output_dim || output_count > UINT32_MAX ||
+        !h3_hip_require_f32(ctx, attended, input_count, "audio attended") ||
+        !h3_hip_require_f32(ctx, output, output_count, "audio pooled")) {
+        return 0;
+    }
+    h3_audio_pool_args args = {batch, length, heads, head_dim, output_dim};
+    return h3_hip_launch_ok(ctx, h3_launch_audio_attention_pool_f32(
+        (const float *)tensor_ptr(attended)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_audio_attention_pool_f32");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,

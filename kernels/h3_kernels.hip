@@ -239,6 +239,23 @@ __global__ void h3_sdpa_causal_f32_kernel(const float *query, const float *key,
     }
 }
 
+__global__ void h3_audio_attention_pool_f32_kernel(const float *attended,
+                                                   float *output,
+                                                   h3_audio_pool_args args) {
+    uint32_t count = args.batch * args.length * args.output_dim;
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= count) return;
+    uint32_t column = gid % args.output_dim;
+    uint32_t row = gid / args.output_dim;
+    uint32_t pool = args.head_dim / args.output_dim;
+    float sum = 0.0f;
+    for (uint32_t head = 0; head < args.heads; head++) {
+        uint32_t base = (row * args.heads + head) * args.head_dim + column * pool;
+        for (uint32_t item = 0; item < pool; item++) sum += attended[base + item];
+    }
+    output[gid] = sum / float(args.heads * pool);
+}
+
 __global__ void h3_add_scaled_f32_kernel(const float *left, const float *right,
                                        float *output,
                                        h3_add_scaled_f32_args args) {
@@ -1052,6 +1069,18 @@ extern "C" int h3_launch_sdpa_causal_f32(const float *query, const float *key,
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_sdpa_causal_f32_kernel), grid,
                dim3(1), kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_audio_attention_pool_f32(
+    const float *attended, float *output, const h3_audio_pool_args *args,
+    hipStream_t stream) {
+    h3_audio_pool_args host_args = *args;
+    void *kernel_args[] = {&attended, &output, &host_args};
+    return h3_launch_1d(host_args.batch * host_args.length * host_args.output_dim,
+                        stream,
+                        reinterpret_cast<const void *>(
+                            h3_audio_attention_pool_f32_kernel),
+                        sizeof(kernel_args), kernel_args);
 }
 
 extern "C" int h3_launch_add_scaled_f32(const float *left, const float *right,
