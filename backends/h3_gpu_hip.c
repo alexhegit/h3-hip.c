@@ -1498,6 +1498,62 @@ int h3_gpu_snake1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_snake1d_f32");
 }
 
+int h3_gpu_audio_qkv_split_f32(
+    h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key,
+    h3_gpu_tensor *value, const h3_gpu_tensor *qkv,
+    const h3_gpu_tensor *q_bias, const h3_gpu_tensor *k_bias,
+    const h3_gpu_tensor *v_bias, uint32_t batch, uint32_t length,
+    uint32_t heads, uint32_t head_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t width = (size_t)heads * head_dim;
+    size_t count = (size_t)batch * length * width;
+    if (!ctx || !batch || !length || !heads || !head_dim ||
+        count > UINT32_MAX ||
+        !h3_hip_require_f32(ctx, qkv, count * 3, "audio QKV") ||
+        !h3_hip_require_f32(ctx, q_bias, width, "audio Q bias") ||
+        !h3_hip_require_f32(ctx, k_bias, width, "audio K bias") ||
+        !h3_hip_require_f32(ctx, v_bias, width, "audio V bias") ||
+        !h3_hip_require_f32(ctx, query, count, "audio query") ||
+        !h3_hip_require_f32(ctx, key, count, "audio key") ||
+        !h3_hip_require_f32(ctx, value, count, "audio value")) {
+        return 0;
+    }
+    h3_audio_qkv_args args = {batch, length, heads, head_dim};
+    return h3_hip_launch_ok(ctx, h3_launch_audio_qkv_split_f32(
+        (const float *)tensor_ptr(qkv)->host,
+        (const float *)tensor_ptr(q_bias)->host,
+        (const float *)tensor_ptr(k_bias)->host,
+        (const float *)tensor_ptr(v_bias)->host,
+        (float *)tensor_ptr(query)->host,
+        (float *)tensor_ptr(key)->host,
+        (float *)tensor_ptr(value)->host, &args, ctx->stream),
+        "h3_audio_qkv_split_f32");
+}
+
+int h3_gpu_sdpa_causal_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *query,
+                           const h3_gpu_tensor *key,
+                           const h3_gpu_tensor *value, uint32_t batch,
+                           uint32_t sequence, uint32_t heads,
+                           uint32_t head_dim, float scale) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)batch * sequence * heads * head_dim;
+    if (!ctx || !batch || !sequence || !heads || !head_dim ||
+        !h3_hip_require_f32(ctx, query, count, "causal SDPA query") ||
+        !h3_hip_require_f32(ctx, key, count, "causal SDPA key") ||
+        !h3_hip_require_f32(ctx, value, count, "causal SDPA value") ||
+        !h3_hip_require_f32(ctx, output, count, "causal SDPA output")) {
+        return 0;
+    }
+    h3_sdpa_causal_args args = {batch, sequence, heads, head_dim, scale};
+    return h3_hip_launch_ok(ctx, h3_launch_sdpa_causal_f32(
+        (const float *)tensor_ptr(query)->host,
+        (const float *)tensor_ptr(key)->host,
+        (const float *)tensor_ptr(value)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_sdpa_causal_f32");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,

@@ -180,6 +180,65 @@ __global__ void h3_snake1d_f32_kernel(const float *input, const float *alpha,
     output[index] = x + wave * wave / (a + 1e-9f);
 }
 
+__global__ void h3_audio_qkv_split_f32_kernel(
+    const float *qkv, const float *q_bias, const float *k_bias,
+    const float *v_bias, float *query, float *key, float *value,
+    h3_audio_qkv_args args) {
+    uint32_t width = args.heads * args.head_dim;
+    uint32_t count = args.batch * args.length * width;
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= count) return;
+    uint32_t column = gid % width;
+    uint32_t row = gid / width;
+    uint32_t base = row * width * 3;
+    query[gid] = qkv[base + column] + q_bias[column];
+    key[gid] = qkv[base + width + column] + k_bias[column];
+    value[gid] = qkv[base + width * 2 + column] + v_bias[column];
+}
+
+__global__ void h3_sdpa_causal_f32_kernel(const float *query, const float *key,
+                                          const float *value, float *output,
+                                          h3_sdpa_causal_args args) {
+    uint32_t head = blockIdx.x;
+    uint32_t q_pos = blockIdx.y;
+    uint32_t batch = blockIdx.z;
+    if (head >= args.heads || q_pos >= args.sequence || batch >= args.batch)
+        return;
+
+    uint32_t slice = batch * args.sequence * args.heads * args.head_dim;
+    float scores[512];
+    float max_score = -1e30f;
+    for (uint32_t k_pos = 0; k_pos <= q_pos; k_pos++) {
+        float dot = 0.0f;
+        for (uint32_t d = 0; d < args.head_dim; d++) {
+            uint32_t q_index =
+                slice + (q_pos * args.heads + head) * args.head_dim + d;
+            uint32_t k_index =
+                slice + (k_pos * args.heads + head) * args.head_dim + d;
+            dot = fmaf(query[q_index], key[k_index], dot);
+        }
+        scores[k_pos] = dot * args.scale;
+        max_score = fmaxf(max_score, scores[k_pos]);
+    }
+    float sum = 0.0f;
+    for (uint32_t k_pos = 0; k_pos <= q_pos; k_pos++) {
+        scores[k_pos] = expf(scores[k_pos] - max_score);
+        sum += scores[k_pos];
+    }
+    float inv_sum = sum > 0.0f ? 1.0f / sum : 0.0f;
+    for (uint32_t d = 0; d < args.head_dim; d++) {
+        float acc = 0.0f;
+        for (uint32_t k_pos = 0; k_pos <= q_pos; k_pos++) {
+            uint32_t v_index =
+                slice + (k_pos * args.heads + head) * args.head_dim + d;
+            acc = fmaf(scores[k_pos] * inv_sum, value[v_index], acc);
+        }
+        uint32_t out_index =
+            slice + (q_pos * args.heads + head) * args.head_dim + d;
+        output[out_index] = acc;
+    }
+}
+
 __global__ void h3_add_scaled_f32_kernel(const float *left, const float *right,
                                        float *output,
                                        h3_add_scaled_f32_args args) {
@@ -965,6 +1024,34 @@ extern "C" int h3_launch_snake1d_f32(const float *input, const float *alpha,
                         stream,
                         reinterpret_cast<const void *>(h3_snake1d_f32_kernel),
                         sizeof(kernel_args), kernel_args);
+}
+
+extern "C" int h3_launch_audio_qkv_split_f32(
+    const float *qkv, const float *q_bias, const float *k_bias,
+    const float *v_bias, float *query, float *key, float *value,
+    const h3_audio_qkv_args *args, hipStream_t stream) {
+    h3_audio_qkv_args host_args = *args;
+    void *kernel_args[] = {&qkv,     &q_bias, &k_bias, &v_bias,
+                           &query,   &key,    &value,  &host_args};
+    return h3_launch_1d(host_args.batch * host_args.length *
+                            host_args.heads * host_args.head_dim,
+                        stream,
+                        reinterpret_cast<const void *>(
+                            h3_audio_qkv_split_f32_kernel),
+                        sizeof(kernel_args), kernel_args);
+}
+
+extern "C" int h3_launch_sdpa_causal_f32(const float *query, const float *key,
+                                         const float *value, float *output,
+                                         const h3_sdpa_causal_args *args,
+                                         hipStream_t stream) {
+    if (args->sequence > 512) return 0;
+    h3_sdpa_causal_args host_args = *args;
+    void *kernel_args[] = {&query, &key, &value, &output, &host_args};
+    dim3 grid(host_args.heads, host_args.sequence, host_args.batch);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_sdpa_causal_f32_kernel), grid,
+               dim3(1), kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_add_scaled_f32(const float *left, const float *right,
