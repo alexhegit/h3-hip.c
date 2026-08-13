@@ -25,8 +25,12 @@ ifeq ($(H3_BACKEND),hip)
   LDLIBS := -L$(ROCM_PATH)/lib -lamdhip64 -lm
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \
 	backends/h3_hip_probe.o backends/h3_device.o \
-	backends/h3_tokenizer_stub.o kernels/h3_kernels.o \
+	backends/h3_tokenizer.o kernels/h3_kernels.o \
 	kernels/h3_kernels_extra.o
+  ICU_CFLAGS := $(shell pkg-config --cflags icu-uc 2>/dev/null)
+  ICU_LIBS := $(shell pkg-config --libs icu-uc 2>/dev/null)
+  CFLAGS += $(ICU_CFLAGS)
+  LDLIBS += $(ICU_LIBS)
   LINK := $(HIPCC)
 else
   CFLAGS := -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow \
@@ -78,7 +82,7 @@ h3_bf16_tests: tests/test_bf16.o $(LIB_OBJ)
 	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_tokenizer_tests: tests/test_tokenizer.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_text_tests: tests/test_text_metal.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)
