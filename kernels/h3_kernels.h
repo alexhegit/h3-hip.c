@@ -49,6 +49,17 @@ typedef struct {
 } h3_weight_norm_args;
 
 typedef struct {
+    uint32_t batch;
+    uint32_t length;
+    uint32_t input_channels;
+    uint32_t output_channels;
+    uint32_t kernel;
+    uint32_t padding;
+    uint32_t dilation;
+    uint32_t has_bias;
+} h3_conv1d_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -293,12 +304,19 @@ int h3_launch_vision_qkv_rope_bf16(const uint16_t *qkv,
                                    const uint16_t *rope_sin, uint16_t *query,
                                    uint16_t *key, uint16_t *value,
                                    const h3_qkv_args *args, hipStream_t stream);
+int h3_launch_video_qkv_rope_f32(const float *qkv, const float *rope_cos,
+                                 const float *rope_sin, float *query,
+                                 float *key, float *value,
+                                 const h3_qkv_args *args, hipStream_t stream);
 int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                         const uint16_t *value, uint16_t *output,
                         const h3_sdpa_args *args, hipStream_t stream);
 int h3_launch_sdpa_f32(const float *query, const float *key, const float *value,
                        float *output, const h3_sdpa_args *args,
                        hipStream_t stream);
+int h3_launch_conv1d_f32(const float *input, const float *weight,
+                         const float *bias, float *output,
+                         const h3_conv1d_args *args, hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);

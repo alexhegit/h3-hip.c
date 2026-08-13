@@ -1321,6 +1321,68 @@ int h3_gpu_vision_qkv_rope_bf16(
         "h3_vision_qkv_rope_bf16");
 }
 
+int h3_gpu_video_qkv_rope_f32(
+    h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key,
+    h3_gpu_tensor *value, const h3_gpu_tensor *qkv,
+    const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin,
+    uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half,
+    float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t inner = (size_t)heads * head_dim;
+    size_t count = (size_t)sequence * inner;
+    size_t rope_count = (size_t)sequence * rope_half;
+    if (!ctx || !sequence || !heads || !head_dim || !rope_half ||
+        rope_half * 2 > head_dim ||
+        !h3_hip_require_f32(ctx, qkv, count * 3, "video QKV") ||
+        !h3_hip_require_f32(ctx, rope_cos, rope_count, "video RoPE cos") ||
+        !h3_hip_require_f32(ctx, rope_sin, rope_count, "video RoPE sin") ||
+        !h3_hip_require_f32(ctx, query, count, "video query") ||
+        !h3_hip_require_f32(ctx, key, count, "video key") ||
+        !h3_hip_require_f32(ctx, value, count, "video value")) {
+        return 0;
+    }
+    h3_qkv_args args = {sequence, heads, head_dim, rope_half, 0, epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_video_qkv_rope_f32(
+        (const float *)tensor_ptr(qkv)->host,
+        (const float *)tensor_ptr(rope_cos)->host,
+        (const float *)tensor_ptr(rope_sin)->host,
+        (float *)tensor_ptr(query)->host,
+        (float *)tensor_ptr(key)->host,
+        (float *)tensor_ptr(value)->host, &args, ctx->stream),
+        "h3_video_qkv_rope_f32");
+}
+
+int h3_gpu_conv1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                      const h3_gpu_tensor *input, const h3_gpu_tensor *weight,
+                      const h3_gpu_tensor *bias, uint32_t batch,
+                      uint32_t length, uint32_t input_channels,
+                      uint32_t output_channels, uint32_t kernel,
+                      uint32_t padding, uint32_t dilation) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t input_count = (size_t)batch * length * input_channels;
+    size_t weight_count = (size_t)output_channels * input_channels * kernel;
+    size_t output_count = (size_t)batch * length * output_channels;
+    if (!ctx || !batch || !length || !input_channels || !output_channels ||
+        !kernel ||
+        !h3_hip_require_f32(ctx, input, input_count, "Conv1d input") ||
+        !h3_hip_require_f32(ctx, weight, weight_count, "Conv1d weight") ||
+        !h3_hip_require_f32(ctx, output, output_count, "Conv1d output") ||
+        (bias && !h3_hip_require_f32(ctx, bias, output_channels,
+                                      "Conv1d bias"))) {
+        return 0;
+    }
+    const float *bias_ptr = bias ?
+        (const float *)tensor_ptr(bias)->host :
+        (const float *)tensor_ptr(input)->host;
+    h3_conv1d_args args = {batch, length, input_channels, output_channels,
+                           kernel, padding, dilation, bias ? 1u : 0u};
+    return h3_hip_launch_ok(ctx, h3_launch_conv1d_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host, bias_ptr,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_conv1d_f32");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,
