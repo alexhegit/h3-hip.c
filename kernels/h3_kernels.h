@@ -32,6 +32,18 @@ typedef struct {
 } h3_swiglu_args;
 
 typedef struct {
+    uint32_t elements;
+    float left_scale;
+    float right_scale;
+} h3_add_scaled_f32_args;
+
+typedef struct {
+    uint32_t elements;
+    float minimum;
+    float maximum;
+} h3_clip_f32_args;
+
+typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t slots;
@@ -199,10 +211,22 @@ int h3_launch_sub_bf16(const uint16_t *left, const uint16_t *right,
                        uint16_t *output, uint32_t count, hipStream_t stream);
 int h3_launch_silu_bf16(const uint16_t *input, uint16_t *output,
                         uint32_t count, hipStream_t stream);
+int h3_launch_silu_f32(const float *input, float *output, uint32_t count,
+                       hipStream_t stream);
 int h3_launch_gelu_bf16(const uint16_t *input, uint16_t *output,
                         const h3_gelu_bf16_args *args, hipStream_t stream);
 int h3_launch_swiglu_bf16(const uint16_t *fused, uint16_t *output,
                           const h3_swiglu_args *args, hipStream_t stream);
+int h3_launch_swiglu_f32(const float *fused, float *output,
+                         const h3_swiglu_args *args, hipStream_t stream);
+int h3_launch_clip_f32(const float *input, float *output,
+                       const h3_clip_f32_args *args, hipStream_t stream);
+int h3_launch_add_scaled_f32(const float *left, const float *right,
+                             float *output, const h3_add_scaled_f32_args *args,
+                             hipStream_t stream);
+int h3_launch_scale_add_f32(const float *residual, const float *branch,
+                            const float *scale, float *output,
+                            const h3_swiglu_args *args, hipStream_t stream);
 int h3_launch_rms_norm_bf16(const uint16_t *input, const uint16_t *weight,
                             uint16_t *output, const h3_norm_args *args,
                             hipStream_t stream);
