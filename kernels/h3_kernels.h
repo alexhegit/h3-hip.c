@@ -50,10 +50,12 @@ typedef struct {
 
 typedef struct {
     uint32_t batch;
-    uint32_t length;
+    uint32_t input_length;
+    uint32_t output_length;
     uint32_t input_channels;
     uint32_t output_channels;
     uint32_t kernel;
+    uint32_t stride;
     uint32_t padding;
     uint32_t dilation;
     uint32_t has_bias;
@@ -317,6 +319,10 @@ int h3_launch_sdpa_f32(const float *query, const float *key, const float *value,
 int h3_launch_conv1d_f32(const float *input, const float *weight,
                          const float *bias, float *output,
                          const h3_conv1d_args *args, hipStream_t stream);
+int h3_launch_conv_transpose1d_f32(const float *input, const float *weight,
+                                   const float *bias, float *output,
+                                   const h3_conv1d_args *args,
+                                   hipStream_t stream);
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);

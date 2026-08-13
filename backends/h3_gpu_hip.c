@@ -1358,12 +1358,36 @@ int h3_gpu_conv1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                       uint32_t length, uint32_t input_channels,
                       uint32_t output_channels, uint32_t kernel,
                       uint32_t padding, uint32_t dilation) {
+    return h3_gpu_conv1d_stride_f32(gpu, output, input, weight, bias, batch,
+                                    length, input_channels, output_channels,
+                                    kernel, 1, padding, dilation);
+}
+
+static uint32_t h3_hip_conv1d_output_length(uint32_t length, uint32_t kernel,
+                                            uint32_t stride, uint32_t padding,
+                                            uint32_t dilation) {
+    uint64_t effective = (uint64_t)dilation * (kernel - 1) + 1;
+    if ((uint64_t)length + 2 * padding < effective) return 0;
+    return (uint32_t)(((uint64_t)length + 2 * padding - effective) / stride +
+                      1);
+}
+
+int h3_gpu_conv1d_stride_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                             const h3_gpu_tensor *input,
+                             const h3_gpu_tensor *weight,
+                             const h3_gpu_tensor *bias, uint32_t batch,
+                             uint32_t length, uint32_t input_channels,
+                             uint32_t output_channels, uint32_t kernel,
+                             uint32_t stride, uint32_t padding,
+                             uint32_t dilation) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t output_length = h3_hip_conv1d_output_length(
+        length, kernel, stride, padding, dilation);
     size_t input_count = (size_t)batch * length * input_channels;
     size_t weight_count = (size_t)output_channels * input_channels * kernel;
-    size_t output_count = (size_t)batch * length * output_channels;
+    size_t output_count = (size_t)batch * output_length * output_channels;
     if (!ctx || !batch || !length || !input_channels || !output_channels ||
-        !kernel ||
+        !kernel || !stride || !dilation || !output_length ||
         !h3_hip_require_f32(ctx, input, input_count, "Conv1d input") ||
         !h3_hip_require_f32(ctx, weight, weight_count, "Conv1d weight") ||
         !h3_hip_require_f32(ctx, output, output_count, "Conv1d output") ||
@@ -1374,13 +1398,54 @@ int h3_gpu_conv1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
     const float *bias_ptr = bias ?
         (const float *)tensor_ptr(bias)->host :
         (const float *)tensor_ptr(input)->host;
-    h3_conv1d_args args = {batch, length, input_channels, output_channels,
-                           kernel, padding, dilation, bias ? 1u : 0u};
+    h3_conv1d_args args = {batch, length, output_length, input_channels,
+                           output_channels, kernel, stride, padding, dilation,
+                           bias ? 1u : 0u};
     return h3_hip_launch_ok(ctx, h3_launch_conv1d_f32(
         (const float *)tensor_ptr(input)->host,
         (const float *)tensor_ptr(weight)->host, bias_ptr,
         (float *)tensor_ptr(output)->host, &args, ctx->stream),
-        "h3_conv1d_f32");
+        "h3_conv1d_stride_f32");
+}
+
+int h3_gpu_conv_transpose1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                                const h3_gpu_tensor *input,
+                                const h3_gpu_tensor *weight,
+                                const h3_gpu_tensor *bias, uint32_t batch,
+                                uint32_t length, uint32_t input_channels,
+                                uint32_t output_channels, uint32_t kernel,
+                                uint32_t stride, uint32_t padding) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!batch || !length || !input_channels || !output_channels || !kernel ||
+        !stride || (uint64_t)(length - 1) * stride + kernel < 2 * padding) {
+        return 0;
+    }
+    uint32_t output_length = (uint32_t)((uint64_t)(length - 1) * stride +
+                                        kernel - 2 * padding);
+    size_t input_count = (size_t)batch * length * input_channels;
+    size_t weight_count = (size_t)input_channels * output_channels * kernel;
+    size_t output_count = (size_t)batch * output_length * output_channels;
+    if (!ctx || !output_length ||
+        !h3_hip_require_f32(ctx, input, input_count, "ConvTranspose1d input") ||
+        !h3_hip_require_f32(ctx, weight, weight_count,
+                            "ConvTranspose1d weight") ||
+        !h3_hip_require_f32(ctx, output, output_count,
+                            "ConvTranspose1d output") ||
+        (bias && !h3_hip_require_f32(ctx, bias, output_channels,
+                                    "ConvTranspose1d bias"))) {
+        return 0;
+    }
+    const float *bias_ptr = bias ?
+        (const float *)tensor_ptr(bias)->host :
+        (const float *)tensor_ptr(input)->host;
+    h3_conv1d_args args = {batch, length, output_length, input_channels,
+                           output_channels, kernel, stride, padding, 1u,
+                           bias ? 1u : 0u};
+    return h3_hip_launch_ok(ctx, h3_launch_conv_transpose1d_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host, bias_ptr,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_conv_transpose1d_f32");
 }
 
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
