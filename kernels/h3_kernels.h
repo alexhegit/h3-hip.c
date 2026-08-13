@@ -500,6 +500,10 @@ int h3_launch_linear_int8_bf16_naive(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, const h3_linear_args *args,
     hipStream_t stream);
+int h3_launch_linear_int8_nax_r128(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output, const h3_linear_args *args,
+    hipStream_t stream);
 
 #ifdef __cplusplus
 }
