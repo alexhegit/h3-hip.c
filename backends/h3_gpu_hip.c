@@ -610,6 +610,32 @@ int h3_gpu_patch_linear_bf16_offset(h3_gpu *gpu, h3_gpu_tensor *output,
         ctx->stream), "h3_linear_f32_tiled_bf16");
 }
 
+int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                      const h3_gpu_tensor *input, const h3_gpu_tensor *weight,
+                      const h3_gpu_tensor *bias, uint32_t rows,
+                      uint32_t input_dim, uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t input_count = (size_t)rows * input_dim;
+    size_t weight_count = (size_t)output_dim * input_dim;
+    size_t output_count = (size_t)rows * output_dim;
+    if (!ctx || !rows || !input_dim || !output_dim ||
+        !h3_hip_require_f32(ctx, input, input_count, "linear input") ||
+        !h3_hip_require_f32(ctx, weight, weight_count, "linear weight") ||
+        !h3_hip_require_f32(ctx, output, output_count, "linear output") ||
+        (bias && !h3_hip_require_f32(ctx, bias, output_dim, "linear bias"))) {
+        return 0;
+    }
+    const float *bias_ptr = bias ?
+        (const float *)tensor_ptr(bias)->host :
+        (const float *)tensor_ptr(input)->host;
+    h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
+    return h3_hip_launch_ok(ctx, h3_launch_linear_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host, bias_ptr,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_linear_f32");
+}
+
 int h3_gpu_patch_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              const h3_gpu_tensor *input,
                              const h3_gpu_tensor *weight,

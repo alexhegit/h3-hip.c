@@ -52,12 +52,12 @@ h3/
 
 ## Phase 0 — Infrastructure (1–2 weeks)
 
-**Status (local `hip` branch):** Phase 0 complete. Phase 1A/1B largely done (~49/88
+**Status (local `hip` branch):** Phase 0 complete. Phase 1A/1B largely done (~50/88
 GPU APIs): norms, linear, AdaLN/gate fusions, QKV+RoPE (plain/grouped/linear),
 SDPA, MLP, token pool/expand, patch projection (`patch_linear_bf16` + `_map`),
 `copy_f32`, text encoder (`text_qk_rope`, `head_rms_norm`, `rope_text`,
-`gqa_causal`, `vision_qkv_rope`). `./h3_hip_bf16_tests` runs 39 CPU-oracle checks
-without MLX fixtures. Phase 5 int8 and reference NAX paths (`mlp_nax_bf16`,
+`gqa_causal`, `vision_qkv_rope`, `linear_f32`). `./h3_hip_bf16_tests` runs 40
+CPU-oracle checks without MLX fixtures. Phase 5 int8 and reference NAX paths (`mlp_nax_bf16`,
 `fc1_swiglu_nax_bf16`, `linear_bf16_nax`, grouped quantize, int8 MLP/QKV) are
 in place; tiled NAX 128×128 kernels still TODO.
 F32 conv/VAE and remaining int8 fast-path kernels remain stubbed.

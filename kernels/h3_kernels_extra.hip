@@ -394,7 +394,35 @@ extern "C" int h3_launch_silu_mul_bf16(const uint16_t *gate,
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_silu_mul_bf16_kernel),
                dim3(grid), dim3(block), kernel_args, sizeof(kernel_args),
-               stream) == hipSuccess;
+               stream) ==            hipSuccess;
+}
+
+__global__ void h3_linear_f32_kernel(const float *input, const float *weight,
+                                     const float *bias, float *output,
+                                     h3_linear_args args) {
+    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= args.rows || column >= args.output_dim) return;
+    float sum = args.has_bias ? bias[column] : 0.0f;
+    const float *x = input + row * args.input_dim;
+    const float *w = weight + column * args.input_dim;
+    for (uint32_t k = 0; k < args.input_dim; k++) {
+        sum = fmaf(x[k], w[k], sum);
+    }
+    output[row * args.output_dim + column] = sum;
+}
+
+extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
+                                    const float *bias, float *output,
+                                    const h3_linear_args *args,
+                                    hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.output_dim + 15) / 16, (host_args.rows + 15) / 16, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_linear_f32_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
 __global__ void h3_linear_f32_tiled_bf16_kernel(
