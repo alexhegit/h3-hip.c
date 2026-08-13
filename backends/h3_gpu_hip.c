@@ -1574,6 +1574,85 @@ int h3_gpu_audio_attention_pool_f32(
         "h3_audio_attention_pool_f32");
 }
 
+int h3_gpu_vae_encoder_pad_f32(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
+    uint32_t batch, uint32_t depth, uint32_t height, uint32_t width,
+    uint32_t channels, uint32_t depth_front, uint32_t height_before,
+    uint32_t height_after, uint32_t width_before, uint32_t width_after) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !batch || !depth || height < 2 || width < 2 || !channels ||
+        height_before >= height || height_after >= height ||
+        width_before >= width || width_after >= width) {
+        return 0;
+    }
+    uint32_t output_depth = depth + depth_front;
+    uint32_t output_height = height + height_before + height_after;
+    uint32_t output_width = width + width_before + width_after;
+    size_t input_count = (size_t)batch * depth * height * width * channels;
+    size_t output_count = (size_t)batch * output_depth * output_height *
+                          output_width * channels;
+    if (!h3_hip_require_f32(ctx, input, input_count, "VAE encoder pad input") ||
+        !h3_hip_require_f32(ctx, output, output_count,
+                            "VAE encoder pad output")) {
+        return 0;
+    }
+    h3_vae_encoder_pad_args args = {
+        batch, depth, height, width, channels, depth_front,
+        height_before, height_after, width_before, width_after
+    };
+    return h3_hip_launch_ok(ctx, h3_launch_vae_encoder_pad_f32(
+        (const float *)tensor_ptr(input)->host,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_vae_encoder_pad_f32");
+}
+
+int h3_gpu_conv3d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                      const h3_gpu_tensor *input, const h3_gpu_tensor *weight,
+                      const h3_gpu_tensor *bias, uint32_t batch, uint32_t depth,
+                      uint32_t height, uint32_t width,
+                      uint32_t input_channels, uint32_t output_channels,
+                      uint32_t kernel_depth, uint32_t kernel_height,
+                      uint32_t kernel_width, uint32_t stride_depth,
+                      uint32_t stride_height, uint32_t stride_width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !batch || !depth || !height || !width || !input_channels ||
+        !output_channels || !kernel_depth || !kernel_height || !kernel_width ||
+        !stride_depth || !stride_height || !stride_width ||
+        depth < kernel_depth || height < kernel_height ||
+        width < kernel_width) {
+        return 0;
+    }
+    uint32_t output_depth = (depth - kernel_depth) / stride_depth + 1;
+    uint32_t output_height = (height - kernel_height) / stride_height + 1;
+    uint32_t output_width = (width - kernel_width) / stride_width + 1;
+    size_t input_count =
+        (size_t)batch * depth * height * width * input_channels;
+    size_t weight_count = (size_t)output_channels * input_channels *
+                          kernel_depth * kernel_height * kernel_width;
+    size_t output_count = (size_t)batch * output_depth * output_height *
+                          output_width * output_channels;
+    if (!h3_hip_require_f32(ctx, input, input_count, "Conv3d input") ||
+        !h3_hip_require_f32(ctx, weight, weight_count, "Conv3d weight") ||
+        !h3_hip_require_f32(ctx, output, output_count, "Conv3d output") ||
+        (bias && !h3_hip_require_f32(ctx, bias, output_channels,
+                                    "Conv3d bias"))) {
+        return 0;
+    }
+    const float *bias_ptr = bias ?
+        (const float *)tensor_ptr(bias)->host :
+        (const float *)tensor_ptr(input)->host;
+    h3_conv3d_args args = {batch, depth, height, width, output_depth,
+                          output_height, output_width, input_channels,
+                          output_channels, kernel_depth, kernel_height,
+                          kernel_width, stride_depth, stride_height,
+                          stride_width, bias ? 1u : 0u};
+    return h3_hip_launch_ok(ctx, h3_launch_conv3d_f32(
+        (const float *)tensor_ptr(input)->host,
+        (const float *)tensor_ptr(weight)->host, bias_ptr,
+        (float *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_conv3d_f32");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,

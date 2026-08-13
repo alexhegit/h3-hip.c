@@ -52,7 +52,7 @@ h3/
 
 ## Phase 0 — Infrastructure (1–2 weeks)
 
-**Status (local `hip` branch):** Phase 0 complete. Phase 1A/1B largely done (~73/88
+**Status (local `hip` branch):** Phase 0 complete. Phase 1A/1B largely done (~75/88
 GPU APIs): norms, linear, AdaLN/gate fusions, QKV+RoPE (plain/grouped/linear),
 SDPA, MLP, token pool/expand, patch projection (`patch_linear_bf16` + `_map`),
 `copy_f32`, text encoder (`text_qk_rope`, `head_rms_norm`, `rope_text`,
@@ -61,12 +61,13 @@ SDPA, MLP, token pool/expand, patch projection (`patch_linear_bf16` + `_map`),
 `weight_norm_f32`, `geglu_f32`, `gate_f32`, `adaln_f32`, `qkv_rope_f32`,
 `sdpa_f32`, `video_qkv_rope_f32`, `conv1d_f32`, `conv1d_stride_f32`,
 `conv_transpose1d_f32`, `alias_free_snake_f32`, `snake1d_f32`,
-`audio_qkv_split_f32`, `sdpa_causal_f32`, `audio_attention_pool_f32`).
-`./h3_hip_bf16_tests` runs 62 CPU-oracle checks without MLX fixtures. Phase 5
+`audio_qkv_split_f32`, `sdpa_causal_f32`, `audio_attention_pool_f32`,
+`vae_encoder_pad_f32`, `conv3d_f32`).
+`./h3_hip_bf16_tests` runs 64 CPU-oracle checks without MLX fixtures. Phase 5
 int8 and reference NAX paths (`mlp_nax_bf16`, `fc1_swiglu_nax_bf16`,
 `linear_bf16_nax`, grouped quantize, int8 MLP/QKV) are in place; tiled NAX
-128×128 kernels still TODO. Remaining VAE conv and int8 fast-path kernels remain
-stubbed.
+128×128 kernels still TODO. Remaining VAE group-norm and int8 fast-path kernels
+remain stubbed.
 
 - `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
 - `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`
