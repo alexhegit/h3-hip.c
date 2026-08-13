@@ -365,6 +365,37 @@ __global__ void h3_qkv_rope_bf16_kernel(const uint16_t *qkv,
     value[output_index] = qkv[v_base + dimension];
 }
 
+__global__ void h3_vision_qkv_rope_bf16_kernel(
+    const uint16_t *qkv, const uint16_t *rope_cos, const uint16_t *rope_sin,
+    uint16_t *query, uint16_t *key, uint16_t *value, h3_qkv_args args) {
+    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t row = blockIdx.z;
+    if (dimension >= args.head_dim || head >= args.heads ||
+        row >= args.sequence) return;
+    uint32_t inner = args.heads * args.head_dim;
+    uint32_t row_base = row * inner * 3;
+    uint32_t q_base = row_base + head * args.head_dim;
+    uint32_t k_base = row_base + inner + head * args.head_dim;
+    uint32_t v_base = row_base + inner * 2 + head * args.head_dim;
+    uint32_t half_dim = args.rope_half;
+    uint32_t rope_index = row * half_dim + dimension % half_dim;
+    float c = h3_bf16_to_f32(rope_cos[rope_index]);
+    float s = h3_bf16_to_f32(rope_sin[rope_index]);
+    uint32_t pair = dimension < half_dim ? dimension + half_dim :
+                                         dimension - half_dim;
+    float q0 = h3_bf16_to_f32(qkv[q_base + dimension]);
+    float k0 = h3_bf16_to_f32(qkv[k_base + dimension]);
+    float q1 = h3_bf16_to_f32(qkv[q_base + pair]);
+    float k1 = h3_bf16_to_f32(qkv[k_base + pair]);
+    float qr = dimension < half_dim ? q0 * c - q1 * s : q0 * c + q1 * s;
+    float kr = dimension < half_dim ? k0 * c - k1 * s : k0 * c + k1 * s;
+    uint32_t output_index = (row * args.heads + head) * args.head_dim + dimension;
+    query[output_index] = h3_f32_to_bf16(qr);
+    key[output_index] = h3_f32_to_bf16(kr);
+    value[output_index] = qkv[v_base + dimension];
+}
+
 __global__ void h3_sdpa_bf16_kernel(const uint16_t *query, const uint16_t *key,
                                     const uint16_t *value, uint16_t *output,
                                     h3_sdpa_args args) {
@@ -615,6 +646,22 @@ extern "C" int h3_launch_qkv_rope_bf16(const uint16_t *qkv,
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_qkv_rope_bf16_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_vision_qkv_rope_bf16(
+    const uint16_t *qkv, const uint16_t *rope_cos, const uint16_t *rope_sin,
+    uint16_t *query, uint16_t *key, uint16_t *value, const h3_qkv_args *args,
+    hipStream_t stream) {
+    h3_qkv_args host_args = *args;
+    void *kernel_args[] = {&qkv, &rope_cos, &rope_sin, &query, &key, &value,
+                           &host_args};
+    dim3 block(host_args.head_dim, 1, 1);
+    dim3 grid(1, host_args.heads, host_args.sequence);
+    if (host_args.head_dim > 256) return 0;
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_vision_qkv_rope_bf16_kernel),
+               grid, block, kernel_args, sizeof(kernel_args), stream) ==
+           hipSuccess;
 }
 
 extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,

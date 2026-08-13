@@ -986,6 +986,36 @@ int h3_gpu_grouped_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
                                        epsilon);
 }
 
+int h3_gpu_vision_qkv_rope_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key,
+    h3_gpu_tensor *value, const h3_gpu_tensor *qkv,
+    const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin,
+    uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t inner = (size_t)heads * head_dim;
+    size_t count = (size_t)sequence * inner;
+    size_t rope_count = (size_t)sequence * rope_half;
+    if (!ctx || !sequence || !heads || !head_dim || !rope_half ||
+        rope_half * 2 != head_dim ||
+        !h3_hip_require_bf16(ctx, qkv, count * 3, "vision QKV") ||
+        !h3_hip_require_bf16(ctx, rope_cos, rope_count, "vision RoPE cos") ||
+        !h3_hip_require_bf16(ctx, rope_sin, rope_count, "vision RoPE sin") ||
+        !h3_hip_require_bf16(ctx, query, count, "vision query") ||
+        !h3_hip_require_bf16(ctx, key, count, "vision key") ||
+        !h3_hip_require_bf16(ctx, value, count, "vision value")) {
+        return 0;
+    }
+    h3_qkv_args args = {sequence, heads, head_dim, rope_half, 0, 0.0f};
+    return h3_hip_launch_ok(ctx, h3_launch_vision_qkv_rope_bf16(
+        (const uint16_t *)tensor_ptr(qkv)->host,
+        (const uint16_t *)tensor_ptr(rope_cos)->host,
+        (const uint16_t *)tensor_ptr(rope_sin)->host,
+        (uint16_t *)tensor_ptr(query)->host,
+        (uint16_t *)tensor_ptr(key)->host,
+        (uint16_t *)tensor_ptr(value)->host, &args, ctx->stream),
+        "h3_vision_qkv_rope_bf16");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,

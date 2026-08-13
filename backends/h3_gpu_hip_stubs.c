@@ -56,5 +56,3 @@ int h3_gpu_conv3d_f32(h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *i
 
 int h3_gpu_vae_encoder_group_norm_silu_f32( h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input, const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch, uint32_t depth, uint32_t height, uint32_t width, uint32_t channels, uint32_t groups, float epsilon) { return h3_hip_unimplemented(NULL, "h3_gpu_vae_encoder_group_norm_silu_f32"); }
 
-int h3_gpu_vision_qkv_rope_bf16( h3_gpu *gpu, h3_gpu_tensor *query, h3_gpu_tensor *key, h3_gpu_tensor *value, const h3_gpu_tensor *qkv, const h3_gpu_tensor *rope_cos, const h3_gpu_tensor *rope_sin, uint32_t sequence, uint32_t heads, uint32_t head_dim, uint32_t rope_half) { return h3_hip_unimplemented(NULL, "h3_gpu_vision_qkv_rope_bf16"); }
-
