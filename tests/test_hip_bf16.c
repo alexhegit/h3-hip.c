@@ -752,6 +752,49 @@ extern int h3_hip_linear_bf16_nax_dispatch(
     const h3_gpu_tensor *weight, uint32_t rows, uint32_t input_dim,
     uint32_t output_dim);
 
+static int test_linear_f32(h3_gpu *gpu) {
+    enum { ROWS = 2, INPUT_DIM = 4, OUTPUT_DIM = 3 };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM, WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM };
+    float input[INPUT_ELEMS], weight[WEIGHT_ELEMS], bias[OUTPUT_DIM];
+    float expected[ROWS * OUTPUT_DIM];
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input[i] = (float)((int)(i % 7) - 3) * 0.125f;
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight[i] = (float)((int)(i % 5) - 2) * 0.0625f;
+    for (size_t i = 0; i < OUTPUT_DIM; i++)
+        bias[i] = (float)((int)(i % 3) - 1) * 0.25f;
+    for (uint32_t row = 0; row < ROWS; row++) {
+        for (uint32_t col = 0; col < OUTPUT_DIM; col++) {
+            float sum = bias[col];
+            for (uint32_t k = 0; k < INPUT_DIM; k++) {
+                sum = fmaf(input[row * INPUT_DIM + k],
+                           weight[col * INPUT_DIM + k], sum);
+            }
+            expected[row * OUTPUT_DIM + col] = sum;
+        }
+    }
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, INPUT_ELEMS);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, WEIGHT_ELEMS);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, OUTPUT_DIM);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, ROWS * OUTPUT_DIM);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin linear f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, ROWS, INPUT_DIM,
+        OUTPUT_DIM), "linear f32"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit linear f32"));
+    float got[ROWS * OUTPUT_DIM];
+    CHECK(h3_gpu_tensor_read_f32(output, got, ROWS * OUTPUT_DIM));
+    for (size_t i = 0; i < ROWS * OUTPUT_DIM; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static int test_linear_bf16_nax(h3_gpu *gpu) {
     enum { ROWS = 2, INPUT_DIM = 4, OUTPUT_DIM = 3 };
     enum { INPUT_ELEMS = ROWS * INPUT_DIM, WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM };
@@ -2353,6 +2396,7 @@ int main(void) {
     if (test_mlp_nax(gpu) != 0) return 1;
     if (test_fc1_swiglu_nax(gpu) != 0) return 1;
     if (test_linear_bf16_nax(gpu) != 0) return 1;
+    if (test_linear_f32(gpu) != 0) return 1;
     if (test_adaln_linear(gpu) != 0) return 1;
     if (test_embedding(gpu) != 0) return 1;
     if (test_silu_mul(gpu) != 0) return 1;
