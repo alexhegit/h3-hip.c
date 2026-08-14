@@ -987,6 +987,215 @@ __global__ void h3_sdpa_f32_kernel(const float *query, const float *key,
     }
 }
 
+#define H3_SDPA_TILE 512u
+
+static uint32_t h3_sdpa_threads(uint32_t sequence) {
+    uint32_t threads = 1;
+    while (threads * 2u <= 128u && threads < sequence) threads *= 2u;
+    return threads ? threads : 1u;
+}
+
+__global__ void h3_sdpa_bf16_tiled_kernel(const uint16_t *query,
+                                          const uint16_t *key,
+                                          const uint16_t *value,
+                                          uint16_t *output,
+                                          h3_sdpa_args args) {
+    __shared__ float reductions[128];
+    __shared__ float shared_query[128];
+    __shared__ float tile_scores[H3_SDPA_TILE];
+    __shared__ float acc[128];
+    __shared__ float softmax_max;
+    __shared__ float softmax_sum;
+
+    uint32_t head = blockIdx.x;
+    uint32_t q_pos = blockIdx.y;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    if (head >= args.heads || q_pos >= args.sequence || args.head_dim > 128u)
+        return;
+
+    uint32_t q_base = (q_pos * args.heads + head) * args.head_dim;
+    for (uint32_t d = tid; d < args.head_dim; d += threads) {
+        shared_query[d] = h3_bf16_to_f32(query[q_base + d]) * args.scale;
+        acc[d] = 0.0f;
+    }
+    if (tid == 0) {
+        softmax_max = -1e30f;
+        softmax_sum = 0.0f;
+    }
+    __syncthreads();
+
+    for (uint32_t tile_start = 0; tile_start < args.sequence;
+         tile_start += H3_SDPA_TILE) {
+        uint32_t tile_count = args.sequence - tile_start;
+        if (tile_count > H3_SDPA_TILE) tile_count = H3_SDPA_TILE;
+
+        float local_max = -1e30f;
+        for (uint32_t ki = tid; ki < tile_count; ki += threads) {
+            uint32_t k_pos = tile_start + ki;
+            uint32_t k_base = (k_pos * args.heads + head) * args.head_dim;
+            float dot = 0.0f;
+            for (uint32_t d = 0; d < args.head_dim; d++) {
+                dot = fmaf(shared_query[d], h3_bf16_to_f32(key[k_base + d]),
+                           dot);
+            }
+            tile_scores[ki] = dot;
+            local_max = fmaxf(local_max, dot);
+        }
+        reductions[tid] = local_max;
+        __syncthreads();
+        for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+            if (tid < stride) {
+                reductions[tid] =
+                    fmaxf(reductions[tid], reductions[tid + stride]);
+            }
+            __syncthreads();
+        }
+        float tile_max = reductions[0];
+
+        if (tid == 0) {
+            float new_max = fmaxf(softmax_max, tile_max);
+            reductions[0] = expf(softmax_max - new_max);
+            softmax_max = new_max;
+        }
+        __syncthreads();
+        float rescale = reductions[0];
+
+        for (uint32_t d = tid; d < args.head_dim; d += threads) acc[d] *= rescale;
+        __syncthreads();
+
+        for (uint32_t d = tid; d < args.head_dim; d += threads) {
+            float sum = 0.0f;
+            for (uint32_t ki = 0; ki < tile_count; ki++) {
+                uint32_t k_pos = tile_start + ki;
+                float prob = expf(tile_scores[ki] - softmax_max);
+                uint32_t v_index =
+                    (k_pos * args.heads + head) * args.head_dim + d;
+                sum = fmaf(prob, h3_bf16_to_f32(value[v_index]), sum);
+            }
+            acc[d] += sum;
+        }
+        __syncthreads();
+
+        float local_prob_sum = 0.0f;
+        for (uint32_t ki = tid; ki < tile_count; ki += threads) {
+            local_prob_sum += expf(tile_scores[ki] - softmax_max);
+        }
+        reductions[tid] = local_prob_sum;
+        __syncthreads();
+        for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+            if (tid < stride) reductions[tid] += reductions[tid + stride];
+            __syncthreads();
+        }
+        if (tid == 0) softmax_sum = softmax_sum * rescale + reductions[0];
+        __syncthreads();
+    }
+
+    float inv_sum = softmax_sum > 0.0f ? 1.0f / softmax_sum : 0.0f;
+    for (uint32_t d = tid; d < args.head_dim; d += threads) {
+        output[q_base + d] = h3_f32_to_bf16(acc[d] * inv_sum);
+    }
+}
+
+__global__ void h3_sdpa_f32_tiled_kernel(const float *query, const float *key,
+                                         const float *value, float *output,
+                                         h3_sdpa_args args) {
+    __shared__ float reductions[128];
+    __shared__ float shared_query[128];
+    __shared__ float tile_scores[H3_SDPA_TILE];
+    __shared__ float acc[128];
+    __shared__ float softmax_max;
+    __shared__ float softmax_sum;
+
+    uint32_t head = blockIdx.x;
+    uint32_t q_pos = blockIdx.y;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    if (head >= args.heads || q_pos >= args.sequence || args.head_dim > 128u)
+        return;
+
+    uint32_t q_base = (q_pos * args.heads + head) * args.head_dim;
+    for (uint32_t d = tid; d < args.head_dim; d += threads) {
+        shared_query[d] = query[q_base + d] * args.scale;
+        acc[d] = 0.0f;
+    }
+    if (tid == 0) {
+        softmax_max = -1e30f;
+        softmax_sum = 0.0f;
+    }
+    __syncthreads();
+
+    for (uint32_t tile_start = 0; tile_start < args.sequence;
+         tile_start += H3_SDPA_TILE) {
+        uint32_t tile_count = args.sequence - tile_start;
+        if (tile_count > H3_SDPA_TILE) tile_count = H3_SDPA_TILE;
+
+        float local_max = -1e30f;
+        for (uint32_t ki = tid; ki < tile_count; ki += threads) {
+            uint32_t k_pos = tile_start + ki;
+            uint32_t k_base = (k_pos * args.heads + head) * args.head_dim;
+            float dot = 0.0f;
+            for (uint32_t d = 0; d < args.head_dim; d++) {
+                dot = fmaf(shared_query[d], key[k_base + d], dot);
+            }
+            tile_scores[ki] = dot;
+            local_max = fmaxf(local_max, dot);
+        }
+        reductions[tid] = local_max;
+        __syncthreads();
+        for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+            if (tid < stride) {
+                reductions[tid] =
+                    fmaxf(reductions[tid], reductions[tid + stride]);
+            }
+            __syncthreads();
+        }
+        float tile_max = reductions[0];
+
+        if (tid == 0) {
+            float new_max = fmaxf(softmax_max, tile_max);
+            reductions[0] = expf(softmax_max - new_max);
+            softmax_max = new_max;
+        }
+        __syncthreads();
+        float rescale = reductions[0];
+
+        for (uint32_t d = tid; d < args.head_dim; d += threads) acc[d] *= rescale;
+        __syncthreads();
+
+        for (uint32_t d = tid; d < args.head_dim; d += threads) {
+            float sum = 0.0f;
+            for (uint32_t ki = 0; ki < tile_count; ki++) {
+                uint32_t k_pos = tile_start + ki;
+                float prob = expf(tile_scores[ki] - softmax_max);
+                uint32_t v_index =
+                    (k_pos * args.heads + head) * args.head_dim + d;
+                sum = fmaf(prob, value[v_index], sum);
+            }
+            acc[d] += sum;
+        }
+        __syncthreads();
+
+        float local_prob_sum = 0.0f;
+        for (uint32_t ki = tid; ki < tile_count; ki += threads) {
+            local_prob_sum += expf(tile_scores[ki] - softmax_max);
+        }
+        reductions[tid] = local_prob_sum;
+        __syncthreads();
+        for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+            if (tid < stride) reductions[tid] += reductions[tid + stride];
+            __syncthreads();
+        }
+        if (tid == 0) softmax_sum = softmax_sum * rescale + reductions[0];
+        __syncthreads();
+    }
+
+    float inv_sum = softmax_sum > 0.0f ? 1.0f / softmax_sum : 0.0f;
+    for (uint32_t d = tid; d < args.head_dim; d += threads) {
+        output[q_base + d] = acc[d] * inv_sum;
+    }
+}
+
 __global__ void h3_euler_bf16_kernel(float *sample, const uint16_t *last,
                                    const uint16_t *previous,
                                    h3_euler_args args) {
@@ -1485,26 +1694,46 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, uint16_t *output,
                                    const h3_sdpa_args *args,
                                    hipStream_t stream) {
-    if (args->sequence > 512) return 0;
+    if (!args->sequence || !args->heads || !args->head_dim ||
+        args->head_dim > 128) {
+        return 0;
+    }
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
     dim3 grid(host_args.heads, host_args.sequence, 1);
+    if (host_args.sequence <= H3_SDPA_TILE) {
+        return hipLaunchKernel(
+                   reinterpret_cast<const void *>(h3_sdpa_bf16_kernel), grid,
+                   dim3(1), kernel_args, sizeof(kernel_args), stream) ==
+               hipSuccess;
+    }
+    dim3 block(h3_sdpa_threads(host_args.sequence), 1, 1);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_sdpa_bf16_kernel), grid,
-               dim3(1), kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+               reinterpret_cast<const void *>(h3_sdpa_bf16_tiled_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
                                   const float *value, float *output,
                                   const h3_sdpa_args *args,
                                   hipStream_t stream) {
-    if (args->sequence > 512) return 0;
+    if (!args->sequence || !args->heads || !args->head_dim ||
+        args->head_dim > 128) {
+        return 0;
+    }
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
     dim3 grid(host_args.heads, host_args.sequence, 1);
+    if (host_args.sequence <= H3_SDPA_TILE) {
+        return hipLaunchKernel(
+                   reinterpret_cast<const void *>(h3_sdpa_f32_kernel), grid,
+                   dim3(1), kernel_args, sizeof(kernel_args), stream) ==
+               hipSuccess;
+    }
+    dim3 block(h3_sdpa_threads(host_args.sequence), 1, 1);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_sdpa_f32_kernel), grid,
-               dim3(1), kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+               reinterpret_cast<const void *>(h3_sdpa_f32_tiled_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_euler_bf16(float *sample, const uint16_t *last,
