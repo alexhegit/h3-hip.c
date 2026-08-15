@@ -73,7 +73,8 @@ the HIP stub; `./h3_tokenizer_tests` passes on the released vocabulary.
 **E2E smoke has produced a playable MP4** (`512x512`, 22 frames, 2 steps).
 DiT SDPA now uses a warp-level online-softmax kernel (`head_dim=128` specialized)
 instead of the 512-cap naive / tiled fallback (kept behind `H3_SDPA_LEGACY`).
-Remaining Apple-only TensorOps kernels remain deferred.
+GQA causal text attention and causal F32 SDPA use the same wave-level path and
+no longer fail for `sequence > 512`. Remaining Apple-only TensorOps kernels remain deferred.
 
 - `backends/h3_gpu_hip.c` — HIP context, tensors, `h3_gpu_add_bf16`, cast/copy
 - `backends/h3_hip_probe.c` — gfx1151 device probe via `hipGetDeviceProperties`
