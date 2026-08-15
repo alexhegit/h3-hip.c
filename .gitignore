@@ -29,3 +29,4 @@ h3_semantic_vae_test
 libh3.a
 .DS_Store
 h3_hip_smoke
+h3_hip_real_dit_smoke
