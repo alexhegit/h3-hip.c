@@ -72,6 +72,9 @@ h3_hip_bf16_tests: tests/test_hip_bf16.o $(LIB_GPU)
 h3_hip_smoke: tests/test_hip_smoke.o $(LIB_GPU)
 	$(HIPCC) -o $@ $^ $(LDLIBS)
 
+h3_hip_real_dit_smoke: tests/test_hip_real_dit.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
 h3_tests: tests/test_h3.o $(LIB_OBJ)
 	$(LINK) -o $@ $^ $(LDLIBS)
 
@@ -265,7 +268,7 @@ linenoise.o: CFLAGS += -Wno-conversion -Wno-variadic-macro-arguments-omitted
 -include $(wildcard *.d tests/*.d backends/*.d kernels/*.d)
 
 clean:
-	rm -f h3 h3_tests h3_hip_smoke h3_hip_bf16_tests h3_metal_tests h3_bf16_tests h3_tokenizer_tests \
+	rm -f h3 h3_tests h3_hip_smoke h3_hip_bf16_tests h3_hip_real_dit_smoke h3_metal_tests h3_bf16_tests h3_tokenizer_tests \
 		h3_text_tests h3_real_prompt_test h3_real_dit_block_test \
 		h3_audio_gpu_tests h3_real_audio_vae_test h3_real_audio_encoder_test \
 		h3_av_mux_test \
