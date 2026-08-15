@@ -4,6 +4,7 @@
 #include <hip/hip_runtime.h>
 
 #include <math.h>
+#include <stdlib.h>
 
 __device__ __host__ inline float h3_bf16_to_f32(uint16_t value) {
     return __bfloat162float(*reinterpret_cast<__hip_bfloat16 *>(&value));
@@ -831,6 +832,70 @@ __global__ void h3_gqa_causal_bf16_kernel(const uint16_t *query,
     }
 }
 
+__device__ inline float h3_gqa_warp_sum(float value) {
+#pragma unroll
+    for (int mask = 16; mask > 0; mask >>= 1)
+        value += __shfl_xor(value, mask);
+    return value;
+}
+
+__global__ void __launch_bounds__(32)
+h3_gqa_causal_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
+                               const uint16_t *value, uint16_t *output,
+                               h3_gqa_args args) {
+    uint32_t query_row = blockIdx.x;
+    uint32_t query_head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    uint32_t kv_head = query_head / (args.query_heads / args.kv_heads);
+    uint32_t q_base =
+        (query_row * args.query_heads + query_head) * args.head_dim;
+    float q[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+    for (int item = 0; item < 4; item++) {
+        uint32_t dimension = lane + (uint32_t)item * 32u;
+        if (dimension < args.head_dim) {
+            q[item] = h3_bf16_to_f32(h3_f32_to_bf16(
+                h3_bf16_to_f32(query[q_base + dimension]) * args.scale));
+        }
+    }
+    float maximum = -1e30f;
+    float sum = 0.0f;
+    uint32_t key_count = query_row + 1;
+    for (uint32_t key_row = 0; key_row < key_count; key_row++) {
+        uint32_t k_base = (key_row * args.kv_heads + kv_head) * args.head_dim;
+        float partial = 0.0f;
+#pragma unroll
+        for (int item = 0; item < 4; item++) {
+            uint32_t dimension = lane + (uint32_t)item * 32u;
+            if (dimension < args.head_dim)
+                partial = fmaf(q[item], h3_bf16_to_f32(key[k_base + dimension]),
+                               partial);
+        }
+        float score = h3_gqa_warp_sum(partial);
+        float new_max = fmaxf(maximum, score);
+        float alpha = expf(maximum - new_max);
+        float probability = expf(score - new_max);
+#pragma unroll
+        for (int item = 0; item < 4; item++) {
+            uint32_t dimension = lane + (uint32_t)item * 32u;
+            float v = 0.0f;
+            if (dimension < args.head_dim)
+                v = h3_bf16_to_f32(value[k_base + dimension]);
+            acc[item] = fmaf(probability, v, acc[item] * alpha);
+        }
+        sum = fmaf(sum, alpha, probability);
+        maximum = new_max;
+    }
+    float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+#pragma unroll
+    for (int item = 0; item < 4; item++) {
+        uint32_t dimension = lane + (uint32_t)item * 32u;
+        if (dimension < args.head_dim)
+            output[q_base + dimension] = h3_f32_to_bf16(acc[item] * inv);
+    }
+}
+
 extern "C" int h3_launch_text_qk_rope_bf16(
     const uint16_t *query_input, const uint16_t *key_input,
     const uint16_t *q_weight, const uint16_t *k_weight,
@@ -886,13 +951,25 @@ extern "C" int h3_launch_gqa_causal_bf16(const uint16_t *query,
                                          uint16_t *output,
                                          const h3_gqa_args *args,
                                          hipStream_t stream) {
-    if (args->sequence > 512 || args->head_dim > 128) return 0;
+    if (!args->sequence || !args->query_heads || !args->kv_heads ||
+        !args->head_dim || args->head_dim > 128 ||
+        args->query_heads % args->kv_heads != 0) {
+        return 0;
+    }
     h3_gqa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
+    dim3 grid(host_args.sequence, host_args.query_heads, 1);
+    if (!getenv("H3_GQA_LEGACY")) {
+        return hipLaunchKernel(
+                   reinterpret_cast<const void *>(
+                       h3_gqa_causal_bf16_wave_kernel),
+                   grid, dim3(32), kernel_args, sizeof(kernel_args),
+                   stream) == hipSuccess;
+    }
+    if (host_args.sequence > 512) return 0;
     uint32_t threads = 1;
     while (threads * 2u <= 128u && threads < host_args.sequence) threads *= 2u;
     dim3 block(threads, 1, 1);
-    dim3 grid(host_args.sequence, host_args.query_heads, 1);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_gqa_causal_bf16_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
