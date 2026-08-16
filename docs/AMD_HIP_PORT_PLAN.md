@@ -63,12 +63,14 @@ SDPA, MLP, token pool/expand, patch projection (`patch_linear_bf16` + `_map`),
 `conv_transpose1d_f32`, `alias_free_snake_f32`, `snake1d_f32`,
 `audio_qkv_split_f32`, `sdpa_causal_f32`, `audio_attention_pool_f32`,
 `vae_encoder_pad_f32`, `conv3d_f32`, `vae_encoder_group_norm_silu_f32`).
-`./h3_hip_bf16_tests` runs 69 CPU-oracle checks without MLX fixtures. Phase 5
+`./h3_hip_bf16_tests` runs 71 CPU-oracle checks without MLX fixtures. Phase 5
 int8 and reference NAX paths (`mlp_nax_bf16`, `fc1_swiglu_nax_bf16`,
 `linear_bf16_nax`, grouped quantize, int8 MLP/QKV, `linear_int8_nax_r128`,
-`fc1_swiglu_int8_nax_r128`, `linear_int8_grouped_nax_r128x64` for FC2 when
-`hidden_dim % 1024 == 0`) are in place; shape-specialized NAX
-kernels still TODO. **C tokenizer** (`backends/h3_tokenizer.c`, ICU NFC) replaces
+`fc1_swiglu_int8_nax_r128`, `linear_int8_nax_r64` / `fc1_swiglu_int8_nax_r64`
+with compile-time K=5376/14336, `linear_int8_grouped_nax_r128x64` for FC2 when
+`hidden_dim % 1024 == 0`) are in place. The 64×64 `sdot4` tiles are the default
+when `input_dim % 32 == 0` (`H3_INT8_LEGACY=1` keeps the 16×16 kernels).
+**C tokenizer** (`backends/h3_tokenizer.c`, ICU NFC) replaces
 the HIP stub; `./h3_tokenizer_tests` passes on the released vocabulary.
 **E2E smoke has produced a playable MP4** (`512x512`, 22 frames, 2 steps).
 DiT SDPA now uses a warp-level online-softmax kernel (`head_dim=128` specialized)

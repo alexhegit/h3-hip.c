@@ -1237,6 +1237,236 @@ __global__ void h3_fc1_swiglu_int8_nax_r128_kernel(
     }
 }
 
+__device__ inline int32_t h3_i8dot4_scalar(int32_t a, int32_t b, int32_t acc) {
+    acc += (int32_t)(int8_t)a * (int32_t)(int8_t)b;
+    acc += (int32_t)(int8_t)(a >> 8) * (int32_t)(int8_t)(b >> 8);
+    acc += (int32_t)(int8_t)(a >> 16) * (int32_t)(int8_t)(b >> 16);
+    acc += (int32_t)(int8_t)(a >> 24) * (int32_t)(int8_t)(b >> 24);
+    return acc;
+}
+
+/* gfx11/1151: packed signed int8 dot. CDNA: sdot4. Scalar fallback otherwise. */
+__device__ inline int32_t h3_i8dot4(int32_t a, int32_t b, int32_t acc) {
+#if defined(__gfx1151__) || defined(__gfx1150__) || defined(__gfx1100__) || \
+    defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__)
+    return __builtin_amdgcn_sudot4(true, a, true, b, acc, false);
+#elif defined(__has_builtin) && __has_builtin(__builtin_amdgcn_sdot4)
+    return __builtin_amdgcn_sdot4(a, b, acc, false);
+#else
+    return h3_i8dot4_scalar(a, b, acc);
+#endif
+}
+
+__device__ inline void h3_load_i8_tile_64x32(
+    int8_t dst[64][32], const int8_t *src, uint32_t block_index, uint32_t k0,
+    uint32_t bound, uint32_t stride, uint32_t tid) {
+    uint32_t local_row = tid / 4u;
+    uint32_t local_k = (tid % 4u) * 8u;
+    uint32_t index = block_index + local_row;
+    int64_t packed = 0;
+    if (index < bound)
+        packed = *reinterpret_cast<const int64_t *>(
+            src + (size_t)index * stride + k0 + local_k);
+    *reinterpret_cast<int64_t *>(&dst[local_row][local_k]) = packed;
+}
+
+template <int K_CONST>
+__global__ void __launch_bounds__(256)
+h3_linear_int8_r64_kernel(const int8_t *input, const int8_t *weight,
+                          const float *input_scales, const float *weight_scales,
+                          uint16_t *output, h3_linear_args args) {
+    constexpr int BM = 64, BN = 64, BK = 32;
+    __shared__ int8_t As[BM][BK];
+    __shared__ int8_t Bs[BN][BK];
+    __shared__ float scale_a[BM];
+    __shared__ float scale_b[BN];
+    uint32_t block_row = blockIdx.y * (uint32_t)BM;
+    uint32_t block_col = blockIdx.x * (uint32_t)BN;
+    uint32_t tx = threadIdx.x;
+    uint32_t ty = threadIdx.y;
+    uint32_t tid = ty * 16u + tx;
+    uint32_t input_dim = K_CONST ? (uint32_t)K_CONST : args.input_dim;
+    uint32_t k_tiles = input_dim / (uint32_t)BK;
+    if (tid < (uint32_t)BM) {
+        uint32_t row = block_row + tid;
+        scale_a[tid] = row < args.rows ? input_scales[row] : 0.0f;
+    }
+    if (tid < (uint32_t)BN) {
+        uint32_t column = block_col + tid;
+        scale_b[tid] =
+            column < args.output_dim ? weight_scales[column] : 0.0f;
+    }
+    int32_t acc[4][4];
+#pragma unroll
+    for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0;
+    for (uint32_t kt = 0; kt < k_tiles; kt++) {
+        uint32_t k0 = kt * (uint32_t)BK;
+        h3_load_i8_tile_64x32(As, input, block_row, k0, args.rows, input_dim,
+                              tid);
+        h3_load_i8_tile_64x32(Bs, weight, block_col, k0, args.output_dim,
+                              input_dim, tid);
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < BK; k += 4) {
+            int32_t av[4], bv[4];
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+                av[i] = *reinterpret_cast<const int32_t *>(
+                    &As[ty * 4u + (uint32_t)i][k]);
+#pragma unroll
+            for (int j = 0; j < 4; j++)
+                bv[j] = *reinterpret_cast<const int32_t *>(
+                    &Bs[tx * 4u + (uint32_t)j][k]);
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+#pragma unroll
+                for (int j = 0; j < 4; j++)
+                    acc[i][j] = h3_i8dot4(av[i], bv[j], acc[i][j]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        uint32_t row = block_row + ty * 4u + (uint32_t)i;
+        if (row >= args.rows) continue;
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            uint32_t column = block_col + tx * 4u + (uint32_t)j;
+            if (column >= args.output_dim) continue;
+            float value = (float)acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
+                          scale_b[tx * 4u + (uint32_t)j];
+            output[row * args.output_dim + column] = h3_f32_to_bf16(value);
+        }
+    }
+}
+
+template <int K_CONST>
+__global__ void __launch_bounds__(256)
+h3_fc1_swiglu_int8_r64_kernel(const int8_t *input, const int8_t *weight,
+                              const float *input_scales,
+                              const float *weight_scales, uint16_t *output,
+                              h3_linear_args args) {
+    constexpr int BM = 64, BN = 64, BK = 32;
+    __shared__ int8_t As[BM][BK];
+    __shared__ int8_t gate_bs[BN][BK];
+    __shared__ int8_t up_bs[BN][BK];
+    __shared__ float scale_a[BM];
+    __shared__ float gate_scale[BN];
+    __shared__ float up_scale[BN];
+    uint32_t block_row = blockIdx.y * (uint32_t)BM;
+    uint32_t block_col = blockIdx.x * (uint32_t)BN;
+    uint32_t tx = threadIdx.x;
+    uint32_t ty = threadIdx.y;
+    uint32_t tid = ty * 16u + tx;
+    uint32_t input_dim = K_CONST ? (uint32_t)K_CONST : args.input_dim;
+    uint32_t hidden_dim = args.output_dim;
+    uint32_t k_tiles = input_dim / (uint32_t)BK;
+    if (tid < (uint32_t)BM) {
+        uint32_t row = block_row + tid;
+        scale_a[tid] = row < args.rows ? input_scales[row] : 0.0f;
+    }
+    if (tid < (uint32_t)BN) {
+        uint32_t column = block_col + tid;
+        gate_scale[tid] =
+            column < hidden_dim ? weight_scales[column] : 0.0f;
+        up_scale[tid] = column < hidden_dim ?
+            weight_scales[hidden_dim + column] : 0.0f;
+    }
+    int32_t gate_acc[4][4];
+    int32_t up_acc[4][4];
+#pragma unroll
+    for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            gate_acc[i][j] = 0;
+            up_acc[i][j] = 0;
+        }
+    for (uint32_t kt = 0; kt < k_tiles; kt++) {
+        uint32_t k0 = kt * (uint32_t)BK;
+        h3_load_i8_tile_64x32(As, input, block_row, k0, args.rows, input_dim,
+                              tid);
+        h3_load_i8_tile_64x32(gate_bs, weight, block_col, k0, hidden_dim,
+                              input_dim, tid);
+        h3_load_i8_tile_64x32(up_bs, weight + (size_t)hidden_dim * input_dim,
+                              block_col, k0, hidden_dim, input_dim, tid);
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < BK; k += 4) {
+            int32_t av[4], gv[4], uv[4];
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+                av[i] = *reinterpret_cast<const int32_t *>(
+                    &As[ty * 4u + (uint32_t)i][k]);
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+                gv[j] = *reinterpret_cast<const int32_t *>(
+                    &gate_bs[tx * 4u + (uint32_t)j][k]);
+                uv[j] = *reinterpret_cast<const int32_t *>(
+                    &up_bs[tx * 4u + (uint32_t)j][k]);
+            }
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+#pragma unroll
+                for (int j = 0; j < 4; j++) {
+                    gate_acc[i][j] = h3_i8dot4(av[i], gv[j], gate_acc[i][j]);
+                    up_acc[i][j] = h3_i8dot4(av[i], uv[j], up_acc[i][j]);
+                }
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        uint32_t row = block_row + ty * 4u + (uint32_t)i;
+        if (row >= args.rows) continue;
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            uint32_t column = block_col + tx * 4u + (uint32_t)j;
+            if (column >= hidden_dim) continue;
+            float gate = (float)gate_acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
+                         gate_scale[tx * 4u + (uint32_t)j];
+            float up = (float)up_acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
+                       up_scale[tx * 4u + (uint32_t)j];
+            output[row * hidden_dim + column] =
+                h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
+        }
+    }
+}
+
+static int h3_launch_linear_int8_r64_dispatch(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output, const h3_linear_args *args,
+    hipStream_t stream, int fc1_swiglu) {
+    if (!args->rows || !args->input_dim || !args->output_dim ||
+        args->input_dim % 32u) {
+        return 0;
+    }
+    h3_linear_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
+                           &output, &host_args};
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.output_dim + 63u) / 64u,
+              (host_args.rows + 63u) / 64u, 1);
+    const void *kernel = NULL;
+    if (fc1_swiglu) {
+        if (host_args.input_dim == 5376)
+            kernel = reinterpret_cast<const void *>(
+                h3_fc1_swiglu_int8_r64_kernel<5376>);
+        else
+            kernel = reinterpret_cast<const void *>(
+                h3_fc1_swiglu_int8_r64_kernel<0>);
+    } else if (host_args.input_dim == 14336) {
+        kernel = reinterpret_cast<const void *>(h3_linear_int8_r64_kernel<14336>);
+    } else if (host_args.input_dim == 5376) {
+        kernel = reinterpret_cast<const void *>(h3_linear_int8_r64_kernel<5376>);
+    } else {
+        kernel = reinterpret_cast<const void *>(h3_linear_int8_r64_kernel<0>);
+    }
+    return hipLaunchKernel(kernel, grid, block, kernel_args,
+                           sizeof(kernel_args), stream) == hipSuccess;
+}
+
 extern "C" int h3_launch_linear_int8_bf16_naive(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, const h3_linear_args *args,
@@ -1282,6 +1512,24 @@ extern "C" int h3_launch_fc1_swiglu_int8_nax_r128(
                reinterpret_cast<const void *>(h3_fc1_swiglu_int8_nax_r128_kernel),
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
+}
+
+extern "C" int h3_launch_linear_int8_nax_r64(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output, const h3_linear_args *args,
+    hipStream_t stream) {
+    return h3_launch_linear_int8_r64_dispatch(input, weight, input_scales,
+                                              weight_scales, output, args,
+                                              stream, 0);
+}
+
+extern "C" int h3_launch_fc1_swiglu_int8_nax_r64(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output, const h3_linear_args *args,
+    hipStream_t stream) {
+    return h3_launch_linear_int8_r64_dispatch(input, weight, input_scales,
+                                              weight_scales, output, args,
+                                              stream, 1);
 }
 
 __global__ void h3_linear_int8_grouped_naive_kernel(
