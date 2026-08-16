@@ -2378,6 +2378,14 @@ static int h3_hip_launch_linear_int8_grouped_prequant(
     const float *weight_scale_ptr =
         (const float *)tensor_ptr(weight_scales)->host;
     uint16_t *output_ptr = (uint16_t *)tensor_ptr(output)->host;
+    if (!(group_size % 32u) && !getenv("H3_INT8_LEGACY")) {
+        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_grouped_nax_r64(
+            input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
+            output_ptr, &args, ctx->stream),
+            input_dim == 14336 && group_size == 1024u ?
+                "h3_linear_int8_grouped_nax_r64_k14336" :
+                "h3_linear_int8_grouped_nax_r64");
+    }
     if (group_size == 1024u && !(input_dim % 128) && !(output_dim % 64)) {
         return h3_hip_launch_ok(ctx, h3_launch_linear_int8_grouped_nax_r128x64(
             input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,

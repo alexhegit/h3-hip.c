@@ -523,6 +523,10 @@ int h3_launch_fc1_swiglu_int8_nax_r64(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, const h3_linear_args *args,
     hipStream_t stream);
+int h3_launch_linear_int8_grouped_nax_r64(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_int8_grouped_args *args, hipStream_t stream);
 int h3_launch_linear_int8_grouped_nax_r128x64(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output,
