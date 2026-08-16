@@ -413,6 +413,86 @@ __global__ void h3_linear_f32_kernel(const float *input, const float *weight,
     output[row * args.output_dim + column] = sum;
 }
 
+__device__ inline void h3_load_f32_tile_64x16(
+    float dst[64][16], const float *src, uint32_t block_index, uint32_t k0,
+    uint32_t bound, uint32_t stride, uint32_t tid) {
+    uint32_t local_row = tid / 4u;
+    uint32_t local_k = (tid % 4u) * 4u;
+    uint32_t index = block_index + local_row;
+    float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
+    if (index < bound) {
+        const float4 packed = *reinterpret_cast<const float4 *>(
+            src + (size_t)index * stride + k0 + local_k);
+        v0 = packed.x;
+        v1 = packed.y;
+        v2 = packed.z;
+        v3 = packed.w;
+    }
+    dst[local_row][local_k + 0u] = v0;
+    dst[local_row][local_k + 1u] = v1;
+    dst[local_row][local_k + 2u] = v2;
+    dst[local_row][local_k + 3u] = v3;
+}
+
+template <int K_CONST>
+__global__ void __launch_bounds__(256)
+h3_linear_f32_r64_kernel(const float *input, const float *weight,
+                         const float *bias, float *output,
+                         h3_linear_args args) {
+    constexpr int BM = 64, BN = 64, BK = 16;
+    __shared__ float As[BM][BK];
+    __shared__ float Bs[BN][BK];
+    uint32_t block_row = blockIdx.y * (uint32_t)BM;
+    uint32_t block_col = blockIdx.x * (uint32_t)BN;
+    uint32_t tx = threadIdx.x;
+    uint32_t ty = threadIdx.y;
+    uint32_t tid = ty * 16u + tx;
+    uint32_t input_dim = K_CONST ? (uint32_t)K_CONST : args.input_dim;
+    uint32_t k_tiles = input_dim / (uint32_t)BK;
+    float acc[4][4];
+#pragma unroll
+    for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) acc[i][j] = 0.0f;
+    for (uint32_t kt = 0; kt < k_tiles; kt++) {
+        uint32_t k0 = kt * (uint32_t)BK;
+        h3_load_f32_tile_64x16(As, input, block_row, k0, args.rows, input_dim,
+                               tid);
+        h3_load_f32_tile_64x16(Bs, weight, block_col, k0, args.output_dim,
+                               input_dim, tid);
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < BK; k++) {
+            float av[4], bv[4];
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+                av[i] = As[ty * 4u + (uint32_t)i][k];
+#pragma unroll
+            for (int j = 0; j < 4; j++)
+                bv[j] = Bs[tx * 4u + (uint32_t)j][k];
+#pragma unroll
+            for (int i = 0; i < 4; i++)
+#pragma unroll
+                for (int j = 0; j < 4; j++)
+                    acc[i][j] = fmaf(av[i], bv[j], acc[i][j]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        uint32_t row = block_row + ty * 4u + (uint32_t)i;
+        if (row >= args.rows) continue;
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            uint32_t column = block_col + tx * 4u + (uint32_t)j;
+            if (column >= args.output_dim) continue;
+            float value = acc[i][j];
+            if (args.has_bias) value += bias[column];
+            output[(size_t)row * args.output_dim + column] = value;
+        }
+    }
+}
+
 __global__ void h3_conv1d_f32_kernel(const float *input, const float *weight,
                                      const float *bias, float *output,
                                      h3_conv1d_args args) {
@@ -567,6 +647,22 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
                                     hipStream_t stream) {
     h3_linear_args host_args = *args;
     void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    if (host_args.input_dim % 16u == 0 && !getenv("H3_F32_LEGACY")) {
+        dim3 block(16, 16, 1);
+        dim3 grid((host_args.output_dim + 63u) / 64u,
+                  (host_args.rows + 63u) / 64u, 1);
+        const void *kernel = NULL;
+        if (host_args.input_dim == 8192)
+            kernel = reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<8192>);
+        else if (host_args.input_dim == 2048)
+            kernel = reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<2048>);
+        else if (host_args.input_dim == 6144)
+            kernel = reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<6144>);
+        else
+            kernel = reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<0>);
+        return hipLaunchKernel(kernel, grid, block, kernel_args,
+                               sizeof(kernel_args), stream) == hipSuccess;
+    }
     dim3 block(16, 16, 1);
     dim3 grid((host_args.output_dim + 15) / 16, (host_args.rows + 15) / 16, 1);
     return hipLaunchKernel(
