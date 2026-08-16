@@ -2103,6 +2103,115 @@ static int test_linear_f32_r64_k2048(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_linear_f32_r64_k8192(h3_gpu *gpu) {
+    enum { ROWS = 17, INPUT_DIM = 8192, OUTPUT_DIM = 80 };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM,
+           WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM,
+           OUTPUT_ELEMS = ROWS * OUTPUT_DIM };
+    float *input = calloc(INPUT_ELEMS, sizeof(*input));
+    float *weight = calloc(WEIGHT_ELEMS, sizeof(*weight));
+    float *bias = calloc(OUTPUT_DIM, sizeof(*bias));
+    float *expected = calloc(OUTPUT_ELEMS, sizeof(*expected));
+    CHECK(input && weight && bias && expected);
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input[i] = (float)((int)(i % 11) - 5) * 0.03125f;
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight[i] = (float)((int)(i % 9) - 4) * 0.015625f;
+    for (size_t i = 0; i < OUTPUT_DIM; i++)
+        bias[i] = (float)((int)(i % 3) - 1) * 0.125f;
+    for (uint32_t row = 0; row < ROWS; row++) {
+        for (uint32_t col = 0; col < OUTPUT_DIM; col++) {
+            float sum = bias[col];
+            for (uint32_t k = 0; k < INPUT_DIM; k++) {
+                sum = fmaf(input[row * INPUT_DIM + k],
+                           weight[col * INPUT_DIM + k], sum);
+            }
+            expected[row * OUTPUT_DIM + col] = sum;
+        }
+    }
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, INPUT_ELEMS);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, WEIGHT_ELEMS);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, OUTPUT_DIM);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, OUTPUT_ELEMS);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin linear f32 r64 k8192"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, ROWS, INPUT_DIM,
+        OUTPUT_DIM), "linear f32 r64 k8192"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit linear f32 r64 k8192"));
+    float *got = calloc(OUTPUT_ELEMS, sizeof(*got));
+    CHECK(got);
+    CHECK(h3_gpu_tensor_read_f32(output, got, OUTPUT_ELEMS));
+    for (size_t i = 0; i < OUTPUT_ELEMS; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 5e-3f);
+    }
+    free(input);
+    free(weight);
+    free(bias);
+    free(expected);
+    free(got);
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_linear_f32_r64_match_legacy(h3_gpu *gpu) {
+    enum { ROWS = 65, INPUT_DIM = 2048, OUTPUT_DIM = 192 };
+    enum { INPUT_ELEMS = ROWS * INPUT_DIM,
+           WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM,
+           OUTPUT_ELEMS = ROWS * OUTPUT_DIM };
+    float *input = calloc(INPUT_ELEMS, sizeof(*input));
+    float *weight = calloc(WEIGHT_ELEMS, sizeof(*weight));
+    float *bias = calloc(OUTPUT_DIM, sizeof(*bias));
+    CHECK(input && weight && bias);
+    for (size_t i = 0; i < INPUT_ELEMS; i++)
+        input[i] = (float)((int)(i % 13) - 6) * 0.0625f;
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight[i] = (float)((int)(i % 7) - 3) * 0.03125f;
+    for (size_t i = 0; i < OUTPUT_DIM; i++)
+        bias[i] = (float)((int)(i % 5) - 2) * 0.25f;
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, INPUT_ELEMS);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, WEIGHT_ELEMS);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, OUTPUT_DIM);
+    h3_gpu_tensor *tiled = h3_gpu_tensor_new_f32(gpu, OUTPUT_ELEMS);
+    h3_gpu_tensor *legacy = h3_gpu_tensor_new_f32(gpu, OUTPUT_ELEMS);
+    CHECK(gpu_input && gpu_weight && gpu_bias && tiled && legacy);
+    unsetenv("H3_F32_LEGACY");
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin linear f32 tiled match"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
+        gpu, tiled, gpu_input, gpu_weight, gpu_bias, ROWS, INPUT_DIM,
+        OUTPUT_DIM), "linear f32 tiled match"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit linear f32 tiled match"));
+    setenv("H3_F32_LEGACY", "1", 1);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin linear f32 legacy match"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
+        gpu, legacy, gpu_input, gpu_weight, gpu_bias, ROWS, INPUT_DIM,
+        OUTPUT_DIM), "linear f32 legacy match"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit linear f32 legacy match"));
+    unsetenv("H3_F32_LEGACY");
+    float *got_tiled = calloc(OUTPUT_ELEMS, sizeof(*got_tiled));
+    float *got_legacy = calloc(OUTPUT_ELEMS, sizeof(*got_legacy));
+    CHECK(got_tiled && got_legacy);
+    CHECK(h3_gpu_tensor_read_f32(tiled, got_tiled, OUTPUT_ELEMS));
+    CHECK(h3_gpu_tensor_read_f32(legacy, got_legacy, OUTPUT_ELEMS));
+    for (size_t i = 0; i < OUTPUT_ELEMS; i++) {
+        CHECK(fabsf(got_tiled[i] - got_legacy[i]) < 2e-3f);
+    }
+    free(input);
+    free(weight);
+    free(bias);
+    free(got_tiled);
+    free(got_legacy);
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(tiled);
+    h3_gpu_tensor_free(legacy);
+    return 0;
+}
+
 static int test_linear_bf16_nax(h3_gpu *gpu) {
     enum { ROWS = 2, INPUT_DIM = 4, OUTPUT_DIM = 3 };
     enum { INPUT_ELEMS = ROWS * INPUT_DIM, WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM };
@@ -4709,52 +4818,76 @@ static int bench_int8_linear(h3_gpu *gpu) {
 }
 
 static int bench_linear_f32(h3_gpu *gpu) {
-    enum { ROWS = 1792, INPUT_DIM = 2048, OUTPUT_DIM = 2048, ITERATIONS = 3 };
-    size_t input_elems = (size_t)ROWS * INPUT_DIM;
-    size_t weight_elems = (size_t)OUTPUT_DIM * INPUT_DIM;
-    size_t output_elems = (size_t)ROWS * OUTPUT_DIM;
-    float *input = calloc(input_elems, sizeof(*input));
-    float *weight = calloc(weight_elems, sizeof(*weight));
-    CHECK(input && weight);
-    for (size_t i = 0; i < input_elems; i += 17)
-        input[i] = (float)((int)(i % 11) - 5) * 0.03125f;
-    for (size_t i = 0; i < weight_elems; i += 13)
-        weight[i] = (float)((int)(i % 9) - 4) * 0.015625f;
-    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, input_elems);
-    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, weight_elems);
-    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, output_elems);
-    CHECK(gpu_input && gpu_weight && output);
-    double flops = 2.0 * (double)ROWS * (double)OUTPUT_DIM * (double)INPUT_DIM;
-    const char *modes[] = { NULL, "1" };
-    const char *labels[] = { "r64", "legacy" };
-    for (int mode = 0; mode < 2; mode++) {
-        if (modes[mode]) setenv("H3_F32_LEGACY", modes[mode], 1);
-        else unsetenv("H3_F32_LEGACY");
-        CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin linear f32 warmup"));
-        CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
-            gpu, output, gpu_input, gpu_weight, NULL, ROWS, INPUT_DIM,
-            OUTPUT_DIM), "linear f32 warmup"));
-        CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit linear f32 warmup"));
-        double start = h3_monotonic_seconds();
-        CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin linear f32 bench"));
-        for (int iter = 0; iter < ITERATIONS; iter++) {
+    struct {
+        int rows;
+        int input_dim;
+        int output_dim;
+    } shapes[] = {
+        {1792, 2048, 2048},
+        {1797, 8192, 2048},
+        {256, 2048, 16384},
+    };
+    enum { ITERATIONS = 2 };
+    for (size_t shape = 0; shape < sizeof(shapes) / sizeof(shapes[0]); shape++) {
+        int rows = shapes[shape].rows;
+        int input_dim = shapes[shape].input_dim;
+        int output_dim = shapes[shape].output_dim;
+        size_t input_elems = (size_t)rows * (size_t)input_dim;
+        size_t weight_elems = (size_t)output_dim * (size_t)input_dim;
+        size_t output_elems = (size_t)rows * (size_t)output_dim;
+        float *input = calloc(input_elems, sizeof(*input));
+        float *weight = calloc(weight_elems, sizeof(*weight));
+        CHECK(input && weight);
+        for (size_t i = 0; i < input_elems; i += 17)
+            input[i] = (float)((int)(i % 11) - 5) * 0.03125f;
+        for (size_t i = 0; i < weight_elems; i += 13)
+            weight[i] = (float)((int)(i % 9) - 4) * 0.015625f;
+        h3_gpu_tensor *gpu_input =
+            h3_gpu_tensor_from_f32(gpu, input, input_elems);
+        h3_gpu_tensor *gpu_weight =
+            h3_gpu_tensor_from_f32(gpu, weight, weight_elems);
+        h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, output_elems);
+        CHECK(gpu_input && gpu_weight && output);
+        double flops =
+            2.0 * (double)rows * (double)output_dim * (double)input_dim;
+        const char *modes[] = { NULL, "1" };
+        const char *labels[] = { "r64", "legacy" };
+        int mode_count = (rows >= 1024) ? 2 : 1;
+        for (int mode = 0; mode < mode_count; mode++) {
+            if (modes[mode]) setenv("H3_F32_LEGACY", modes[mode], 1);
+            else unsetenv("H3_F32_LEGACY");
+            CHECK(!require_gpu(gpu, h3_gpu_begin(gpu),
+                               "begin linear f32 warmup"));
             CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
-                gpu, output, gpu_input, gpu_weight, NULL, ROWS, INPUT_DIM,
-                OUTPUT_DIM), "linear f32 bench"));
+                gpu, output, gpu_input, gpu_weight, NULL, (uint32_t)rows,
+                (uint32_t)input_dim, (uint32_t)output_dim),
+                "linear f32 warmup"));
+            CHECK(!require_gpu(gpu, h3_gpu_submit(gpu),
+                               "submit linear f32 warmup"));
+            double start = h3_monotonic_seconds();
+            CHECK(!require_gpu(gpu, h3_gpu_begin(gpu),
+                               "begin linear f32 bench"));
+            for (int iter = 0; iter < ITERATIONS; iter++) {
+                CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
+                    gpu, output, gpu_input, gpu_weight, NULL, (uint32_t)rows,
+                    (uint32_t)input_dim, (uint32_t)output_dim),
+                    "linear f32 bench"));
+            }
+            CHECK(!require_gpu(gpu, h3_gpu_submit(gpu),
+                               "submit linear f32 bench"));
+            double ms = (h3_monotonic_seconds() - start) * 1000.0 /
+                        (double)ITERATIONS;
+            printf("linear f32 %s M=%d K=%d N=%d: %.1f ms (%.1f TFLOP/s)\n",
+                   labels[mode], rows, input_dim, output_dim, ms,
+                   flops / (ms * 1e9));
         }
-        CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit linear f32 bench"));
-        double ms = (h3_monotonic_seconds() - start) * 1000.0 /
-                    (double)ITERATIONS;
-        printf("linear f32 %s M=%d K=%d N=%d: %.1f ms (%.1f TFLOP/s)\n",
-               labels[mode], ROWS, INPUT_DIM, OUTPUT_DIM, ms,
-               flops / (ms * 1e9));
+        unsetenv("H3_F32_LEGACY");
+        h3_gpu_tensor_free(gpu_input);
+        h3_gpu_tensor_free(gpu_weight);
+        h3_gpu_tensor_free(output);
+        free(input);
+        free(weight);
     }
-    unsetenv("H3_F32_LEGACY");
-    h3_gpu_tensor_free(gpu_input);
-    h3_gpu_tensor_free(gpu_weight);
-    h3_gpu_tensor_free(output);
-    free(input);
-    free(weight);
     return 0;
 }
 
@@ -4769,6 +4902,11 @@ int main(void) {
     }
     if (getenv("H3_BENCH_LINEAR_F32")) {
         int ok = bench_linear_f32(gpu);
+        h3_gpu_free(gpu);
+        return ok;
+    }
+    if (getenv("H3_BENCH_INT8_LINEAR")) {
+        int ok = bench_int8_linear(gpu);
         h3_gpu_free(gpu);
         return ok;
     }
@@ -4804,6 +4942,8 @@ int main(void) {
     if (test_linear_f32(gpu) != 0) return 1;
     if (test_linear_f32_r64(gpu) != 0) return 1;
     if (test_linear_f32_r64_k2048(gpu) != 0) return 1;
+    if (test_linear_f32_r64_k8192(gpu) != 0) return 1;
+    if (test_linear_f32_r64_match_legacy(gpu) != 0) return 1;
     if (test_silu_f32(gpu) != 0) return 1;
     if (test_swiglu_f32(gpu) != 0) return 1;
     if (test_clip_f32(gpu) != 0) return 1;
