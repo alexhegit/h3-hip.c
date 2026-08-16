@@ -2316,6 +2316,14 @@ static int h3_hip_launch_linear_int8_prequant(
     const float *weight_scale_ptr =
         (const float *)tensor_ptr(weight_scales)->host;
     uint16_t *output_ptr = (uint16_t *)tensor_ptr(output)->host;
+    if (!(input_dim % 32) && !getenv("H3_INT8_LEGACY")) {
+        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_nax_r64(
+            input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
+            output_ptr, &args, ctx->stream),
+            input_dim == 14336 ? "h3_linear_int8_nax_r64_k14336" :
+            input_dim == 5376 ? "h3_linear_int8_nax_r64_k5376" :
+                                "h3_linear_int8_nax_r64");
+    }
     if (!(input_dim % 128) && !(output_dim % 128)) {
         return h3_hip_launch_ok(ctx, h3_launch_linear_int8_nax_r128(
             input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
@@ -2331,6 +2339,17 @@ static int h3_hip_launch_fc1_swiglu_int8_prequant(
     const h3_gpu_tensor *quantized_input, const h3_gpu_tensor *input_scales,
     const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
     uint32_t rows, uint32_t input_dim, uint32_t hidden_dim) {
+    if (!(input_dim % 32) && !getenv("H3_INT8_LEGACY")) {
+        h3_linear_args args = {rows, input_dim, hidden_dim, 0};
+        return h3_hip_launch_ok(ctx, h3_launch_fc1_swiglu_int8_nax_r64(
+            (const int8_t *)tensor_ptr(quantized_input)->host,
+            (const int8_t *)tensor_ptr(weight)->host,
+            (const float *)tensor_ptr(input_scales)->host,
+            (const float *)tensor_ptr(weight_scales)->host,
+            (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+            input_dim == 5376 ? "h3_fc1_swiglu_int8_nax_r64_k5376" :
+                                "h3_fc1_swiglu_int8_nax_r64");
+    }
     if (input_dim % 128 || hidden_dim % 128) return 0;
     h3_linear_args args = {rows, input_dim, hidden_dim, 0};
     return h3_hip_launch_ok(ctx, h3_launch_fc1_swiglu_int8_nax_r128(
