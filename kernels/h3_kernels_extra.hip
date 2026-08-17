@@ -413,30 +413,36 @@ __global__ void h3_linear_f32_kernel(const float *input, const float *weight,
     output[row * args.output_dim + column] = sum;
 }
 
-__device__ inline void h3_load_f32_tile_64x16(
-    float dst[64][16], const float *src, uint32_t block_index, uint32_t k0,
+template <int BK>
+__device__ inline void h3_load_f32_tile_64xk(
+    float dst[64][BK], const float *src, uint32_t block_index, uint32_t k0,
     uint32_t bound, uint32_t stride, uint32_t tid) {
     uint32_t local_row = tid / 4u;
-    uint32_t local_k = (tid % 4u) * 4u;
     uint32_t index = block_index + local_row;
-    float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
-    if (index < bound) {
-        const float *ptr = src + (size_t)index * stride + k0 + local_k;
-        v0 = ptr[0];
-        v1 = ptr[1];
-        v2 = ptr[2];
-        v3 = ptr[3];
+    /* 256 threads × 4 floats covers 16 K; repeat for BK=32. */
+#pragma unroll
+    for (int half = 0; half < BK / 16; half++) {
+        uint32_t local_k = (tid % 4u) * 4u + (uint32_t)half * 16u;
+        float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
+        if (index < bound) {
+            const float *ptr = src + (size_t)index * stride + k0 + local_k;
+            v0 = ptr[0];
+            v1 = ptr[1];
+            v2 = ptr[2];
+            v3 = ptr[3];
+        }
+        dst[local_row][local_k + 0u] = v0;
+        dst[local_row][local_k + 1u] = v1;
+        dst[local_row][local_k + 2u] = v2;
+        dst[local_row][local_k + 3u] = v3;
     }
-    dst[local_row][local_k + 0u] = v0;
-    dst[local_row][local_k + 1u] = v1;
-    dst[local_row][local_k + 2u] = v2;
-    dst[local_row][local_k + 3u] = v3;
 }
 
+template <int BK>
 __global__ void h3_linear_f32_r64_kernel(const float *input, const float *weight,
                                          const float *bias, float *output,
                                          h3_linear_args args) {
-    constexpr int BM = 64, BN = 64, BK = 16;
+    constexpr int BM = 64, BN = 64;
     __shared__ float As[BM][BK];
     __shared__ float Bs[BN][BK];
     uint32_t block_row = blockIdx.y * (uint32_t)BM;
@@ -453,10 +459,10 @@ __global__ void h3_linear_f32_r64_kernel(const float *input, const float *weight
 #pragma unroll 1
     for (uint32_t kt = 0; kt < k_tiles; kt++) {
         uint32_t k0 = kt * (uint32_t)BK;
-        h3_load_f32_tile_64x16(As, input, block_row, k0, args.rows,
-                               args.input_dim, tid);
-        h3_load_f32_tile_64x16(Bs, weight, block_col, k0, args.output_dim,
-                               args.input_dim, tid);
+        h3_load_f32_tile_64xk<BK>(As, input, block_row, k0, args.rows,
+                                  args.input_dim, tid);
+        h3_load_f32_tile_64xk<BK>(Bs, weight, block_col, k0, args.output_dim,
+                                  args.input_dim, tid);
         __syncthreads();
 #pragma unroll
         for (int k = 0; k < BK; k++) {
@@ -594,20 +600,19 @@ __global__ void h3_conv3d_f32_kernel(const float *input, const float *weight,
 }
 
 /* HIP/CUDA grid.y and grid.z are limited to 65535. A 22-frame 256px encoder
- * tile has T*H*W = 1,441,792, and a single 65535-wide 3x3x3/128ch launch
- * wedged gfx1151 (amdgpu GPU reset). Chunk and wait so each packet is short. */
+ * tile has T*H*W = 1,441,792, and a single huge launch wedged gfx1151
+ * (amdgpu GPU reset). Chunk the grid so each packet stays in limits.
+ * Do not synchronize between chunks: hipLaunchKernel copies by-value args
+ * immediately, and the extra waits serialized VAE convs (~88 syncs/layer
+ * at 256px). Execution errors still surface on the next h3_gpu_submit. */
 enum { H3_HIP_MAX_GRID_YZ = 65535u };
 enum { H3_HIP_CONV3D_SPATIAL_CHUNK = 16384u };
 enum { H3_HIP_CONV1D_TIME_CHUNK = 8192u };
 
-static int h3_hip_launch_and_wait(const void *kernel, dim3 grid, dim3 block,
-                                  void **kernel_args, size_t args_bytes,
-                                  hipStream_t stream) {
-    if (hipLaunchKernel(kernel, grid, block, kernel_args, args_bytes,
-                        stream) != hipSuccess) {
-        return 0;
-    }
-    return hipStreamSynchronize(stream) == hipSuccess;
+static int h3_hip_launch(const void *kernel, dim3 grid, dim3 block,
+                         void **kernel_args, hipStream_t stream) {
+    return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
+           hipSuccess;
 }
 
 extern "C" int h3_launch_conv1d_f32(const float *input, const float *weight,
@@ -630,9 +635,9 @@ extern "C" int h3_launch_conv1d_f32(const float *input, const float *weight,
         void *kernel_args[] = {&input, &weight, &bias, &output, &chunk_args};
         dim3 grid((chunk_args.output_channels + 15) / 16, span,
                   chunk_args.batch);
-        if (!h3_hip_launch_and_wait(
+        if (!h3_hip_launch(
                 reinterpret_cast<const void *>(h3_conv1d_f32_kernel), grid,
-                block, kernel_args, sizeof(kernel_args), stream)) {
+                block, kernel_args, stream)) {
             return 0;
         }
         offset += span;
@@ -661,9 +666,9 @@ extern "C" int h3_launch_conv_transpose1d_f32(const float *input,
         void *kernel_args[] = {&input, &weight, &bias, &output, &chunk_args};
         dim3 grid((chunk_args.output_channels + 15) / 16, span,
                   chunk_args.batch);
-        if (!h3_hip_launch_and_wait(
+        if (!h3_hip_launch(
                 reinterpret_cast<const void *>(h3_conv_transpose1d_f32_kernel),
-                grid, block, kernel_args, sizeof(kernel_args), stream)) {
+                grid, block, kernel_args, stream)) {
             return 0;
         }
         offset += span;
@@ -695,9 +700,9 @@ extern "C" int h3_launch_conv3d_f32(const float *input, const float *weight,
         void *kernel_args[] = {&input, &weight, &bias, &output, &chunk_args};
         uint32_t work = span * chunk_args.output_channels;
         dim3 grid((work + 255u) / 256u, chunk_args.batch, 1);
-        if (!h3_hip_launch_and_wait(
+        if (!h3_hip_launch(
                 reinterpret_cast<const void *>(h3_conv3d_f32_kernel), grid,
-                block, kernel_args, sizeof(kernel_args), stream)) {
+                block, kernel_args, stream)) {
             return 0;
         }
         offset += span;
@@ -715,9 +720,11 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
         dim3 block(16, 16, 1);
         dim3 grid((host_args.output_dim + 63u) / 64u,
                   (host_args.rows + 63u) / 64u, 1);
-        return hipLaunchKernel(
-                   reinterpret_cast<const void *>(h3_linear_f32_r64_kernel),
-                   grid, block, kernel_args, 0, stream) == hipSuccess;
+        const void *kernel = host_args.input_dim % 32u == 0 ?
+            reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<32>) :
+            reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<16>);
+        return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
+               hipSuccess;
     }
     dim3 block(16, 16, 1);
     dim3 grid((host_args.output_dim + 15) / 16, (host_args.rows + 15) / 16, 1);
