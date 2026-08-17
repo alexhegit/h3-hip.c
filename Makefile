@@ -52,7 +52,7 @@ LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c h3_ffmpeg.c \
 LIB_OBJ := $(LIB_C:.c=.o) $(LIB_GPU)
 CLI_OBJ := main.o h3_cli.o linenoise.o
 
-.PHONY: all test parity real-parity clean hip-smoke
+.PHONY: all test parity real-parity clean hip-smoke hip-test hip-functional
 
 all: h3 libh3.a
 
@@ -79,7 +79,7 @@ h3_tests: tests/test_h3.o $(LIB_OBJ)
 	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_metal_tests: tests/test_metal.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_bf16_tests: tests/test_bf16.o $(LIB_OBJ)
 	$(LINK) -o $@ $^ $(LDLIBS)
@@ -88,63 +88,118 @@ h3_tokenizer_tests: tests/test_tokenizer.o $(LIB_OBJ)
 	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_text_tests: tests/test_text_metal.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_audio_gpu_tests: tests/test_audio_gpu.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_audio_vae_test: tests/test_real_audio_vae.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_audio_encoder_test: tests/test_real_audio_encoder.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_av_mux_test: tests/test_av_mux.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_video_encoder_test: tests/test_real_video_encoder.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_qwen_vision_test: tests/test_real_qwen_vision.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_multimodal_text_test: tests/test_real_multimodal_text.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_ref_video_text_test: tests/test_real_ref_video_text.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_prompt_test: tests/test_real_prompt.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_dit_block_test: tests/test_real_dit_block.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_dit_schedule_test: tests/test_real_dit_schedule.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_real_dit_test: tests/test_real_dit.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_semantic_dit_test: tests/test_semantic_dit.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_dit_bench: tests/bench_dit.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_dit_bench_864: tests/bench_dit_864.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 tests/bench_dit_864.o: tests/bench_dit.c
 	$(CC) $(CFLAGS) -I. -DH3_BENCH_LATENT_H=30 \
 		-DH3_BENCH_LATENT_W=54 -c $< -o $@
 
 h3_real_video_vae_test: tests/test_real_video_vae.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
 h3_semantic_vae_test: tests/test_semantic_vae.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+	$(LINK) -o $@ $^ $(LDLIBS)
 
+ifeq ($(H3_BACKEND),hip)
+H3_MODEL ?= /home/amd/HF-MODELS/MiniMax-H3
+
+h3_hip_encoder_roundtrip: tests/test_hip_encoder_roundtrip.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
+h3_hip_audio_smoke: tests/test_hip_audio_smoke.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
+h3_hip_vision_smoke: tests/test_hip_vision_smoke.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
+h3_hip_text_smoke: tests/test_hip_text_smoke.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
+h3_hip_multimodal_smoke: tests/test_hip_multimodal_smoke.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
+h3_hip_ref2va_smoke: tests/test_hip_ref2va_smoke.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
+h3_hip_vae_zero: tests/test_hip_vae_zero.o $(LIB_OBJ)
+	$(LINK) -o $@ $^ $(LDLIBS)
+
+test: hip-test
+
+hip-test: h3_tests h3_hip_smoke h3_hip_bf16_tests h3_tokenizer_tests \
+	h3_audio_gpu_tests h3_av_mux_test h3_hip_real_dit_smoke
+	./h3_tests
+	./h3_hip_smoke
+	./h3_hip_bf16_tests
+	@if test -f "$(H3_MODEL)/FL2VA/tokenizer/tokenizer.json"; then \
+		./h3_tokenizer_tests "$(H3_MODEL)/FL2VA/tokenizer/tokenizer.json"; \
+	elif test -f "$(H3_MODEL)/tokenizer/tokenizer.json"; then \
+		./h3_tokenizer_tests "$(H3_MODEL)/tokenizer/tokenizer.json"; \
+	else \
+		echo "skip: released tokenizer is not installed"; \
+	fi
+	./h3_audio_gpu_tests
+	@if command -v ffmpeg >/dev/null 2>&1; then \
+		./h3_av_mux_test; \
+	else \
+		echo "skip: FFmpeg is not installed"; \
+	fi
+	./h3_hip_real_dit_smoke "$(H3_MODEL)"
+
+hip-functional: h3_hip_encoder_roundtrip h3_hip_audio_smoke h3_hip_vision_smoke \
+	h3_hip_text_smoke h3_hip_multimodal_smoke h3_hip_ref2va_smoke
+	./h3_hip_encoder_roundtrip "$(H3_MODEL)"
+	./h3_hip_audio_smoke "$(H3_MODEL)"
+	./h3_hip_vision_smoke "$(H3_MODEL)"
+	./h3_hip_text_smoke "$(H3_MODEL)"
+	./h3_hip_multimodal_smoke "$(H3_MODEL)"
+	./h3_hip_ref2va_smoke "$(H3_MODEL)"
+else
 test: h3_tests h3_metal_tests h3_bf16_tests h3_tokenizer_tests h3_text_tests \
 	h3_audio_gpu_tests h3_real_audio_vae_test h3_real_audio_encoder_test \
 	h3_av_mux_test \
@@ -225,6 +280,7 @@ test: h3_tests h3_metal_tests h3_bf16_tests h3_tokenizer_tests h3_text_tests \
 	else \
 		echo "skip: Ref2VA video presentation fixture is not installed"; \
 	fi
+endif
 
 parity: h3_metal_tests h3_bf16_tests h3_text_tests
 	./h3_metal_tests misc/fixtures/h3_dit.safetensors
@@ -276,6 +332,9 @@ clean:
 		h3_real_multimodal_text_test h3_real_ref_video_text_test \
 		h3_real_dit_schedule_test h3_real_dit_test h3_semantic_dit_test \
 		h3_real_video_vae_test h3_semantic_vae_test \
+		h3_hip_encoder_roundtrip h3_hip_audio_smoke h3_hip_vision_smoke \
+		h3_hip_text_smoke h3_hip_multimodal_smoke h3_hip_ref2va_smoke \
+		h3_hip_vae_zero \
 		h3_dit_bench h3_dit_bench_864 \
 		libh3.a *.o *.d tests/*.o tests/*.d \
 		backends/*.o backends/*.d kernels/*.o kernels/*.d

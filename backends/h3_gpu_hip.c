@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 struct h3_gpu_tensor {
@@ -26,7 +27,56 @@ struct h3_gpu {
     h3_gpu_stats stats;
     char profile_label[128];
     int in_command;
+    double profile_start_wall;
+    h3_gpu_stats profile_start_stats;
+    double command_start_wall;
 };
+
+static double h3_hip_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+static int h3_hip_profile_enabled(void) {
+    const char *value = getenv("H3_PROFILE");
+    return value && *value && strcmp(value, "0");
+}
+
+static uint64_t h3_hip_counter_delta(uint64_t value, uint64_t start) {
+    return value >= start ? value - start : 0;
+}
+
+static void h3_hip_profile_emit(struct h3_gpu *gpu, const char *phase,
+                                h3_gpu_stats start, double wall_start) {
+    if (!gpu || !phase || !h3_hip_profile_enabled()) return;
+    h3_gpu_stats value = gpu->stats;
+    double wall = h3_hip_now() - wall_start;
+    fprintf(stderr,
+        "h3 profile: %-24s %-14s wall=%8.3fs encode=%7.3fs "
+        "wait=%8.3fs root-gpu=%7.3fs "
+        "peak=%7.3fGiB alloc=%7.3fGiB submissions=%llu "
+        "direct=%llu linear=%llu conv=%llu attention=%llu\n",
+        gpu->profile_label[0] ? gpu->profile_label : "HIP context",
+        phase, wall,
+        value.command_encode_seconds - start.command_encode_seconds,
+        value.command_wait_seconds - start.command_wait_seconds,
+        value.gpu_seconds - start.gpu_seconds,
+        (double)value.peak_live_bytes / (1024.0 * 1024.0 * 1024.0),
+        (double)h3_hip_counter_delta(value.allocated_bytes,
+                                     start.allocated_bytes) /
+            (1024.0 * 1024.0 * 1024.0),
+        (unsigned long long)h3_hip_counter_delta(value.submissions,
+                                                 start.submissions),
+        (unsigned long long)h3_hip_counter_delta(value.direct_dispatches,
+                                                 start.direct_dispatches),
+        (unsigned long long)h3_hip_counter_delta(value.mps_linear_dispatches,
+                                                 start.mps_linear_dispatches),
+        (unsigned long long)h3_hip_counter_delta(value.mps_conv_dispatches,
+                                                 start.mps_conv_dispatches),
+        (unsigned long long)h3_hip_counter_delta(value.mps_sdpa_dispatches,
+                                                 start.mps_sdpa_dispatches));
+}
 
 static struct h3_gpu_tensor *tensor_ptr(const h3_gpu_tensor *tensor) {
     return (struct h3_gpu_tensor *)(void *)tensor;
@@ -128,12 +178,16 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
     }
     gpu->device_id = 0;
     snprintf(gpu->profile_label, sizeof(gpu->profile_label), "HIP context");
+    gpu->profile_start_wall = h3_hip_now();
+    gpu->profile_start_stats = gpu->stats;
     return (h3_gpu *)gpu;
 }
 
 void h3_gpu_free(h3_gpu *gpu) {
     if (!gpu) return;
     struct h3_gpu *ctx = gpu_ptr(gpu);
+    h3_hip_profile_emit(ctx, "total", ctx->profile_start_stats,
+                        ctx->profile_start_wall);
     hipStreamDestroy(ctx->stream);
     free(ctx);
 }
@@ -391,6 +445,7 @@ int h3_gpu_begin(h3_gpu *gpu) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     if (!ctx) return 0;
     ctx->in_command = 1;
+    ctx->command_start_wall = h3_hip_now();
     return 1;
 }
 
@@ -401,10 +456,20 @@ int h3_gpu_continue(h3_gpu *gpu) {
 int h3_gpu_submit(h3_gpu *gpu) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     if (!ctx) return 0;
-    if (hipStreamSynchronize(ctx->stream) != hipSuccess) {
-        h3_hip_set_error(ctx, "HIP stream synchronization failed");
+    double now = h3_hip_now();
+    if (ctx->in_command && ctx->command_start_wall > 0.0) {
+        ctx->stats.command_encode_seconds += now - ctx->command_start_wall;
+        ctx->command_start_wall = 0.0;
+    }
+    double wait_start = h3_hip_now();
+    hipError_t sync = hipStreamSynchronize(ctx->stream);
+    if (sync != hipSuccess) {
+        h3_hip_set_error(ctx, "HIP stream synchronization failed: %s",
+                         hipGetErrorString(sync));
         return 0;
     }
+    ctx->stats.command_wait_seconds += h3_hip_now() - wait_start;
+    ctx->stats.gpu_seconds = ctx->stats.command_wait_seconds;
     ctx->stats.submissions++;
     ctx->in_command = 0;
     return 1;
@@ -427,8 +492,10 @@ void h3_gpu_profile_set_label(h3_gpu *gpu, const char *label) {
 }
 
 void h3_gpu_profile_mark(h3_gpu *gpu, const char *phase) {
-    (void)gpu;
-    (void)phase;
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !phase || !*phase) return;
+    h3_hip_profile_emit(ctx, phase, ctx->profile_start_stats,
+                        ctx->profile_start_wall);
 }
 
 int h3_gpu_cast_f32_to_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -488,21 +555,29 @@ int h3_gpu_add_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     return 1;
 }
 
+static int h3_hip_launch_ok(struct h3_gpu *gpu, int ok, const char *name);
+
 int h3_gpu_copy_bf16(h3_gpu *gpu, h3_gpu_tensor *destination,
                      size_t destination_offset,
                      const h3_gpu_tensor *source, size_t source_offset,
                      size_t elements) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
-    if (!ctx || !elements ||
+    if (!ctx || !elements || elements > UINT32_MAX ||
         !h3_hip_require_bf16(ctx, source, source_offset + elements,
                              "copy source") ||
         !h3_hip_require_bf16(ctx, destination, destination_offset + elements,
                              "copy destination")) {
         return 0;
     }
-    memcpy((uint16_t *)tensor_ptr(destination)->host + destination_offset,
-           (const uint16_t *)tensor_ptr(source)->host + source_offset,
-           elements * sizeof(uint16_t));
+    /* Match Metal blit encoding: the copy must wait for prior GPU writes on
+     * the same stream. A host memcpy races with in-flight kernels and is how
+     * tiled VAE packing was reading stale embeddings. */
+    if (!h3_hip_launch_ok(ctx, h3_launch_copy_u16(
+            (const uint16_t *)tensor_ptr(source)->host + source_offset,
+            (uint16_t *)tensor_ptr(destination)->host + destination_offset,
+            (uint32_t)elements, ctx->stream), "h3_copy_u16")) {
+        return 0;
+    }
     ctx->stats.blit_copies++;
     return 1;
 }
@@ -542,6 +617,39 @@ static int h3_hip_launch_ok(struct h3_gpu *gpu, int ok, const char *name) {
     return 0;
 }
 
+/* Same public counters Metal tests assert. HIP kernels still increment
+ * direct_dispatches; these extra fields count the high-level op once. */
+static int h3_hip_launch_conv(struct h3_gpu *gpu, int ok, const char *name) {
+    if (!h3_hip_launch_ok(gpu, ok, name)) return 0;
+    gpu->stats.mps_conv_dispatches++;
+    return 1;
+}
+
+static int h3_hip_launch_sdpa(struct h3_gpu *gpu, int ok, const char *name) {
+    if (!h3_hip_launch_ok(gpu, ok, name)) return 0;
+    gpu->stats.mps_sdpa_dispatches++;
+    return 1;
+}
+
+/* Match Metal: F32 GEMMs that would go through MPSGraph count as linear
+ * dispatches. The DiT fused patch tile (in=32/96, out=5376) stays a direct
+ * kernel on Metal and must not increment this counter. */
+static int h3_hip_mps_linear_f32(uint32_t rows, uint32_t input_dim,
+                                 uint32_t output_dim) {
+    if (rows >= 16u && output_dim == 5376u &&
+        (input_dim == 32u || input_dim == 96u)) {
+        return 0;
+    }
+    return rows >= 32u && input_dim >= 256u && output_dim >= 256u;
+}
+
+static int h3_hip_launch_linear(struct h3_gpu *gpu, int ok, const char *name,
+                                int count_mps) {
+    if (!h3_hip_launch_ok(gpu, ok, name)) return 0;
+    if (count_mps) gpu->stats.mps_linear_dispatches++;
+    return 1;
+}
+
 static int h3_hip_require_f32_tensor(struct h3_gpu *gpu,
                                      const h3_gpu_tensor *tensor,
                                      size_t elements, const char *label) {
@@ -560,16 +668,19 @@ int h3_gpu_copy_f32(h3_gpu *gpu, h3_gpu_tensor *destination,
                     size_t destination_offset, const h3_gpu_tensor *source,
                     size_t source_offset, size_t elements) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
-    if (!ctx || !elements ||
+    if (!ctx || !elements || elements > UINT32_MAX ||
         !h3_hip_require_f32(ctx, source, source_offset + elements,
                             "copy source") ||
         !h3_hip_require_f32(ctx, destination, destination_offset + elements,
                              "copy destination")) {
         return 0;
     }
-    memcpy((float *)tensor_ptr(destination)->host + destination_offset,
-           (const float *)tensor_ptr(source)->host + source_offset,
-           elements * sizeof(float));
+    if (!h3_hip_launch_ok(ctx, h3_launch_copy_f32(
+            (const float *)tensor_ptr(source)->host + source_offset,
+            (float *)tensor_ptr(destination)->host + destination_offset,
+            (uint32_t)elements, ctx->stream), "h3_copy_f32")) {
+        return 0;
+    }
     ctx->stats.blit_copies++;
     return 1;
 }
@@ -629,11 +740,12 @@ int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         (const float *)tensor_ptr(bias)->host :
         (const float *)tensor_ptr(input)->host;
     h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
-    return h3_hip_launch_ok(ctx, h3_launch_linear_f32(
+    return h3_hip_launch_linear(ctx, h3_launch_linear_f32(
         (const float *)tensor_ptr(input)->host,
         (const float *)tensor_ptr(weight)->host, bias_ptr,
         (float *)tensor_ptr(output)->host, &args, ctx->stream),
-        "h3_linear_f32");
+        "h3_linear_f32",
+        h3_hip_mps_linear_f32(rows, input_dim, output_dim));
 }
 
 int h3_gpu_patch_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -975,12 +1087,12 @@ int h3_gpu_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     }
     const h3_gpu_tensor *bias_tensor = bias ? bias : input;
     h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
-    return h3_hip_launch_ok(ctx, h3_launch_linear_bf16(
+    return h3_hip_launch_linear(ctx, h3_launch_linear_bf16(
         (const uint16_t *)tensor_ptr(input)->host,
         (const uint16_t *)tensor_ptr(weight)->host,
         (const uint16_t *)tensor_ptr(bias_tensor)->host,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
-        "h3_linear_bf16");
+        "h3_linear_bf16", 1);
 }
 
 int h3_gpu_gate_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -1400,8 +1512,8 @@ int h3_gpu_conv1d_stride_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         (const float *)tensor_ptr(input)->host;
     h3_conv1d_args args = {batch, length, output_length, input_channels,
                            output_channels, kernel, stride, padding, dilation,
-                           bias ? 1u : 0u};
-    return h3_hip_launch_ok(ctx, h3_launch_conv1d_f32(
+                           bias ? 1u : 0u, 0u};
+    return h3_hip_launch_conv(ctx, h3_launch_conv1d_f32(
         (const float *)tensor_ptr(input)->host,
         (const float *)tensor_ptr(weight)->host, bias_ptr,
         (float *)tensor_ptr(output)->host, &args, ctx->stream),
@@ -1440,8 +1552,8 @@ int h3_gpu_conv_transpose1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         (const float *)tensor_ptr(input)->host;
     h3_conv1d_args args = {batch, length, output_length, input_channels,
                            output_channels, kernel, stride, padding, 1u,
-                           bias ? 1u : 0u};
-    return h3_hip_launch_ok(ctx, h3_launch_conv_transpose1d_f32(
+                           bias ? 1u : 0u, 0u};
+    return h3_hip_launch_conv(ctx, h3_launch_conv_transpose1d_f32(
         (const float *)tensor_ptr(input)->host,
         (const float *)tensor_ptr(weight)->host, bias_ptr,
         (float *)tensor_ptr(output)->host, &args, ctx->stream),
@@ -1546,7 +1658,7 @@ int h3_gpu_sdpa_causal_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         return 0;
     }
     h3_sdpa_causal_args args = {batch, sequence, heads, head_dim, scale};
-    return h3_hip_launch_ok(ctx, h3_launch_sdpa_causal_f32(
+    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_causal_f32(
         (const float *)tensor_ptr(query)->host,
         (const float *)tensor_ptr(key)->host,
         (const float *)tensor_ptr(value)->host,
@@ -1645,8 +1757,8 @@ int h3_gpu_conv3d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                           output_height, output_width, input_channels,
                           output_channels, kernel_depth, kernel_height,
                           kernel_width, stride_depth, stride_height,
-                          stride_width, bias ? 1u : 0u};
-    return h3_hip_launch_ok(ctx, h3_launch_conv3d_f32(
+                          stride_width, bias ? 1u : 0u, 0u, 0u};
+    return h3_hip_launch_conv(ctx, h3_launch_conv3d_f32(
         (const float *)tensor_ptr(input)->host,
         (const float *)tensor_ptr(weight)->host, bias_ptr,
         (float *)tensor_ptr(output)->host, &args, ctx->stream),
@@ -1693,8 +1805,8 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_bf16(ctx, output, count, "SDPA output")) {
         return 0;
     }
-    h3_sdpa_args args = {sequence, heads, head_dim, scale};
-    return h3_hip_launch_ok(ctx, h3_launch_sdpa_bf16(
+    h3_sdpa_args args = {sequence, heads, head_dim, scale, 0u};
+    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
         (const uint16_t *)tensor_ptr(query)->host,
         (const uint16_t *)tensor_ptr(key)->host,
         (const uint16_t *)tensor_ptr(value)->host,
@@ -1715,8 +1827,8 @@ int h3_gpu_sdpa_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_f32(ctx, output, count, "SDPA output")) {
         return 0;
     }
-    h3_sdpa_args args = {sequence, heads, head_dim, scale};
-    return h3_hip_launch_ok(ctx, h3_launch_sdpa_f32(
+    h3_sdpa_args args = {sequence, heads, head_dim, scale, 0u};
+    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_f32(
         (const float *)tensor_ptr(query)->host,
         (const float *)tensor_ptr(key)->host,
         (const float *)tensor_ptr(value)->host,
@@ -1730,8 +1842,22 @@ int h3_gpu_sdpa_bf16_head_major_output(h3_gpu *gpu, h3_gpu_tensor *output,
                                        const h3_gpu_tensor *value,
                                        uint32_t sequence, uint32_t heads,
                                        uint32_t head_dim, float scale) {
-    return h3_gpu_sdpa_bf16(gpu, output, query, key, value, sequence, heads,
-                            head_dim, scale);
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)sequence * heads * head_dim;
+    if (!ctx || !sequence || !heads || !head_dim ||
+        !h3_hip_require_bf16(ctx, query, count, "SDPA query") ||
+        !h3_hip_require_bf16(ctx, key, count, "SDPA key") ||
+        !h3_hip_require_bf16(ctx, value, count, "SDPA value") ||
+        !h3_hip_require_bf16(ctx, output, count, "SDPA output")) {
+        return 0;
+    }
+    h3_sdpa_args args = {sequence, heads, head_dim, scale, 1u};
+    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
+        (const uint16_t *)tensor_ptr(query)->host,
+        (const uint16_t *)tensor_ptr(key)->host,
+        (const uint16_t *)tensor_ptr(value)->host,
+        (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
+        "h3_sdpa_bf16_head_major_output");
 }
 
 int h3_gpu_mlp_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -2274,7 +2400,7 @@ int h3_gpu_gqa_causal_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         return 0;
     }
     h3_gqa_args args = {sequence, query_heads, kv_heads, head_dim, scale};
-    return h3_hip_launch_ok(ctx, h3_launch_gqa_causal_bf16(
+    return h3_hip_launch_sdpa(ctx, h3_launch_gqa_causal_bf16(
         (const uint16_t *)tensor_ptr(query)->host,
         (const uint16_t *)tensor_ptr(key)->host,
         (const uint16_t *)tensor_ptr(value)->host,
@@ -2565,7 +2691,6 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     (void)fc2_bf16;
     (void)use_slower_grouped_quantizer;
     (void)use_slower_dynamic_fc1_k;
-    (void)use_int8_row_fc2;
     if (!ctx || !rows || !input_dim || !hidden_dim || !output_dim ||
         !h3_hip_require_i8(ctx, quantized_activation, activation_capacity,
                            "int8 MLP activation") ||
@@ -2614,17 +2739,24 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
             ok = 0;
         }
     }
-    if (ok && !use_int8_row_fc2 && hidden_dim % 1024u == 0 &&
+    /* Match Metal: grouped quantize and row quantize are independent
+     * branches. An else-if here re-quantizes the same buffer with one
+     * scale per row after a successful group quantize, then grouped FC2
+     * indexes scales as [row][group] and the MLP output becomes noise. */
+    int grouped_fc2 = !use_int8_row_fc2 && hidden_dim % 1024u == 0;
+    if (ok && grouped_fc2 &&
         !h3_hip_quantize_bf16_int8_groups(
             ctx, quantized_activation, activation_scales, activated, rows,
             padded_rows, hidden_dim, 1024u)) {
         ok = 0;
-    } else if (ok && !h3_hip_quantize_bf16_int8_rows(
-                   ctx, quantized_activation, activation_scales, activated,
-                   rows, padded_rows, hidden_dim)) {
+    }
+    if (ok && !grouped_fc2 &&
+        !h3_hip_quantize_bf16_int8_rows(
+            ctx, quantized_activation, activation_scales, activated, rows,
+            padded_rows, hidden_dim)) {
         ok = 0;
     }
-    if (ok && !use_int8_row_fc2 && hidden_dim % 1024u == 0) {
+    if (ok && grouped_fc2) {
         if (!h3_hip_launch_linear_int8_grouped_prequant(
                 ctx, output, quantized_activation, activation_scales,
                 fc2_weight, fc2_scales, rows, hidden_dim, output_dim, 1024u)) {

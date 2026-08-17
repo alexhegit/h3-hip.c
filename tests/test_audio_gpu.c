@@ -241,6 +241,6 @@ int main(void) {
     for (size_t index = 0; index < test.count; index++)
         h3_gpu_tensor_free(test.owned[index]);
     h3_gpu_free(test.gpu);
-    puts("ok: native AudioVAE Metal primitives match host references");
+    puts("ok: native AudioVAE GPU primitives match host references");
     return 0;
 }

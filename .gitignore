@@ -30,3 +30,11 @@ libh3.a
 .DS_Store
 h3_hip_smoke
 h3_hip_real_dit_smoke
+h3_hip_vae_zero
+h3_hip_encoder_roundtrip
+h3_hip_audio_smoke
+h3_hip_vision_smoke
+h3_hip_text_smoke
+h3_hip_multimodal_smoke
+h3_hip_ref2va_smoke
+h3_hip_sdpa_long
