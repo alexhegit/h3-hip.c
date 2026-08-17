@@ -1593,6 +1593,45 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         }
         goto cleanup;
     }
+    if (getenv("H3_DUMP_LATENT")) {
+        int t_count = temporal.video_t;
+        int height = latent_h;
+        int width = latent_w;
+        fprintf(stderr, "h3: latent %d x %d x %d x %d\n", 24, t_count, height,
+                width);
+        FILE *latent_file = fopen("/tmp/dit_latent.bin", "wb");
+        if (latent_file) {
+            int header[] = {24, t_count, height, width};
+            fwrite(header, sizeof(header), 1, latent_file);
+            fwrite(video, sizeof(*video), video_count, latent_file);
+            fclose(latent_file);
+            fprintf(stderr, "h3: wrote /tmp/dit_latent.bin\n");
+        }
+        for (int x = 0; x < width; x++) {
+            double abs_sum = 0.0;
+            double dx_sum = 0.0;
+            size_t abs_n = 0;
+            size_t dx_n = 0;
+            for (int c = 0; c < 24; c++) {
+                for (int t = 0; t < t_count; t++) {
+                    for (int y = 0; y < height; y++) {
+                        size_t index = (((size_t)c * (size_t)t_count +
+                            (size_t)t) * (size_t)height + (size_t)y) *
+                            (size_t)width + (size_t)x;
+                        abs_sum += fabsf(video[index]);
+                        abs_n++;
+                        if (x + 1 < width) {
+                            dx_sum += fabsf(video[index] - video[index + 1]);
+                            dx_n++;
+                        }
+                    }
+                }
+            }
+            fprintf(stderr, "h3: latent x=%02d mean_abs=%.4f dx=%.4f\n", x,
+                    abs_n ? abs_sum / (double)abs_n : 0.0,
+                    dx_n ? dx_sum / (double)dx_n : 0.0);
+        }
+    }
     if (!dit_is_cached) h3_dit_free(dit);
     dit = NULL;
     if (progress.cancelled) goto cleanup;

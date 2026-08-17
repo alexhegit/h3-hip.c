@@ -59,6 +59,9 @@ typedef struct {
     uint32_t padding;
     uint32_t dilation;
     uint32_t has_bias;
+    /* Added to the Y grid so long audio lengths stay within HIP's 65535
+     * grid.y limit. The launcher fills this; callers can leave it zero. */
+    uint32_t time_offset;
 } h3_conv1d_args;
 
 typedef struct {
@@ -120,6 +123,10 @@ typedef struct {
     uint32_t stride_height;
     uint32_t stride_width;
     uint32_t has_bias;
+    /* Added to the Y grid so encoder tiles with T*H*W > 65535 (Ref2VA
+     * 22x256x256) stay within HIP's grid.y limit. */
+    uint32_t spatial_offset;
+    uint32_t spatial_span;
 } h3_conv3d_args;
 
 typedef struct {
@@ -172,6 +179,7 @@ typedef struct {
     uint32_t heads;
     uint32_t head_dim;
     float scale;
+    uint32_t head_major_output;
 } h3_sdpa_args;
 
 typedef struct {
@@ -297,6 +305,10 @@ typedef struct {
     uint32_t group_size;
 } h3_linear_int8_grouped_args;
 
+int h3_launch_copy_f32(const float *input, float *output, uint32_t count,
+                       hipStream_t stream);
+int h3_launch_copy_u16(const uint16_t *input, uint16_t *output, uint32_t count,
+                       hipStream_t stream);
 int h3_launch_cast_f32_to_bf16(const float *input, uint16_t *output,
                                uint32_t count, hipStream_t stream);
 int h3_launch_cast_bf16_to_f32(const uint16_t *input, float *output,

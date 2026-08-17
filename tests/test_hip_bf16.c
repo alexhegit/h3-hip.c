@@ -1501,6 +1501,49 @@ static int test_conv3d_f32(h3_gpu *gpu) {
     return 0;
 }
 
+/* Ref2VA silent-video encodes 22x256x256 tiles. Conv3d used to put T*H*W in
+ * grid.y, which exceeds HIP's 65535 limit (2*256*256 = 131072). */
+static int test_conv3d_f32_wide_spatial(h3_gpu *gpu) {
+    enum { BATCH = 1, DEPTH = 2, HEIGHT = 256, WIDTH = 256 };
+    enum { IN_CH = 1, OUT_CH = 1, KERNEL = 1, STRIDE = 1 };
+    enum { IN_COUNT = BATCH * DEPTH * HEIGHT * WIDTH * IN_CH };
+    enum { OUT_COUNT = IN_COUNT };
+    float *input = malloc(IN_COUNT * sizeof(*input));
+    float *expected = malloc(OUT_COUNT * sizeof(*expected));
+    float *got = malloc(OUT_COUNT * sizeof(*got));
+    CHECK(input && expected && got);
+    for (size_t i = 0; i < IN_COUNT; i++)
+        input[i] = (float)((int)(i % 17) - 8) * 0.125f;
+    const float weight[] = {0.5f};
+    const float bias[] = {0.25f};
+    cpu_conv3d_f32(input, weight, bias, expected, BATCH, DEPTH, HEIGHT, WIDTH,
+                   IN_CH, OUT_CH, KERNEL, KERNEL, KERNEL, STRIDE, STRIDE,
+                   STRIDE);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, IN_COUNT);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, 1);
+    h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, 1);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, OUT_COUNT);
+    CHECK(gpu_input && gpu_weight && gpu_bias && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin conv3d wide spatial"));
+    CHECK(!require_gpu(gpu, h3_gpu_conv3d_f32(
+        gpu, output, gpu_input, gpu_weight, gpu_bias, BATCH, DEPTH, HEIGHT,
+        WIDTH, IN_CH, OUT_CH, KERNEL, KERNEL, KERNEL, STRIDE, STRIDE,
+        STRIDE), "conv3d wide spatial"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit conv3d wide spatial"));
+    CHECK(h3_gpu_tensor_read_f32(output, got, OUT_COUNT));
+    for (size_t i = 0; i < OUT_COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
+    }
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(gpu_bias);
+    h3_gpu_tensor_free(output);
+    free(input);
+    free(expected);
+    free(got);
+    return 0;
+}
+
 static void cpu_vae_encoder_group_norm_silu_f32(
     const float *input, const float *weight, const float *bias, float *output,
     uint32_t batch, uint32_t depth, uint32_t height, uint32_t width,
@@ -1623,6 +1666,64 @@ static int test_sdpa_causal_f32(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_sdpa_causal_f32_audio_shape(h3_gpu *gpu) {
+    enum { BATCH = 2, SEQUENCE = 4, HEADS = 8, HEAD_DIM = 256 };
+    enum { SLICE = SEQUENCE * HEADS * HEAD_DIM, COUNT = BATCH * SLICE };
+    float *query = malloc(COUNT * sizeof(*query));
+    float *key = malloc(COUNT * sizeof(*key));
+    float *value = malloc(COUNT * sizeof(*value));
+    float *expected = malloc(COUNT * sizeof(*expected));
+    float *got = malloc(COUNT * sizeof(*got));
+    CHECK(query && key && value && expected && got);
+    for (uint32_t b = 0; b < BATCH; b++) {
+        for (uint32_t pos = 0; pos < SEQUENCE; pos++) {
+            for (uint32_t head = 0; head < HEADS; head++) {
+                for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                    uint32_t index = b * SLICE +
+                        (pos * HEADS + head) * HEAD_DIM + d;
+                    query[index] = 0.01f * (float)(b + pos + 1) +
+                        0.001f * (float)d;
+                    key[index] = 0.02f * (float)(head + 1) -
+                        0.0005f * (float)d;
+                    value[index] = 0.03f * (float)(pos + 1) +
+                        0.0002f * (float)head;
+                }
+            }
+        }
+    }
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_sdpa_causal_f32(query, key, value, expected, BATCH, SEQUENCE, HEADS,
+                        HEAD_DIM, scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_f32(gpu, query, COUNT);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_f32(gpu, key, COUNT);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_f32(gpu, value, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa causal d256"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_causal_f32(
+        gpu, output, gpu_q, gpu_k, gpu_v, BATCH, SEQUENCE, HEADS, HEAD_DIM,
+        scale), "sdpa causal d256"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa causal d256"));
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    float max_abs = 0.0f;
+    for (size_t i = 0; i < COUNT; i++) {
+        float err = fabsf(got[i] - expected[i]);
+        if (err > max_abs) max_abs = err;
+    }
+    printf("sdpa causal f32 d256 max abs %.7g\n", max_abs);
+    CHECK(max_abs < 2e-4f);
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    free(query);
+    free(key);
+    free(value);
+    free(expected);
+    free(got);
+    return 0;
+}
+
 static int test_sdpa_f32(h3_gpu *gpu) {
     enum { SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
@@ -1653,6 +1754,54 @@ static int test_sdpa_f32(h3_gpu *gpu) {
     for (size_t i = 0; i < COUNT; i++) {
         CHECK(fabsf(got[i] - expected[i]) < 1e-4f);
     }
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_sdpa_f32_d64(h3_gpu *gpu) {
+    enum { SEQUENCE = 16, HEADS = 2, HEAD_DIM = 64 };
+    enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
+    float *query = calloc(COUNT, sizeof(*query));
+    float *key = calloc(COUNT, sizeof(*key));
+    float *value = calloc(COUNT, sizeof(*value));
+    float *expected = calloc(COUNT, sizeof(*expected));
+    CHECK(query && key && value && expected);
+    for (uint32_t pos = 0; pos < SEQUENCE; pos++) {
+        for (uint32_t head = 0; head < HEADS; head++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                uint32_t index = (pos * HEADS + head) * HEAD_DIM + d;
+                query[index] = (float)((int)((pos + head + d) % 13) - 6) * 0.03125f;
+                key[index] = (float)((int)((pos * 3 + d) % 11) - 5) * 0.015625f;
+                value[index] = (float)((int)((head + d) % 7) - 3) * 0.0625f;
+            }
+        }
+    }
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_sdpa_f32(query, key, value, expected, SEQUENCE, HEADS, HEAD_DIM, scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_f32(gpu, query, COUNT);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_f32(gpu, key, COUNT);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_f32(gpu, value, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, COUNT);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa f32 d64"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_f32(
+        gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM, scale),
+        "sdpa f32 d64"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa f32 d64"));
+    float *got = calloc(COUNT, sizeof(*got));
+    CHECK(got);
+    CHECK(h3_gpu_tensor_read_f32(output, got, COUNT));
+    for (size_t i = 0; i < COUNT; i++) {
+        CHECK(fabsf(got[i] - expected[i]) < 2e-3f);
+    }
+    free(query);
+    free(key);
+    free(value);
+    free(expected);
+    free(got);
     h3_gpu_tensor_free(gpu_q);
     h3_gpu_tensor_free(gpu_k);
     h3_gpu_tensor_free(gpu_v);
@@ -1834,6 +1983,122 @@ static int test_sdpa_head128(h3_gpu *gpu) {
     free(key);
     free(value);
     free(expected);
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_sdpa_head_major_output(h3_gpu *gpu) {
+    enum { SEQUENCE = 8, HEADS = 2, HEAD_DIM = 128 };
+    enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
+    uint16_t *query = calloc(COUNT, sizeof(*query));
+    uint16_t *key = calloc(COUNT, sizeof(*key));
+    uint16_t *value = calloc(COUNT, sizeof(*value));
+    uint16_t *row_major = calloc(COUNT, sizeof(*row_major));
+    CHECK(query && key && value && row_major);
+    for (uint32_t pos = 0; pos < SEQUENCE; pos++) {
+        for (uint32_t head = 0; head < HEADS; head++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                uint32_t index = (pos * HEADS + head) * HEAD_DIM + d;
+                query[index] = f32_to_bf16((float)(pos + 1) * 0.02f +
+                                           (float)d * 0.001f);
+                key[index] = f32_to_bf16((float)(pos + 1) * 0.03f -
+                                         (float)d * 0.0005f);
+                value[index] = f32_to_bf16((float)pos * 0.04f - (float)d * 0.002f);
+            }
+        }
+    }
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_sdpa_bf16(query, key, value, row_major, SEQUENCE, HEADS, HEAD_DIM,
+                  scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, COUNT);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, COUNT);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa head-major"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16_head_major_output(
+        gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM, scale),
+        "sdpa head-major"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa head-major"));
+    uint16_t *got = malloc(COUNT * sizeof(*got));
+    CHECK(got);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, COUNT));
+    for (uint32_t pos = 0; pos < SEQUENCE; pos++) {
+        for (uint32_t head = 0; head < HEADS; head++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                uint32_t rm = (pos * HEADS + head) * HEAD_DIM + d;
+                uint32_t hm = (head * SEQUENCE + pos) * HEAD_DIM + d;
+                CHECK(fabsf(bf16_to_f32(got[hm]) - bf16_to_f32(row_major[rm])) <
+                      0.08f);
+            }
+        }
+    }
+    free(got);
+    free(query);
+    free(key);
+    free(value);
+    free(row_major);
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_sdpa_head_major_output_long(h3_gpu *gpu) {
+    enum { SEQUENCE = 64, HEADS = 2, HEAD_DIM = 128 };
+    enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
+    uint16_t *query = calloc(COUNT, sizeof(*query));
+    uint16_t *key = calloc(COUNT, sizeof(*key));
+    uint16_t *value = calloc(COUNT, sizeof(*value));
+    uint16_t *row_major = calloc(COUNT, sizeof(*row_major));
+    CHECK(query && key && value && row_major);
+    for (uint32_t pos = 0; pos < SEQUENCE; pos++) {
+        for (uint32_t head = 0; head < HEADS; head++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                uint32_t index = (pos * HEADS + head) * HEAD_DIM + d;
+                query[index] = f32_to_bf16((float)(pos + 1) * 0.01f +
+                                           (float)d * 0.0005f);
+                key[index] = f32_to_bf16((float)(pos + 1) * 0.015f -
+                                         (float)d * 0.00025f);
+                value[index] = f32_to_bf16((float)pos * 0.02f - (float)d * 0.001f);
+            }
+        }
+    }
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_sdpa_bf16(query, key, value, row_major, SEQUENCE, HEADS, HEAD_DIM,
+                  scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, COUNT);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, COUNT);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, COUNT);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, COUNT);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa head-major long"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16_head_major_output(
+        gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM, scale),
+        "sdpa head-major long"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa head-major long"));
+    uint16_t *got = malloc(COUNT * sizeof(*got));
+    CHECK(got);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, COUNT));
+    for (uint32_t pos = 0; pos < SEQUENCE; pos++) {
+        for (uint32_t head = 0; head < HEADS; head++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                uint32_t rm = (pos * HEADS + head) * HEAD_DIM + d;
+                uint32_t hm = (head * SEQUENCE + pos) * HEAD_DIM + d;
+                CHECK(fabsf(bf16_to_f32(got[hm]) - bf16_to_f32(row_major[rm])) <
+                      0.12f);
+            }
+        }
+    }
+    free(got);
+    free(query);
+    free(key);
+    free(value);
+    free(row_major);
     h3_gpu_tensor_free(gpu_q);
     h3_gpu_tensor_free(gpu_k);
     h3_gpu_tensor_free(gpu_v);
@@ -3308,6 +3573,51 @@ static int test_gqa_causal(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_gqa_causal_d128(h3_gpu *gpu) {
+    enum { SEQUENCE = 32, QUERY_HEADS = 8, KV_HEADS = 2, HEAD_DIM = 128 };
+    enum { Q_ELEMS = SEQUENCE * QUERY_HEADS * HEAD_DIM,
+           KV_ELEMS = SEQUENCE * KV_HEADS * HEAD_DIM };
+    uint16_t *query = calloc(Q_ELEMS, sizeof(*query));
+    uint16_t *key = calloc(KV_ELEMS, sizeof(*key));
+    uint16_t *value = calloc(KV_ELEMS, sizeof(*value));
+    uint16_t *expected = calloc(Q_ELEMS, sizeof(*expected));
+    CHECK(query && key && value && expected);
+    for (size_t i = 0; i < Q_ELEMS; i++)
+        query[i] = f32_to_bf16((float)((int)(i % 11) - 5) * 0.02f);
+    for (size_t i = 0; i < KV_ELEMS; i++) {
+        key[i] = f32_to_bf16((float)((int)(i % 9) - 4) * 0.03f);
+        value[i] = f32_to_bf16((float)((int)(i % 7) - 3) * 0.04f);
+    }
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_gqa_causal_bf16(query, key, value, expected, SEQUENCE, QUERY_HEADS,
+                        KV_HEADS, HEAD_DIM, scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, Q_ELEMS);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, KV_ELEMS);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, KV_ELEMS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, Q_ELEMS);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin gqa causal d128"));
+    CHECK(!require_gpu(gpu, h3_gpu_gqa_causal_bf16(
+        gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, QUERY_HEADS, KV_HEADS,
+        HEAD_DIM, scale), "gqa causal d128"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit gqa causal d128"));
+    uint16_t *got = malloc(Q_ELEMS * sizeof(*got));
+    CHECK(got);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, Q_ELEMS));
+    for (size_t i = 0; i < Q_ELEMS; i++)
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i])) < 0.12f);
+    free(got);
+    free(query);
+    free(key);
+    free(value);
+    free(expected);
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
 static void cpu_head_rms_norm_bf16(uint16_t *tensor, const uint16_t *weight,
                                    uint32_t sequence, uint32_t heads,
                                    uint32_t head_dim, float epsilon) {
@@ -3455,6 +3765,48 @@ static int test_copy_bf16(h3_gpu *gpu) {
     CHECK(memcmp(got + PADDING, source + PADDING, COUNT * sizeof(uint16_t)) == 0);
     h3_gpu_tensor_free(gpu_source);
     h3_gpu_tensor_free(dest);
+    return 0;
+}
+
+static int test_copy_waits_for_kernel(h3_gpu *gpu) {
+    enum { COUNT = 1 << 20 };
+    float *ones = malloc((size_t)COUNT * sizeof(*ones));
+    float *zeros = malloc((size_t)COUNT * sizeof(*zeros));
+    float *got = malloc((size_t)COUNT * sizeof(*got));
+    CHECK(ones && zeros && got);
+    for (size_t i = 0; i < COUNT; i++) {
+        ones[i] = 1.0f;
+        zeros[i] = 0.0f;
+    }
+    h3_gpu_tensor *input = h3_gpu_tensor_from_f32(gpu, ones, COUNT);
+    h3_gpu_tensor *activated = h3_gpu_tensor_from_f32(gpu, zeros, COUNT);
+    h3_gpu_tensor *copied = h3_gpu_tensor_from_f32(gpu, zeros, COUNT);
+    CHECK(input && activated && copied);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin copy-after-silu"));
+    CHECK(!require_gpu(gpu, h3_gpu_silu_f32(gpu, activated, input, COUNT),
+                       "silu before copy"));
+    CHECK(!require_gpu(gpu, h3_gpu_copy_f32(gpu, copied, 0, activated, 0,
+                                            COUNT),
+                       "copy after silu"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit copy-after-silu"));
+    CHECK(h3_gpu_tensor_read_f32(copied, got, COUNT));
+    float expected = 1.0f / (1.0f + expf(-1.0f));
+    for (size_t i = 0; i < COUNT; i++) {
+        if (fabsf(got[i] - expected) > 1e-5f) {
+            fprintf(stderr,
+                    "FAIL copy did not wait for prior kernel at %zu: got %f\n",
+                    i, got[i]);
+            free(ones); free(zeros); free(got);
+            h3_gpu_tensor_free(input);
+            h3_gpu_tensor_free(activated);
+            h3_gpu_tensor_free(copied);
+            return 1;
+        }
+    }
+    free(ones); free(zeros); free(got);
+    h3_gpu_tensor_free(input);
+    h3_gpu_tensor_free(activated);
+    h3_gpu_tensor_free(copied);
     return 0;
 }
 
@@ -4022,7 +4374,10 @@ static int test_linear_int8_grouped_r64(h3_gpu *gpu) {
 }
 
 static int test_mlp_int8_grouped_fc2(h3_gpu *gpu) {
-    enum { ROWS = 4, INPUT_DIM = 128, HIDDEN = 1024, OUTPUT_DIM = 64,
+    /* HIDDEN=2048 => two 1024-wide FC2 groups. HIDDEN=1024 hid the HIP MLP
+     * dispatch bug where row quantize overwrote grouped scales (groups=1
+     * makes row and group indexing coincide). */
+    enum { ROWS = 4, INPUT_DIM = 128, HIDDEN = 2048, OUTPUT_DIM = 64,
            PADDED_ROWS = 128, FC2_SCALE_GROUPS = HIDDEN / 1024 };
     enum { INPUT_ELEMS = ROWS * INPUT_DIM,
            FC1_ELEMS = HIDDEN * 2 * INPUT_DIM,
@@ -4249,6 +4604,83 @@ static int test_linear_int8_head_major(h3_gpu *gpu) {
     for (size_t i = 0; i < ROWS * OUTPUT_DIM; i++) {
         CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(got_ref[i])) < 0.15f);
     }
+    h3_gpu_tensor_free(gpu_head_major);
+    h3_gpu_tensor_free(gpu_row_major);
+    h3_gpu_tensor_free(gpu_weight_bf16);
+    h3_gpu_tensor_free(weight);
+    h3_gpu_tensor_free(weight_scales);
+    h3_gpu_tensor_free(quantized);
+    h3_gpu_tensor_free(input_scales);
+    h3_gpu_tensor_free(output);
+    h3_gpu_tensor_free(reference);
+    return 0;
+}
+
+static int test_linear_int8_head_major_r64(h3_gpu *gpu) {
+    enum { ROWS = 16, HEADS = 4, HEAD_DIM = 128, OUTPUT_DIM = 64,
+           INPUT_DIM = HEADS * HEAD_DIM, PADDED_ROWS = 128 };
+    enum { HM_ELEMS = HEADS * ROWS * HEAD_DIM,
+           WEIGHT_ELEMS = OUTPUT_DIM * INPUT_DIM,
+           Q_ELEMS = PADDED_ROWS * INPUT_DIM,
+           RM_ELEMS = ROWS * INPUT_DIM };
+    uint16_t *head_major = calloc(HM_ELEMS, sizeof(*head_major));
+    uint16_t *row_major = calloc(RM_ELEMS, sizeof(*row_major));
+    uint16_t *weight_bf16 = calloc(WEIGHT_ELEMS, sizeof(*weight_bf16));
+    CHECK(head_major && row_major && weight_bf16);
+    for (size_t row = 0; row < ROWS; row++) {
+        for (size_t head = 0; head < HEADS; head++) {
+            for (size_t dim = 0; dim < HEAD_DIM; dim++) {
+                size_t hm = (head * ROWS + row) * HEAD_DIM + dim;
+                size_t rm = row * INPUT_DIM + head * HEAD_DIM + dim;
+                float value = ((float)((int)((row + head + dim) % 17) - 8)) *
+                              0.03125f;
+                head_major[hm] = f32_to_bf16(value);
+                row_major[rm] = head_major[hm];
+            }
+        }
+    }
+    for (size_t i = 0; i < WEIGHT_ELEMS; i++)
+        weight_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.015625f);
+    h3_gpu_tensor *gpu_head_major = h3_gpu_tensor_from_bf16(
+        gpu, head_major, HM_ELEMS);
+    h3_gpu_tensor *gpu_row_major = h3_gpu_tensor_from_bf16(
+        gpu, row_major, RM_ELEMS);
+    h3_gpu_tensor *gpu_weight_bf16 = h3_gpu_tensor_from_bf16(
+        gpu, weight_bf16, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight = h3_gpu_tensor_new_i8(gpu, WEIGHT_ELEMS);
+    h3_gpu_tensor *weight_scales = h3_gpu_tensor_new_f32(gpu, OUTPUT_DIM);
+    h3_gpu_tensor *quantized = h3_gpu_tensor_new_i8(gpu, Q_ELEMS);
+    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32(gpu, PADDED_ROWS);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    h3_gpu_tensor *reference = h3_gpu_tensor_new_bf16(gpu, ROWS * OUTPUT_DIM);
+    CHECK(gpu_head_major && gpu_row_major && gpu_weight_bf16 && weight &&
+          weight_scales && quantized && input_scales && output && reference);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin head-major int8 r64"));
+    CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
+        gpu, weight, weight_scales, gpu_weight_bf16, OUTPUT_DIM, INPUT_DIM),
+        "quantize head-major int8 r64 weight"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_int8_bf16(
+        gpu, reference, quantized, input_scales, gpu_row_major, weight,
+        weight_scales, ROWS, INPUT_DIM, OUTPUT_DIM, 0),
+        "reference row-major int8 r64"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_int8_head_major_bf16(
+        gpu, output, quantized, input_scales, gpu_head_major, weight,
+        weight_scales, ROWS, HEADS, HEAD_DIM, OUTPUT_DIM),
+        "head-major int8 r64 linear"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit head-major int8 r64"));
+    uint16_t *got = calloc(ROWS * OUTPUT_DIM, sizeof(*got));
+    uint16_t *got_ref = calloc(ROWS * OUTPUT_DIM, sizeof(*got_ref));
+    CHECK(got && got_ref);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * OUTPUT_DIM));
+    CHECK(h3_gpu_tensor_read_bf16(reference, got_ref, ROWS * OUTPUT_DIM));
+    for (size_t i = 0; i < (size_t)ROWS * OUTPUT_DIM; i++) {
+        CHECK(fabsf(bf16_to_f32(got[i]) - bf16_to_f32(got_ref[i])) < 0.25f);
+    }
+    free(head_major);
+    free(row_major);
+    free(weight_bf16);
+    free(got);
+    free(got_ref);
     h3_gpu_tensor_free(gpu_head_major);
     h3_gpu_tensor_free(gpu_row_major);
     h3_gpu_tensor_free(gpu_weight_bf16);
@@ -4926,14 +5358,19 @@ int main(void) {
     if (test_snake1d_f32(gpu) != 0) return 1;
     if (test_audio_qkv_split_f32(gpu) != 0) return 1;
     if (test_sdpa_causal_f32(gpu) != 0) return 1;
+    if (test_sdpa_causal_f32_audio_shape(gpu) != 0) return 1;
     if (test_audio_attention_pool_f32(gpu) != 0) return 1;
     if (test_vae_encoder_pad_f32(gpu) != 0) return 1;
     if (test_conv3d_f32(gpu) != 0) return 1;
+    if (test_conv3d_f32_wide_spatial(gpu) != 0) return 1;
     if (test_vae_encoder_group_norm_silu_f32(gpu) != 0) return 1;
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_large(gpu) != 0) return 1;
     if (test_sdpa_head128(gpu) != 0) return 1;
+    if (test_sdpa_head_major_output(gpu) != 0) return 1;
+    if (test_sdpa_head_major_output_long(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
+    if (test_sdpa_f32_d64(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;
     if (test_mlp(gpu) != 0) return 1;
     if (test_mlp_nax(gpu) != 0) return 1;
@@ -4967,9 +5404,11 @@ int main(void) {
     if (test_linear_bias(gpu) != 0) return 1;
     if (test_text_qk_rope(gpu) != 0) return 1;
     if (test_gqa_causal(gpu) != 0) return 1;
+    if (test_gqa_causal_d128(gpu) != 0) return 1;
     if (test_head_rms_norm(gpu) != 0) return 1;
     if (test_rope_text(gpu) != 0) return 1;
     if (test_copy_bf16(gpu) != 0) return 1;
+    if (test_copy_waits_for_kernel(gpu) != 0) return 1;
     if (test_sub_bf16(gpu) != 0) return 1;
     if (test_gelu(gpu) != 0) return 1;
     if (test_quantize_weight_int8(gpu) != 0) return 1;
@@ -4982,6 +5421,7 @@ int main(void) {
     if (test_linear_int8_grouped(gpu) != 0) return 1;
     if (test_linear_int8_grouped_r64(gpu) != 0) return 1;
     if (test_linear_int8_head_major(gpu) != 0) return 1;
+    if (test_linear_int8_head_major_r64(gpu) != 0) return 1;
     if (test_mlp_int8(gpu) != 0) return 1;
     if (test_mlp_int8_nax_r128(gpu) != 0) return 1;
     if (test_mlp_int8_grouped_fc2(gpu) != 0) return 1;

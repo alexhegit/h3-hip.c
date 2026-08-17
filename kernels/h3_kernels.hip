@@ -25,6 +25,18 @@ __device__ inline float h3_erf_approx(float value) {
     return sign * (1.0f - polynomial * expf(-x * x));
 }
 
+__global__ void h3_copy_f32_kernel(const float *input, float *output,
+                                   uint32_t count) {
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < count) output[gid] = input[gid];
+}
+
+__global__ void h3_copy_u16_kernel(const uint16_t *input, uint16_t *output,
+                                   uint32_t count) {
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid < count) output[gid] = input[gid];
+}
+
 __global__ void h3_cast_f32_to_bf16_kernel(const float *input, uint16_t *output,
                                            uint32_t count) {
     uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -265,20 +277,21 @@ __device__ inline int h3_reflect_coordinate(int coordinate, int length) {
 
 __global__ void h3_vae_encoder_pad_f32_kernel(const float *input, float *output,
                                               h3_vae_encoder_pad_args args) {
-    uint32_t channel = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t out_x = blockIdx.y * blockDim.y + threadIdx.y;
     uint32_t out_height = args.height + args.height_before + args.height_after;
     uint32_t out_width = args.width + args.width_before + args.width_after;
     uint32_t out_depth = args.depth + args.depth_front;
-    uint32_t plane = blockIdx.z;
-    if (channel >= args.channels || out_x >= out_width ||
-        plane >= args.batch * out_depth * out_height) {
-        return;
-    }
-    uint32_t out_y = plane % out_height;
-    uint32_t temporal_plane = plane / out_height;
-    uint32_t out_t = temporal_plane % out_depth;
-    uint32_t batch = temporal_plane / out_depth;
+    uint64_t spatial = (uint64_t)out_depth * out_height * out_width;
+    uint64_t total = (uint64_t)args.batch * spatial * args.channels;
+    uint64_t gid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= total) return;
+    uint32_t channel = (uint32_t)(gid % args.channels);
+    uint64_t rem = gid / args.channels;
+    uint32_t out_x = (uint32_t)(rem % out_width);
+    rem /= out_width;
+    uint32_t out_y = (uint32_t)(rem % out_height);
+    rem /= out_height;
+    uint32_t out_t = (uint32_t)(rem % out_depth);
+    uint32_t batch = (uint32_t)(rem / out_depth);
     size_t destination = ((((size_t)batch * out_depth + out_t) * out_height +
                            out_y) * out_width + out_x) * args.channels +
                          channel;
@@ -906,6 +919,14 @@ __global__ void h3_vision_qkv_rope_bf16_kernel(
     value[output_index] = qkv[v_base + dimension];
 }
 
+__device__ inline uint32_t h3_sdpa_output_index(h3_sdpa_args args,
+                                                uint32_t q_pos, uint32_t head,
+                                                uint32_t dimension) {
+    uint32_t packed = args.head_major_output ?
+        head * args.sequence + q_pos : q_pos * args.heads + head;
+    return packed * args.head_dim + dimension;
+}
+
 __global__ void h3_sdpa_bf16_kernel(const uint16_t *query, const uint16_t *key,
                                     const uint16_t *value, uint16_t *output,
                                     h3_sdpa_args args) {
@@ -942,8 +963,7 @@ __global__ void h3_sdpa_bf16_kernel(const uint16_t *query, const uint16_t *key,
             acc = fmaf(scores[k_pos] * inv_sum,
                        h3_bf16_to_f32(value[v_index]), acc);
         }
-        uint32_t out_index =
-            (q_pos * args.heads + head) * args.head_dim + d;
+        uint32_t out_index = h3_sdpa_output_index(args, q_pos, head, d);
         output[out_index] = h3_f32_to_bf16(acc);
     }
 }
@@ -1003,6 +1023,8 @@ __device__ inline float h3_warp_reduce_sum(float value) {
     return value;
 }
 
+/* AudioVAE encoder uses 8 heads x 256; VAE/text stay <= 128. One warp covers
+ * 32-wide chunks, so 8 chunks reach head_dim 256. */
 __global__ void __launch_bounds__(32)
 h3_sdpa_causal_f32_wave_kernel(const float *query, const float *key,
                                const float *value, float *output,
@@ -1013,10 +1035,10 @@ h3_sdpa_causal_f32_wave_kernel(const float *query, const float *key,
     uint32_t lane = threadIdx.x;
     uint32_t slice = batch * args.sequence * args.heads * args.head_dim;
     uint32_t q_base = slice + (q_pos * args.heads + head) * args.head_dim;
-    float q[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float q[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    float acc[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 #pragma unroll
-    for (int item = 0; item < 4; item++) {
+    for (int item = 0; item < 8; item++) {
         uint32_t dimension = lane + (uint32_t)item * 32u;
         if (dimension < args.head_dim)
             q[item] = query[q_base + dimension] * args.scale;
@@ -1027,7 +1049,7 @@ h3_sdpa_causal_f32_wave_kernel(const float *query, const float *key,
         uint32_t k_base = slice + (k_pos * args.heads + head) * args.head_dim;
         float partial = 0.0f;
 #pragma unroll
-        for (int item = 0; item < 4; item++) {
+        for (int item = 0; item < 8; item++) {
             uint32_t dimension = lane + (uint32_t)item * 32u;
             if (dimension < args.head_dim)
                 partial = fmaf(q[item], key[k_base + dimension], partial);
@@ -1037,7 +1059,7 @@ h3_sdpa_causal_f32_wave_kernel(const float *query, const float *key,
         float alpha = expf(maximum - new_max);
         float probability = expf(score - new_max);
 #pragma unroll
-        for (int item = 0; item < 4; item++) {
+        for (int item = 0; item < 8; item++) {
             uint32_t dimension = lane + (uint32_t)item * 32u;
             float v = dimension < args.head_dim ? value[k_base + dimension] : 0.0f;
             acc[item] = fmaf(probability, v, acc[item] * alpha);
@@ -1047,7 +1069,7 @@ h3_sdpa_causal_f32_wave_kernel(const float *query, const float *key,
     }
     float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
 #pragma unroll
-    for (int item = 0; item < 4; item++) {
+    for (int item = 0; item < 8; item++) {
         uint32_t dimension = lane + (uint32_t)item * 32u;
         if (dimension < args.head_dim)
             output[q_base + dimension] = acc[item] * inv;
@@ -1094,10 +1116,14 @@ h3_sdpa_bf16_wave_d128_kernel(const uint16_t *query, const uint16_t *key,
         k_base += stride;
     }
     float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
-    output[q_base + lane] = h3_f32_to_bf16(acc0 * inv);
-    output[q_base + 32u + lane] = h3_f32_to_bf16(acc1 * inv);
-    output[q_base + 64u + lane] = h3_f32_to_bf16(acc2 * inv);
-    output[q_base + 96u + lane] = h3_f32_to_bf16(acc3 * inv);
+    output[h3_sdpa_output_index(args, q_pos, head, lane)] =
+        h3_f32_to_bf16(acc0 * inv);
+    output[h3_sdpa_output_index(args, q_pos, head, 32u + lane)] =
+        h3_f32_to_bf16(acc1 * inv);
+    output[h3_sdpa_output_index(args, q_pos, head, 64u + lane)] =
+        h3_f32_to_bf16(acc2 * inv);
+    output[h3_sdpa_output_index(args, q_pos, head, 96u + lane)] =
+        h3_f32_to_bf16(acc3 * inv);
 }
 
 __global__ void __launch_bounds__(32)
@@ -1188,7 +1214,8 @@ h3_sdpa_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
     for (int item = 0; item < 4; item++) {
         uint32_t dimension = lane + (uint32_t)item * 32u;
         if (dimension < args.head_dim)
-            output[q_base + dimension] = h3_f32_to_bf16(acc[item] * inv);
+            output[h3_sdpa_output_index(args, q_pos, head, dimension)] =
+                h3_f32_to_bf16(acc[item] * inv);
     }
 }
 
@@ -1337,7 +1364,8 @@ __global__ void h3_sdpa_bf16_tiled_kernel(const uint16_t *query,
 
     float inv_sum = softmax_sum > 0.0f ? 1.0f / softmax_sum : 0.0f;
     for (uint32_t d = tid; d < args.head_dim; d += threads) {
-        output[q_base + d] = h3_f32_to_bf16(acc[d] * inv_sum);
+        output[h3_sdpa_output_index(args, q_pos, head, d)] =
+            h3_f32_to_bf16(acc[d] * inv_sum);
     }
 }
 
@@ -1470,6 +1498,22 @@ static uint32_t h3_row_threads(uint32_t width) {
         while (threads < width && threads * 2u <= 256u) threads *= 2u;
     }
     return threads ? threads : 1u;
+}
+
+extern "C" int h3_launch_copy_f32(const float *input, float *output,
+                                  uint32_t count, hipStream_t stream) {
+    void *args[] = {&input, &output, &count};
+    return h3_launch_1d(count, stream,
+                        reinterpret_cast<const void *>(h3_copy_f32_kernel),
+                        sizeof(args), args);
+}
+
+extern "C" int h3_launch_copy_u16(const uint16_t *input, uint16_t *output,
+                                  uint32_t count, hipStream_t stream) {
+    void *args[] = {&input, &output, &count};
+    return h3_launch_1d(count, stream,
+                        reinterpret_cast<const void *>(h3_copy_u16_kernel),
+                        sizeof(args), args);
 }
 
 extern "C" int h3_launch_cast_f32_to_bf16(const float *input, uint16_t *output,
@@ -1615,7 +1659,7 @@ extern "C" int h3_launch_sdpa_causal_f32(const float *query, const float *key,
                                          const h3_sdpa_causal_args *args,
                                          hipStream_t stream) {
     if (!args->sequence || !args->heads || !args->head_dim || !args->batch ||
-        args->head_dim > 128) {
+        args->head_dim > 256) {
         return 0;
     }
     h3_sdpa_causal_args host_args = *args;
@@ -1650,18 +1694,19 @@ extern "C" int h3_launch_vae_encoder_pad_f32(
     hipStream_t stream) {
     h3_vae_encoder_pad_args host_args = *args;
     void *kernel_args[] = {&input, &output, &host_args};
-    uint32_t out_height = host_args.height + host_args.height_before +
+    uint64_t out_height = (uint64_t)host_args.height + host_args.height_before +
                           host_args.height_after;
-    uint32_t out_width = host_args.width + host_args.width_before +
+    uint64_t out_width = (uint64_t)host_args.width + host_args.width_before +
                          host_args.width_after;
-    uint32_t out_depth = host_args.depth + host_args.depth_front;
-    dim3 block(8, 8, 1);
-    dim3 grid((host_args.channels + 7) / 8, (out_width + 7) / 8,
-              host_args.batch * out_depth * out_height);
-    return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_vae_encoder_pad_f32_kernel),
-               grid, block, kernel_args, sizeof(kernel_args), stream) ==
-           hipSuccess;
+    uint64_t out_depth = (uint64_t)host_args.depth + host_args.depth_front;
+    uint64_t total = (uint64_t)host_args.batch * out_depth * out_height *
+                     out_width * host_args.channels;
+    if (!total) return 1;
+    if (total > UINT32_MAX) return 0;
+    return h3_launch_1d((uint32_t)total, stream,
+                        reinterpret_cast<const void *>(
+                            h3_vae_encoder_pad_f32_kernel),
+                        sizeof(kernel_args), kernel_args);
 }
 
 extern "C" int h3_launch_vae_encoder_group_norm_silu_f32(
