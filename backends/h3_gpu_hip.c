@@ -10,39 +10,93 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
-/* Reuse open weight-shard fds across thousands of tensor preads. */
+/* Reuse open weight-shard fds + mmap across thousands of tensor copies. */
 enum { H3_HIP_FD_CACHE_MAX = 64 };
 static struct {
     char path[768];
     int fd;
+    void *map;
+    size_t size;
 } h3_hip_fd_cache[H3_HIP_FD_CACHE_MAX];
 static int h3_hip_fd_cache_count;
+static pthread_mutex_t h3_hip_fd_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int h3_hip_mmap_disabled(void) {
+    /* mmap+memcpy page-faulted worse than pread on this APU (load 129s).
+     * Opt in: H3_WEIGHT_MMAP=1. */
+    const char *value = getenv("H3_WEIGHT_MMAP");
+    return !value || strcmp(value, "1") != 0;
+}
 
 static int h3_hip_open_weight_fd(const char *path, int *from_cache) {
     *from_cache = 0;
+    pthread_mutex_lock(&h3_hip_fd_cache_lock);
     for (int index = 0; index < h3_hip_fd_cache_count; index++) {
         if (!strcmp(h3_hip_fd_cache[index].path, path)) {
             *from_cache = 1;
-            return h3_hip_fd_cache[index].fd;
+            int fd = h3_hip_fd_cache[index].fd;
+            pthread_mutex_unlock(&h3_hip_fd_cache_lock);
+            return fd;
         }
     }
     int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        pthread_mutex_unlock(&h3_hip_fd_cache_lock);
+        return -1;
+    }
 #if defined(POSIX_FADV_SEQUENTIAL)
     posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 #endif
+    void *map = MAP_FAILED;
+    size_t size = 0;
+    struct stat st;
+    if (!h3_hip_mmap_disabled() && fstat(fd, &st) == 0 && st.st_size > 0) {
+        size = (size_t)st.st_size;
+        map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (map != MAP_FAILED) {
+#if defined(MADV_SEQUENTIAL)
+            madvise(map, size, MADV_SEQUENTIAL);
+#endif
+        } else {
+            map = MAP_FAILED;
+            size = 0;
+        }
+    }
     if (h3_hip_fd_cache_count < H3_HIP_FD_CACHE_MAX &&
         strlen(path) < sizeof(h3_hip_fd_cache[0].path)) {
         memcpy(h3_hip_fd_cache[h3_hip_fd_cache_count].path, path,
                strlen(path) + 1);
         h3_hip_fd_cache[h3_hip_fd_cache_count].fd = fd;
+        h3_hip_fd_cache[h3_hip_fd_cache_count].map =
+            map == MAP_FAILED ? NULL : map;
+        h3_hip_fd_cache[h3_hip_fd_cache_count].size = size;
         h3_hip_fd_cache_count++;
         *from_cache = 1;
+    } else if (map != MAP_FAILED) {
+        munmap(map, size);
     }
+    pthread_mutex_unlock(&h3_hip_fd_cache_lock);
     return fd;
+}
+
+static void *h3_hip_weight_map(const char *path, size_t *size_out) {
+    pthread_mutex_lock(&h3_hip_fd_cache_lock);
+    for (int index = 0; index < h3_hip_fd_cache_count; index++) {
+        if (!strcmp(h3_hip_fd_cache[index].path, path)) {
+            if (size_out) *size_out = h3_hip_fd_cache[index].size;
+            void *map = h3_hip_fd_cache[index].map;
+            pthread_mutex_unlock(&h3_hip_fd_cache_lock);
+            return map;
+        }
+    }
+    pthread_mutex_unlock(&h3_hip_fd_cache_lock);
+    if (size_out) *size_out = 0;
+    return NULL;
 }
 
 static int h3_hip_pread_serial(int fd, void *data, size_t bytes, off_t offset) {
@@ -75,7 +129,7 @@ static void *h3_hip_pread_worker(void *arg) {
 
 /* Parallel pread for large weight tensors (NVMe can serve concurrent reads). */
 static int h3_hip_pread_all(int fd, void *data, size_t bytes, off_t offset) {
-    enum { H3_PREAD_THREADS = 4, H3_PREAD_MIN = 64u << 20 };
+    enum { H3_PREAD_THREADS = 8, H3_PREAD_MIN = 16u << 20 };
     if (bytes < H3_PREAD_MIN || getenv("H3_PREAD_SERIAL"))
         return h3_hip_pread_serial(fd, data, bytes, offset);
 
@@ -109,6 +163,19 @@ static int h3_hip_pread_all(int fd, void *data, size_t bytes, off_t offset) {
         if (!jobs[i].ok) ok = 0;
     }
     return ok;
+}
+
+static int h3_hip_copy_from_file(int fd, const char *path, void *data,
+                                 size_t bytes, off_t offset) {
+    size_t map_size = 0;
+    const unsigned char *map = (const unsigned char *)h3_hip_weight_map(
+        path, &map_size);
+    if (map && map_size && offset >= 0 &&
+        (size_t)offset <= map_size && bytes <= map_size - (size_t)offset) {
+        memcpy(data, map + (size_t)offset, bytes);
+        return 1;
+    }
+    return h3_hip_pread_all(fd, data, bytes, offset);
 }
 
 struct h3_gpu_tensor {
@@ -494,8 +561,9 @@ h3_gpu_tensor *h3_gpu_tensor_load_f32(h3_gpu *gpu, const char *path,
         h3_hip_set_error(ctx, "cannot open %s: %s", path, strerror(errno));
         return NULL;
     }
-    int ok = h3_hip_pread_all(fd, tensor_ptr(tensor)->host,
-                              elements * sizeof(float), (off_t)file_offset);
+    int ok = h3_hip_copy_from_file(fd, path, tensor_ptr(tensor)->host,
+                                   elements * sizeof(float),
+                                   (off_t)file_offset);
     if (!from_cache) close(fd);
     if (!ok) {
         h3_gpu_tensor_free(tensor);
@@ -525,8 +593,9 @@ int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *tensor, const char *path,
         }
         return 0;
     }
-    int ok = h3_hip_pread_all(fd, obj->host, elements * sizeof(uint16_t),
-                              (off_t)file_offset);
+    int ok = h3_hip_copy_from_file(fd, path, obj->host,
+                                   elements * sizeof(uint16_t),
+                                   (off_t)file_offset);
     if (!from_cache) close(fd);
     if (!ok) {
         if (error && error_size) {

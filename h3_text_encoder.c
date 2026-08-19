@@ -134,7 +134,7 @@ static int text_prefetch_threads(void) {
 
 static int text_prefetch_depth(const h3_gpu *gpu) {
     const char *value = getenv("H3_QWEN_PREFETCH_DEPTH");
-    if (!value || !*value) return h3_gpu_is_m5(gpu) ? 3 : 2;
+    if (!value || !*value) return h3_gpu_is_m5(gpu) ? 3 : 4;
     char *tail = NULL;
     long depth = strtol(value, &tail, 10);
     if (!tail || *tail || depth < 1) depth = 1;

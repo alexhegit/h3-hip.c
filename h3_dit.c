@@ -499,6 +499,24 @@ static uint32_t token_reduced_parent(const h3_dit *dit, uint32_t full_row) {
            (local % spatial_width) / 2;
 }
 
+typedef struct {
+    h3_dit *dit;
+    char name[160];
+    uint64_t rows;
+    uint64_t columns;
+    h3_gpu_tensor **dst;
+    char error[256];
+    int ok;
+} h3_dit_bf2_job;
+
+static void *h3_dit_bf2_worker(void *arg) {
+    h3_dit_bf2_job *job = (h3_dit_bf2_job *)arg;
+    *job->dst = bf2(job->dit, job->name, job->rows, job->columns, job->error,
+                    sizeof(job->error));
+    job->ok = *job->dst != NULL;
+    return NULL;
+}
+
 static int load_block(h3_dit *dit, h3_dit_block *block, const char *prefix,
                       char *error, size_t error_size) {
     char name[160];
@@ -507,21 +525,65 @@ static int load_block(h3_dit *dit, h3_dit_block *block, const char *prefix,
     block->field = bf1(dit, name, width, error, error_size);                    \
     if (!block->field) return 0;                                                \
 } while (0)
-#define LOAD2(field, suffix, rows, columns) do {                               \
-    snprintf(name, sizeof(name), "%s%s", prefix, suffix);                    \
-    block->field = bf2(dit, name, rows, columns, error, error_size);            \
-    if (!block->field) return 0;                                                \
-} while (0)
     LOAD1(norm1, "norm1.weight", HIDDEN);
     LOAD1(norm2, "norm2.weight", HIDDEN);
-    LOAD2(qkv, "attn.qkv_proj.weight", INNER * 3, HIDDEN);
     LOAD1(q_norm, "attn.q_norm.weight", HEAD_DIM);
     LOAD1(k_norm, "attn.k_norm.weight", HEAD_DIM);
-    LOAD2(out, "attn.out_proj.weight", HIDDEN, INNER);
-    LOAD2(fc1, "mlp.fc1.weight", FFN * 2, HIDDEN);
-    LOAD2(fc2, "mlp.fc2.weight", HIDDEN, FFN);
 #undef LOAD1
-#undef LOAD2
+
+    /* Parallel-load the four large BF16 matrices (qkv/out/fc1/fc2). */
+    h3_dit_bf2_job jobs[4];
+    memset(jobs, 0, sizeof(jobs));
+    snprintf(jobs[0].name, sizeof(jobs[0].name), "%s%s", prefix,
+             "attn.qkv_proj.weight");
+    jobs[0].dit = dit;
+    jobs[0].rows = INNER * 3;
+    jobs[0].columns = HIDDEN;
+    jobs[0].dst = &block->qkv;
+    snprintf(jobs[1].name, sizeof(jobs[1].name), "%s%s", prefix,
+             "attn.out_proj.weight");
+    jobs[1].dit = dit;
+    jobs[1].rows = HIDDEN;
+    jobs[1].columns = INNER;
+    jobs[1].dst = &block->out;
+    snprintf(jobs[2].name, sizeof(jobs[2].name), "%s%s", prefix,
+             "mlp.fc1.weight");
+    jobs[2].dit = dit;
+    jobs[2].rows = FFN * 2;
+    jobs[2].columns = HIDDEN;
+    jobs[2].dst = &block->fc1;
+    snprintf(jobs[3].name, sizeof(jobs[3].name), "%s%s", prefix,
+             "mlp.fc2.weight");
+    jobs[3].dit = dit;
+    jobs[3].rows = HIDDEN;
+    jobs[3].columns = FFN;
+    jobs[3].dst = &block->fc2;
+
+    if (getenv("H3_DIT_LOAD_SERIAL")) {
+        for (unsigned i = 0; i < 4; i++) {
+            h3_dit_bf2_worker(&jobs[i]);
+            if (!jobs[i].ok) {
+                fail(error, error_size, "%s", jobs[i].error);
+                return 0;
+            }
+        }
+        return 1;
+    }
+
+    pthread_t threads[4];
+    int started[4] = {0, 0, 0, 0};
+    for (unsigned i = 0; i < 4; i++) {
+        started[i] = pthread_create(&threads[i], NULL, h3_dit_bf2_worker,
+                                    &jobs[i]) == 0;
+        if (!started[i]) h3_dit_bf2_worker(&jobs[i]);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        if (started[i]) pthread_join(threads[i], NULL);
+        if (!jobs[i].ok) {
+            fail(error, error_size, "%s", jobs[i].error);
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -1258,7 +1320,8 @@ static void configure_gate_ranked_blocks(h3_dit *dit) {
 static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                      char *error, size_t error_size) {
     /* Default batch=4: ~4GB BF16 peak, overlaps I/O with prior quantize.
-     * H3_DIT_QUANT_BATCH=1 restores per-block sync. Cap at 8 for RAM. */
+     * H3_DIT_QUANT_BATCH=1 restores per-block sync. Cap at 8 for RAM.
+     * batch=8 raised peak RSS without cutting load wall — keep 4. */
     unsigned quant_batch = 4;
     const char *batch_env = getenv("H3_DIT_QUANT_BATCH");
     if (batch_env && *batch_env) {
@@ -1286,6 +1349,13 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                             error, error_size)) return 0;
             int need_quant = dit->int8_mlp || dit->int8_qkv ||
                              dit->int8_attention_out;
+            /* Flush the previous quant batch *after* this block's I/O so GPU
+             * quantize overlaps the next shard reads. Free BF16 only after
+             * stream sync (see flush_dit_quant_batch). */
+            if (need_quant && n_pending >= quant_batch &&
+                !flush_dit_quant_batch(dit, pending, &n_pending,
+                                       &quant_open, error, error_size))
+                return 0;
             if (need_quant) {
                 if (!quant_open) {
                     if (!h3_gpu_begin(dit->gpu)) {
@@ -1307,10 +1377,6 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                         dit, &dit->blocks[index], error, error_size))
                     return 0;
                 pending[n_pending++] = index;
-                if (n_pending >= quant_batch &&
-                    !flush_dit_quant_batch(dit, pending, &n_pending,
-                                           &quant_open, error, error_size))
-                    return 0;
             }
         }
         report(progress, opaque, "load transformer core", (int)index + 1,

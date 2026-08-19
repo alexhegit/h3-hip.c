@@ -3,6 +3,8 @@
 Machine: AMD Ryzen AI MAX+ 395 / Radeon 8060S (`gfx1151`), ROCm local build.
 Preset: T2VA fox, `512×512`, `frames=22`, `reuse=1`.
 
+**Latest dated fox ledger:** [`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md) (append new runs there).
+
 ## Profile tooling
 
 `--profile` / `H3_PROFILE=1` prints Metal-compatible phase lines. On HIP:
@@ -34,30 +36,62 @@ Kernel-level: `rocprofv3 --hip-trace --kernel-trace --stats` (see `KNOWN_ISSUES.
 | audio VAE decoder | 4.5s | 3.8s | ≈all conv |
 | video VAE decoder | 73.8s | 53.6s | **linear 28.2s · sdpa 24.9s** |
 
-## After overnight (2026-08-19 morning, same preset)
+Phase-wall sum ≈ **257 s** (no process `time` recorded).
 
-| Phase | wall / GPU | Delta vs A |
-|-------|-----------:|------------|
-| DiT denoise | wall ~18.5s · GPU ~17.3s (sdpa ~8.0 · linear ~8.6) | **−55%** denoise wall |
-| video VAE | GPU ~25s (linear ~11 · sdpa ~13) | **−53%** VAE GPU |
-| DiT load | wall ~40–54s | **−53–65%** (FD cache + parallel pread) |
+## Baseline B — post-overnight (2026-08-19 09:11 CST)
 
-Live log: [`perf-overnight/STATUS.md`](perf-overnight/STATUS.md) (**STOP**).
+Git: `dcb4858`. Full table: [`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md#run-b--post-overnight-2026-08-19-0911-cst).
 
-## Hotspot ranking (post-overnight)
+| Phase | wall | GPU (`op-classes`) | GPU split |
+|-------|-----:|-------------------:|-----------|
+| Qwen text encoder | 20.0s | 1.9s | linear 1.9 |
+| H3 DiT **load** | **40.6s** | 2.4s | quantize-dominated GPU |
+| H3 DiT **Euler denoise** (2 steps) | **18.6s** | **17.4s** | linear 8.6 · sdpa 8.1 · other 0.7 |
+| audio VAE decoder | 4.4s | 3.9s | conv 3.8 |
+| video VAE decoder | **32.9s** | **25.1s** | linear 11.3 · **sdpa 13.3** |
+| **E2E process wall** | **117.3s** | | `/usr/bin/time` |
 
-1. **DiT linear ≈ SDPA** — ~8.5s / ~8.0s of denoise GPU.
-2. **Video VAE** — ~25s GPU (sdpa ~13 · linear ~11); still hurts short runs.
-3. **Weight load I/O** — DiT load ~40–54s; text encoder wall still large.
-4. **Audio VAE conv** — ~3.5s; low priority.
+## Run C — day-2 uncommitted (2026-08-19 21:13 CST)
+
+Same preset. Ledger: [`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md#run-c--day-2-tree-2026-08-19-2113-cst).
+
+| Phase | wall | GPU |
+|-------|-----:|----:|
+| Qwen text encoder | 23.8s | 1.8s |
+| H3 DiT **load** | 44.7s | 3.5s |
+| H3 DiT **Euler denoise** | 18.4s | 17.2s (linear 8.6 · sdpa 8.1) |
+| audio VAE | 4.3s | 3.8s |
+| video VAE | 29.8s | 25.0s (linear 11.2 · sdpa 13.4) |
+| **E2E** | **121.8s** | vs B **+4.5s** (I/O; GPU flat) |
+
+Day-2 best earlier same tree: E2E **105.9s** (load 32.9). Use that, not C, as optimistic I/O.
+
+| vs A | Δ wall |
+|------|-------:|
+| DiT load | −73.4s (−64%) |
+| DiT denoise | −22.9s (−55%) |
+| video VAE | −40.9s (−55%) |
+| E2E (phase sum) | ≈257→117s (**−54%**) |
+
+## Hotspot ranking (Baseline B)
+
+1. **DiT weight load** — 40.6s wall (I/O + INT8 quantize).  
+2. **Video VAE** — 25.1s GPU (sdpa 13.3 · linear 11.3).  
+3. **Text encoder** — 20.0s wall (GPU 1.9s).  
+4. **DiT denoise** — linear ≈ sdpa (~8.6 / ~8.1s).  
+5. **Audio VAE conv** — ~3.9s GPU.
 
 ## Next optimization targets
 
-1. DiT INT8 linear further (still ~half of denoise)  
-2. Video VAE F32 SDPA / GEMM  
-3. Remaining load I/O (mmap / streaming / warmer cache)  
-4. Host Euler overhead once GPU drops enough  
+1. DiT load I/O / quantize overlap  
+2. Video VAE F32 SDPA + GEMM  
+3. DiT INT8 linear (denoise)  
+4. Text-encoder load wall  
+5. Host Euler overhead once GPU drops enough  
+
+Overnight notes: [`perf-overnight/STATUS.md`](perf-overnight/STATUS.md).
 
 ## Log
 
-Raw stderr from baseline A: keep under `/tmp/h3-profile/fox-s2.log` on the build machine (not committed).
+- Baseline A: `/tmp/h3-profile/fox-s2.log` (machine-local).  
+- Baseline B: `/tmp/h3-profile/fox-s2-post-overnight.log`.

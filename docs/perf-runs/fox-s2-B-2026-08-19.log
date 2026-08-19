@@ -1,0 +1,15 @@
+h3 profile: Qwen text encoder        total          wall=  20.007s encode=  0.011s wait=   2.043s root-gpu=  2.043s peak=  2.726GiB alloc= 46.861GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  1.917s linear=  1.895s sdpa=  0.001s conv=  0.000s other=  0.021s
+h3: gate-ranked DiT skips 4(0.1167) 14(0.1184) 16(0.1206) 17(0.1224) 13(0.1233) 12(0.1237) 11(0.1256) 15(0.1279) 10(0.1283) 8(0.1303) 9(0.1304) 7(0.1316) 6(0.1367) 5(0.1372) 18(0.1382)
+h3 profile: H3 DiT                   load           wall=  40.561s encode= 21.053s wait=   1.181s root-gpu=  1.181s peak= 14.742GiB alloc= 63.845GiB submissions=64 direct=226 linear=60 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  2.438s linear=  1.042s sdpa=  0.000s conv=  0.000s other=  1.396s
+h3 profile: H3 DiT                   Euler denoise  wall=  18.563s encode= 18.549s wait=   0.007s root-gpu=  0.007s peak= 14.742GiB alloc= 14.812GiB submissions=2 direct=858 linear=0 conv=0 attention=70
+h3 profile: H3 DiT                   op-classes     gpu-op= 17.377s linear=  8.599s sdpa=  8.127s conv=  0.000s other=  0.651s
+h3 profile: H3 DiT                   total          wall=  59.402s encode= 39.602s wait=   1.188s root-gpu=  1.188s peak= 14.742GiB alloc= 78.657GiB submissions=66 direct=1084 linear=60 conv=0 attention=72
+h3 profile: audio VAE decoder        total          wall=   4.444s encode=  0.002s wait=   3.868s root-gpu=  3.868s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  3.867s linear=  0.000s sdpa=  0.000s conv=  3.762s other=  0.106s
+h3: video VAE tiles 2x2 at 288 pixels
+h3 profile: video VAE decoder        total          wall=  32.912s encode=  0.009s wait=  25.109s root-gpu= 25.109s peak=  9.454GiB alloc=  9.455GiB submissions=4 direct=1612 linear=580 conv=0 attention=144
+h3 profile: video VAE decoder        op-classes     gpu-op= 25.113s linear= 11.335s sdpa= 13.298s conv=  0.000s other=  0.480s
+h3: wrote /tmp/h3-profile/fox-s2-post-overnight.mp4
+TIME_E2E wall_sec=117.28 user=48.71 sys=84.84
