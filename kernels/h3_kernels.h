@@ -172,6 +172,8 @@ typedef struct {
     uint32_t rope_half;
     uint32_t grouped;
     float epsilon;
+    /* When set, write key/value as [head][seq][dim] for SDPA locality. */
+    uint32_t kv_head_major;
 } h3_qkv_args;
 
 typedef struct {
@@ -180,6 +182,9 @@ typedef struct {
     uint32_t head_dim;
     float scale;
     uint32_t head_major_output;
+    /* When set, key/value are laid out [head][seq][dim] instead of
+     * [seq][head][dim]. Improves K/V streaming locality in wave SDPA. */
+    uint32_t kv_head_major;
 } h3_sdpa_args;
 
 typedef struct {
@@ -406,6 +411,12 @@ int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
 int h3_launch_sdpa_f32(const float *query, const float *key, const float *value,
                        float *output, const h3_sdpa_args *args,
                        hipStream_t stream);
+int h3_launch_transpose_shd_hsd_bf16(const uint16_t *input, uint16_t *output,
+                                     uint32_t sequence, uint32_t heads,
+                                     uint32_t head_dim, hipStream_t stream);
+int h3_launch_transpose_shd_hsd_f32(const float *input, float *output,
+                                    uint32_t sequence, uint32_t heads,
+                                    uint32_t head_dim, hipStream_t stream);
 int h3_launch_conv1d_f32(const float *input, const float *weight,
                          const float *bias, float *output,
                          const h3_conv1d_args *args, hipStream_t stream);

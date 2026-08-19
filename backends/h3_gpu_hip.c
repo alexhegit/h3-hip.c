@@ -5,12 +5,111 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Reuse open weight-shard fds across thousands of tensor preads. */
+enum { H3_HIP_FD_CACHE_MAX = 64 };
+static struct {
+    char path[768];
+    int fd;
+} h3_hip_fd_cache[H3_HIP_FD_CACHE_MAX];
+static int h3_hip_fd_cache_count;
+
+static int h3_hip_open_weight_fd(const char *path, int *from_cache) {
+    *from_cache = 0;
+    for (int index = 0; index < h3_hip_fd_cache_count; index++) {
+        if (!strcmp(h3_hip_fd_cache[index].path, path)) {
+            *from_cache = 1;
+            return h3_hip_fd_cache[index].fd;
+        }
+    }
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+#if defined(POSIX_FADV_SEQUENTIAL)
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+    if (h3_hip_fd_cache_count < H3_HIP_FD_CACHE_MAX &&
+        strlen(path) < sizeof(h3_hip_fd_cache[0].path)) {
+        memcpy(h3_hip_fd_cache[h3_hip_fd_cache_count].path, path,
+               strlen(path) + 1);
+        h3_hip_fd_cache[h3_hip_fd_cache_count].fd = fd;
+        h3_hip_fd_cache_count++;
+        *from_cache = 1;
+    }
+    return fd;
+}
+
+static int h3_hip_pread_serial(int fd, void *data, size_t bytes, off_t offset) {
+    size_t done = 0;
+    while (done < bytes) {
+        size_t remaining = bytes - done;
+        size_t chunk = remaining > (size_t)(1u << 28) ? (size_t)(1u << 28)
+                                                      : remaining;
+        ssize_t count = pread(fd, (unsigned char *)data + done, chunk,
+                              offset + (off_t)done);
+        if (count <= 0) return 0;
+        done += (size_t)count;
+    }
+    return 1;
+}
+
+typedef struct {
+    int fd;
+    unsigned char *data;
+    size_t bytes;
+    off_t offset;
+    int ok;
+} h3_hip_pread_job;
+
+static void *h3_hip_pread_worker(void *arg) {
+    h3_hip_pread_job *job = (h3_hip_pread_job *)arg;
+    job->ok = h3_hip_pread_serial(job->fd, job->data, job->bytes, job->offset);
+    return NULL;
+}
+
+/* Parallel pread for large weight tensors (NVMe can serve concurrent reads). */
+static int h3_hip_pread_all(int fd, void *data, size_t bytes, off_t offset) {
+    enum { H3_PREAD_THREADS = 4, H3_PREAD_MIN = 64u << 20 };
+    if (bytes < H3_PREAD_MIN || getenv("H3_PREAD_SERIAL"))
+        return h3_hip_pread_serial(fd, data, bytes, offset);
+
+    size_t chunk = (bytes + H3_PREAD_THREADS - 1) / H3_PREAD_THREADS;
+    chunk = (chunk + ((1u << 20) - 1)) & ~((size_t)(1u << 20) - 1);
+    pthread_t threads[H3_PREAD_THREADS];
+    h3_hip_pread_job jobs[H3_PREAD_THREADS];
+    int started[H3_PREAD_THREADS];
+    unsigned n = 0;
+    for (unsigned i = 0; i < H3_PREAD_THREADS; i++) {
+        size_t start = (size_t)i * chunk;
+        if (start >= bytes) break;
+        size_t len = bytes - start;
+        if (len > chunk) len = chunk;
+        jobs[n].fd = fd;
+        jobs[n].data = (unsigned char *)data + start;
+        jobs[n].bytes = len;
+        jobs[n].offset = offset + (off_t)start;
+        jobs[n].ok = 0;
+        started[n] = pthread_create(&threads[n], NULL, h3_hip_pread_worker,
+                                    &jobs[n]) == 0;
+        if (!started[n]) {
+            jobs[n].ok = h3_hip_pread_serial(fd, jobs[n].data, jobs[n].bytes,
+                                             jobs[n].offset);
+        }
+        n++;
+    }
+    int ok = 1;
+    for (unsigned i = 0; i < n; i++) {
+        if (started[i]) pthread_join(threads[i], NULL);
+        if (!jobs[i].ok) ok = 0;
+    }
+    return ok;
+}
 
 struct h3_gpu_tensor {
     void *host;
@@ -29,7 +128,31 @@ struct h3_gpu {
     int in_command;
     double profile_start_wall;
     h3_gpu_stats profile_start_stats;
+    double profile_mark_wall;
+    h3_gpu_stats profile_mark_stats;
     double command_start_wall;
+    /* Optional op-class GPU timing (H3_PROFILE). Events are recorded on the
+     * stream and resolved after synchronize so kernels stay overlapped. */
+    hipEvent_t *profile_events;
+    uint8_t *profile_cats;
+    int profile_pair_cap;
+    int profile_pair_count;
+    double profile_linear_ms;
+    double profile_sdpa_ms;
+    double profile_conv_ms;
+    double profile_other_ms;
+    /* Scratch for SDPA K/V [seq][head][dim] → [head][seq][dim] transpose. */
+    void *kv_hm_scratch;
+    size_t kv_hm_scratch_bytes;
+    /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
+    int sdpa_kv_already_hm;
+};
+
+enum {
+    H3_HIP_PROF_LINEAR = 0,
+    H3_HIP_PROF_SDPA = 1,
+    H3_HIP_PROF_CONV = 2,
+    H3_HIP_PROF_OTHER = 3
 };
 
 static double h3_hip_now(void) {
@@ -43,8 +166,101 @@ static int h3_hip_profile_enabled(void) {
     return value && *value && strcmp(value, "0");
 }
 
+static int h3_hip_profile_grow(struct h3_gpu *gpu) {
+    int want = gpu->profile_pair_cap ? gpu->profile_pair_cap * 2 : 512;
+    hipEvent_t *events = realloc(gpu->profile_events,
+                                 (size_t)want * 2u * sizeof(*events));
+    uint8_t *cats = realloc(gpu->profile_cats, (size_t)want * sizeof(*cats));
+    if (!events || !cats) {
+        free(events);
+        free(cats);
+        return 0;
+    }
+    for (int index = gpu->profile_pair_cap; index < want; index++) {
+        if (hipEventCreateWithFlags(&events[2 * index], hipEventDefault)
+                != hipSuccess ||
+            hipEventCreateWithFlags(&events[2 * index + 1], hipEventDefault)
+                != hipSuccess) {
+            return 0;
+        }
+    }
+    gpu->profile_events = events;
+    gpu->profile_cats = cats;
+    gpu->profile_pair_cap = want;
+    return 1;
+}
+
+static void h3_hip_profile_begin_op(struct h3_gpu *gpu) {
+    if (!gpu || !h3_hip_profile_enabled()) return;
+    if (gpu->profile_pair_count >= gpu->profile_pair_cap &&
+        !h3_hip_profile_grow(gpu)) {
+        return;
+    }
+    if (gpu->profile_pair_count >= gpu->profile_pair_cap) return;
+    hipEventRecord(gpu->profile_events[2 * gpu->profile_pair_count],
+                   gpu->stream);
+}
+
+static void h3_hip_profile_end_op(struct h3_gpu *gpu, int category) {
+    if (!gpu || !h3_hip_profile_enabled()) return;
+    if (gpu->profile_pair_count >= gpu->profile_pair_cap) return;
+    hipEventRecord(gpu->profile_events[2 * gpu->profile_pair_count + 1],
+                   gpu->stream);
+    gpu->profile_cats[gpu->profile_pair_count] = (uint8_t)category;
+    gpu->profile_pair_count++;
+}
+
+static void h3_hip_profile_flush_ops(struct h3_gpu *gpu) {
+    if (!gpu || !gpu->profile_pair_count) return;
+    for (int index = 0; index < gpu->profile_pair_count; index++) {
+        float ms = 0.0f;
+        if (hipEventElapsedTime(&ms, gpu->profile_events[2 * index],
+                                gpu->profile_events[2 * index + 1])
+            != hipSuccess) {
+            continue;
+        }
+        switch (gpu->profile_cats[index]) {
+        case H3_HIP_PROF_LINEAR: gpu->profile_linear_ms += ms; break;
+        case H3_HIP_PROF_SDPA: gpu->profile_sdpa_ms += ms; break;
+        case H3_HIP_PROF_CONV: gpu->profile_conv_ms += ms; break;
+        default: gpu->profile_other_ms += ms; break;
+        }
+    }
+    gpu->profile_pair_count = 0;
+}
+
+static void h3_hip_profile_destroy_ops(struct h3_gpu *gpu) {
+    if (!gpu || !gpu->profile_events) return;
+    for (int index = 0; index < gpu->profile_pair_cap; index++) {
+        hipEventDestroy(gpu->profile_events[2 * index]);
+        hipEventDestroy(gpu->profile_events[2 * index + 1]);
+    }
+    free(gpu->profile_events);
+    free(gpu->profile_cats);
+    gpu->profile_events = NULL;
+    gpu->profile_cats = NULL;
+    gpu->profile_pair_cap = 0;
+    gpu->profile_pair_count = 0;
+}
+
 static uint64_t h3_hip_counter_delta(uint64_t value, uint64_t start) {
     return value >= start ? value - start : 0;
+}
+
+static void h3_hip_profile_emit_ops(struct h3_gpu *gpu) {
+    if (!gpu || !h3_hip_profile_enabled()) return;
+    double total = gpu->profile_linear_ms + gpu->profile_sdpa_ms +
+                   gpu->profile_conv_ms + gpu->profile_other_ms;
+    if (total <= 0.0) return;
+    fprintf(stderr,
+            "h3 profile: %-24s %-14s gpu-op=%7.3fs "
+            "linear=%7.3fs sdpa=%7.3fs conv=%7.3fs other=%7.3fs\n",
+            gpu->profile_label[0] ? gpu->profile_label : "HIP context",
+            "op-classes", total / 1000.0,
+            gpu->profile_linear_ms / 1000.0,
+            gpu->profile_sdpa_ms / 1000.0,
+            gpu->profile_conv_ms / 1000.0,
+            gpu->profile_other_ms / 1000.0);
 }
 
 static void h3_hip_profile_emit(struct h3_gpu *gpu, const char *phase,
@@ -180,14 +396,20 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
     snprintf(gpu->profile_label, sizeof(gpu->profile_label), "HIP context");
     gpu->profile_start_wall = h3_hip_now();
     gpu->profile_start_stats = gpu->stats;
+    gpu->profile_mark_wall = gpu->profile_start_wall;
+    gpu->profile_mark_stats = gpu->stats;
     return (h3_gpu *)gpu;
 }
 
 void h3_gpu_free(h3_gpu *gpu) {
     if (!gpu) return;
     struct h3_gpu *ctx = gpu_ptr(gpu);
+    h3_hip_profile_flush_ops(ctx);
     h3_hip_profile_emit(ctx, "total", ctx->profile_start_stats,
                         ctx->profile_start_wall);
+    h3_hip_profile_emit_ops(ctx);
+    h3_hip_profile_destroy_ops(ctx);
+    if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
     hipStreamDestroy(ctx->stream);
     free(ctx);
 }
@@ -265,17 +487,17 @@ h3_gpu_tensor *h3_gpu_tensor_load_f32(h3_gpu *gpu, const char *path,
         h3_hip_set_error(ctx, "F32 weight load size overflow");
         return NULL;
     }
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int from_cache = 0;
+    int fd = h3_hip_open_weight_fd(path, &from_cache);
     if (fd < 0) {
         h3_gpu_tensor_free(tensor);
         h3_hip_set_error(ctx, "cannot open %s: %s", path, strerror(errno));
         return NULL;
     }
-    ssize_t read_bytes = pread(fd, tensor_ptr(tensor)->host,
-                               elements * sizeof(float), (off_t)file_offset);
-    close(fd);
-    if (read_bytes < 0 ||
-        (size_t)read_bytes != elements * sizeof(float)) {
+    int ok = h3_hip_pread_all(fd, tensor_ptr(tensor)->host,
+                              elements * sizeof(float), (off_t)file_offset);
+    if (!from_cache) close(fd);
+    if (!ok) {
         h3_gpu_tensor_free(tensor);
         h3_hip_set_error(ctx, "cannot read %zu F32 values from %s", elements,
                          path);
@@ -294,7 +516,8 @@ int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *tensor, const char *path,
         }
         return 0;
     }
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int from_cache = 0;
+    int fd = h3_hip_open_weight_fd(path, &from_cache);
     if (fd < 0) {
         if (error && error_size) {
             snprintf(error, error_size, "cannot open %s: %s", path,
@@ -302,11 +525,10 @@ int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *tensor, const char *path,
         }
         return 0;
     }
-    ssize_t read_bytes = pread(fd, obj->host, elements * sizeof(uint16_t),
-                               (off_t)file_offset);
-    close(fd);
-    if (read_bytes < 0 ||
-        (size_t)read_bytes != elements * sizeof(uint16_t)) {
+    int ok = h3_hip_pread_all(fd, obj->host, elements * sizeof(uint16_t),
+                              (off_t)file_offset);
+    if (!from_cache) close(fd);
+    if (!ok) {
         if (error && error_size) {
             snprintf(error, error_size, "cannot read %zu BF16 values from %s",
                      elements, path);
@@ -472,6 +694,7 @@ int h3_gpu_submit(h3_gpu *gpu) {
     ctx->stats.gpu_seconds = ctx->stats.command_wait_seconds;
     ctx->stats.submissions++;
     ctx->in_command = 0;
+    h3_hip_profile_flush_ops(ctx);
     return 1;
 }
 
@@ -493,10 +716,74 @@ void h3_gpu_profile_set_label(h3_gpu *gpu, const char *label) {
 
 void h3_gpu_profile_mark(h3_gpu *gpu, const char *phase) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
-    if (!ctx || !phase || !*phase) return;
-    h3_hip_profile_emit(ctx, phase, ctx->profile_start_stats,
-                        ctx->profile_start_wall);
+    if (!ctx || !phase || !*phase || !h3_hip_profile_enabled()) return;
+    h3_hip_profile_flush_ops(ctx);
+    /* Emit since the previous mark (Metal parity), not since context create. */
+    h3_hip_profile_emit(ctx, phase, ctx->profile_mark_stats,
+                        ctx->profile_mark_wall);
+    h3_hip_profile_emit_ops(ctx);
+    ctx->profile_linear_ms = 0.0;
+    ctx->profile_sdpa_ms = 0.0;
+    ctx->profile_conv_ms = 0.0;
+    ctx->profile_other_ms = 0.0;
+    ctx->profile_mark_stats = ctx->stats;
+    ctx->profile_mark_wall = h3_hip_now();
 }
+
+static int h3_hip_finish_launch(struct h3_gpu *gpu, int ok, const char *name,
+                                int category) {
+    if (ok) {
+        h3_hip_profile_end_op(gpu, category);
+        gpu->stats.direct_dispatches++;
+        return 1;
+    }
+    h3_hip_set_error(gpu, "%s launch failed", name);
+    return 0;
+}
+
+static int h3_hip_finish_conv(struct h3_gpu *gpu, int ok, const char *name) {
+    if (!h3_hip_finish_launch(gpu, ok, name, H3_HIP_PROF_CONV)) return 0;
+    gpu->stats.mps_conv_dispatches++;
+    return 1;
+}
+
+static int h3_hip_finish_sdpa(struct h3_gpu *gpu, int ok, const char *name) {
+    if (!h3_hip_finish_launch(gpu, ok, name, H3_HIP_PROF_SDPA)) return 0;
+    gpu->stats.mps_sdpa_dispatches++;
+    return 1;
+}
+
+/* Match Metal: F32 GEMMs that would go through MPSGraph count as linear
+ * dispatches. The DiT fused patch tile (in=32/96, out=5376) stays a direct
+ * kernel on Metal and must not increment this counter. */
+static int h3_hip_mps_linear_f32(uint32_t rows, uint32_t input_dim,
+                                 uint32_t output_dim) {
+    if (rows >= 16u && output_dim == 5376u &&
+        (input_dim == 32u || input_dim == 96u)) {
+        return 0;
+    }
+    return rows >= 32u && input_dim >= 256u && output_dim >= 256u;
+}
+
+static int h3_hip_finish_linear(struct h3_gpu *gpu, int ok, const char *name,
+                                int count_mps) {
+    if (!h3_hip_finish_launch(gpu, ok, name, H3_HIP_PROF_LINEAR)) return 0;
+    if (count_mps) gpu->stats.mps_linear_dispatches++;
+    return 1;
+}
+
+/* Comma-operator macros record the start event before the launch expression
+ * runs (C evaluates the launch as an argument to the finish helper). */
+#define h3_hip_launch_ok(gpu, expr, name) \
+    (h3_hip_profile_begin_op(gpu), \
+     h3_hip_finish_launch((gpu), (expr), (name), H3_HIP_PROF_OTHER))
+#define h3_hip_launch_conv(gpu, expr, name) \
+    (h3_hip_profile_begin_op(gpu), h3_hip_finish_conv((gpu), (expr), (name)))
+#define h3_hip_launch_sdpa(gpu, expr, name) \
+    (h3_hip_profile_begin_op(gpu), h3_hip_finish_sdpa((gpu), (expr), (name)))
+#define h3_hip_launch_linear(gpu, expr, name, count_mps) \
+    (h3_hip_profile_begin_op(gpu), \
+     h3_hip_finish_linear((gpu), (expr), (name), (count_mps)))
 
 int h3_gpu_cast_f32_to_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                             const h3_gpu_tensor *input, uint32_t elements) {
@@ -506,14 +793,10 @@ int h3_gpu_cast_f32_to_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_bf16(ctx, output, elements, "cast output")) {
         return 0;
     }
-    if (!h3_launch_cast_f32_to_bf16((const float *)tensor_ptr(input)->host,
-                                    (uint16_t *)tensor_ptr(output)->host,
-                                    elements, ctx->stream)) {
-        h3_hip_set_error(ctx, "h3_cast_f32_to_bf16 launch failed");
-        return 0;
-    }
-    ctx->stats.direct_dispatches++;
-    return 1;
+    return h3_hip_launch_ok(ctx, h3_launch_cast_f32_to_bf16(
+            (const float *)tensor_ptr(input)->host,
+            (uint16_t *)tensor_ptr(output)->host, elements, ctx->stream),
+            "h3_cast_f32_to_bf16");
 }
 
 int h3_gpu_cast_bf16_to_f32(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -524,14 +807,10 @@ int h3_gpu_cast_bf16_to_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_f32(ctx, output, elements, "cast output")) {
         return 0;
     }
-    if (!h3_launch_cast_bf16_to_f32((const uint16_t *)tensor_ptr(input)->host,
-                                    (float *)tensor_ptr(output)->host,
-                                    elements, ctx->stream)) {
-        h3_hip_set_error(ctx, "h3_cast_bf16_to_f32 launch failed");
-        return 0;
-    }
-    ctx->stats.direct_dispatches++;
-    return 1;
+    return h3_hip_launch_ok(ctx, h3_launch_cast_bf16_to_f32(
+            (const uint16_t *)tensor_ptr(input)->host,
+            (float *)tensor_ptr(output)->host, elements, ctx->stream),
+            "h3_cast_bf16_to_f32");
 }
 
 int h3_gpu_add_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -544,18 +823,12 @@ int h3_gpu_add_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_bf16(ctx, output, elements, "add output")) {
         return 0;
     }
-    if (!h3_launch_add_bf16((const uint16_t *)tensor_ptr(left)->host,
-                            (const uint16_t *)tensor_ptr(right)->host,
-                            (uint16_t *)tensor_ptr(output)->host, elements,
-                            ctx->stream)) {
-        h3_hip_set_error(ctx, "h3_add_bf16 launch failed");
-        return 0;
-    }
-    ctx->stats.direct_dispatches++;
-    return 1;
+    return h3_hip_launch_ok(ctx, h3_launch_add_bf16(
+            (const uint16_t *)tensor_ptr(left)->host,
+            (const uint16_t *)tensor_ptr(right)->host,
+            (uint16_t *)tensor_ptr(output)->host, elements, ctx->stream),
+            "h3_add_bf16");
 }
-
-static int h3_hip_launch_ok(struct h3_gpu *gpu, int ok, const char *name);
 
 int h3_gpu_copy_bf16(h3_gpu *gpu, h3_gpu_tensor *destination,
                      size_t destination_offset,
@@ -605,48 +878,6 @@ static int h3_hip_require_i8(struct h3_gpu *gpu, const h3_gpu_tensor *tensor,
         h3_hip_set_error(gpu, "%s tensor is too small", label);
         return 0;
     }
-    return 1;
-}
-
-static int h3_hip_launch_ok(struct h3_gpu *gpu, int ok, const char *name) {
-    if (ok) {
-        gpu->stats.direct_dispatches++;
-        return 1;
-    }
-    h3_hip_set_error(gpu, "%s launch failed", name);
-    return 0;
-}
-
-/* Same public counters Metal tests assert. HIP kernels still increment
- * direct_dispatches; these extra fields count the high-level op once. */
-static int h3_hip_launch_conv(struct h3_gpu *gpu, int ok, const char *name) {
-    if (!h3_hip_launch_ok(gpu, ok, name)) return 0;
-    gpu->stats.mps_conv_dispatches++;
-    return 1;
-}
-
-static int h3_hip_launch_sdpa(struct h3_gpu *gpu, int ok, const char *name) {
-    if (!h3_hip_launch_ok(gpu, ok, name)) return 0;
-    gpu->stats.mps_sdpa_dispatches++;
-    return 1;
-}
-
-/* Match Metal: F32 GEMMs that would go through MPSGraph count as linear
- * dispatches. The DiT fused patch tile (in=32/96, out=5376) stays a direct
- * kernel on Metal and must not increment this counter. */
-static int h3_hip_mps_linear_f32(uint32_t rows, uint32_t input_dim,
-                                 uint32_t output_dim) {
-    if (rows >= 16u && output_dim == 5376u &&
-        (input_dim == 32u || input_dim == 96u)) {
-        return 0;
-    }
-    return rows >= 32u && input_dim >= 256u && output_dim >= 256u;
-}
-
-static int h3_hip_launch_linear(struct h3_gpu *gpu, int ok, const char *name,
-                                int count_mps) {
-    if (!h3_hip_launch_ok(gpu, ok, name)) return 0;
-    if (count_mps) gpu->stats.mps_linear_dispatches++;
     return 1;
 }
 
@@ -1288,7 +1519,8 @@ static int h3_gpu_qkv_rope_bf16_layout(h3_gpu *gpu, h3_gpu_tensor *query,
                                        const h3_gpu_tensor *rope_sin,
                                        uint32_t sequence, uint32_t heads,
                                        uint32_t head_dim, uint32_t rope_half,
-                                       uint32_t grouped, float epsilon) {
+                                       uint32_t grouped, float epsilon,
+                                       uint32_t kv_head_major) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t inner = (size_t)heads * head_dim;
     size_t projected = (size_t)sequence * inner;
@@ -1304,9 +1536,12 @@ static int h3_gpu_qkv_rope_bf16_layout(h3_gpu *gpu, h3_gpu_tensor *query,
         !h3_hip_require_bf16(ctx, value, projected, "value output")) {
         return 0;
     }
+    if (getenv("H3_SDPA_NO_KV_HM") &&
+        strcmp(getenv("H3_SDPA_NO_KV_HM"), "0") != 0)
+        kv_head_major = 0;
     h3_qkv_args args = {sequence, heads, head_dim, rope_half, grouped,
-                        epsilon};
-    return h3_hip_launch_ok(ctx, h3_launch_qkv_rope_bf16(
+                        epsilon, kv_head_major};
+    int ok = h3_hip_launch_ok(ctx, h3_launch_qkv_rope_bf16(
         (const uint16_t *)tensor_ptr(qkv)->host,
         (const uint16_t *)tensor_ptr(q_norm)->host,
         (const uint16_t *)tensor_ptr(k_norm)->host,
@@ -1316,6 +1551,8 @@ static int h3_gpu_qkv_rope_bf16_layout(h3_gpu *gpu, h3_gpu_tensor *query,
         (uint16_t *)tensor_ptr(key)->host,
         (uint16_t *)tensor_ptr(value)->host, &args, ctx->stream),
         "h3_qkv_rope_bf16");
+    if (ok && kv_head_major) ctx->sdpa_kv_already_hm = 1;
+    return ok;
 }
 
 int h3_gpu_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
@@ -1330,7 +1567,7 @@ int h3_gpu_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
     return h3_gpu_qkv_rope_bf16_layout(gpu, query, key, value, qkv, q_norm,
                                        k_norm, rope_cos, rope_sin, sequence,
                                        heads, head_dim, rope_half, 0,
-                                       epsilon);
+                                       epsilon, 0);
 }
 
 static int h3_gpu_qkv_rope_f32_layout(h3_gpu *gpu, h3_gpu_tensor *query,
@@ -1343,7 +1580,8 @@ static int h3_gpu_qkv_rope_f32_layout(h3_gpu *gpu, h3_gpu_tensor *query,
                                       const h3_gpu_tensor *rope_sin,
                                       uint32_t sequence, uint32_t heads,
                                       uint32_t head_dim, uint32_t rope_half,
-                                      uint32_t grouped, float epsilon) {
+                                      uint32_t grouped, float epsilon,
+                                      uint32_t kv_head_major) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t inner = (size_t)heads * head_dim;
     size_t projected = (size_t)sequence * inner;
@@ -1359,9 +1597,12 @@ static int h3_gpu_qkv_rope_f32_layout(h3_gpu *gpu, h3_gpu_tensor *query,
         !h3_hip_require_f32(ctx, value, projected, "value output")) {
         return 0;
     }
+    if (getenv("H3_SDPA_NO_KV_HM") &&
+        strcmp(getenv("H3_SDPA_NO_KV_HM"), "0") != 0)
+        kv_head_major = 0;
     h3_qkv_args args = {sequence, heads, head_dim, rope_half, grouped,
-                        epsilon};
-    return h3_hip_launch_ok(ctx, h3_launch_qkv_rope_f32(
+                        epsilon, kv_head_major};
+    int ok = h3_hip_launch_ok(ctx, h3_launch_qkv_rope_f32(
         (const float *)tensor_ptr(qkv)->host,
         (const float *)tensor_ptr(q_norm)->host,
         (const float *)tensor_ptr(k_norm)->host,
@@ -1371,6 +1612,8 @@ static int h3_gpu_qkv_rope_f32_layout(h3_gpu *gpu, h3_gpu_tensor *query,
         (float *)tensor_ptr(key)->host,
         (float *)tensor_ptr(value)->host, &args, ctx->stream),
         "h3_qkv_rope_f32");
+    if (ok && kv_head_major) ctx->sdpa_kv_already_hm = 1;
+    return ok;
 }
 
 int h3_gpu_qkv_rope_f32(h3_gpu *gpu, h3_gpu_tensor *query,
@@ -1384,7 +1627,8 @@ int h3_gpu_qkv_rope_f32(h3_gpu *gpu, h3_gpu_tensor *query,
                         uint32_t rope_half, float epsilon) {
     return h3_gpu_qkv_rope_f32_layout(gpu, query, key, value, qkv, q_norm,
                                       k_norm, rope_cos, rope_sin, sequence,
-                                      heads, head_dim, rope_half, 0, epsilon);
+                                      heads, head_dim, rope_half, 0, epsilon,
+                                      0);
 }
 
 int h3_gpu_grouped_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
@@ -1400,7 +1644,7 @@ int h3_gpu_grouped_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
     return h3_gpu_qkv_rope_bf16_layout(gpu, query, key, value, qkv, q_norm,
                                        k_norm, rope_cos, rope_sin, sequence,
                                        heads, head_dim, rope_half, 1,
-                                       epsilon);
+                                       epsilon, 0);
 }
 
 int h3_gpu_vision_qkv_rope_bf16(
@@ -1422,7 +1666,7 @@ int h3_gpu_vision_qkv_rope_bf16(
         !h3_hip_require_bf16(ctx, value, count, "vision value")) {
         return 0;
     }
-    h3_qkv_args args = {sequence, heads, head_dim, rope_half, 0, 0.0f};
+    h3_qkv_args args = {sequence, heads, head_dim, rope_half, 0, 0.0f, 0};
     return h3_hip_launch_ok(ctx, h3_launch_vision_qkv_rope_bf16(
         (const uint16_t *)tensor_ptr(qkv)->host,
         (const uint16_t *)tensor_ptr(rope_cos)->host,
@@ -1453,8 +1697,13 @@ int h3_gpu_video_qkv_rope_f32(
         !h3_hip_require_f32(ctx, value, count, "video value")) {
         return 0;
     }
-    h3_qkv_args args = {sequence, heads, head_dim, rope_half, 0, epsilon};
-    return h3_hip_launch_ok(ctx, h3_launch_video_qkv_rope_f32(
+    h3_qkv_args args = {sequence, heads, head_dim, rope_half, 0, epsilon, 0};
+    uint32_t kv_hm = 1;
+    if (getenv("H3_SDPA_NO_KV_HM") &&
+        strcmp(getenv("H3_SDPA_NO_KV_HM"), "0") != 0)
+        kv_hm = 0;
+    args.kv_head_major = kv_hm;
+    int ok = h3_hip_launch_ok(ctx, h3_launch_video_qkv_rope_f32(
         (const float *)tensor_ptr(qkv)->host,
         (const float *)tensor_ptr(rope_cos)->host,
         (const float *)tensor_ptr(rope_sin)->host,
@@ -1462,6 +1711,8 @@ int h3_gpu_video_qkv_rope_f32(
         (float *)tensor_ptr(key)->host,
         (float *)tensor_ptr(value)->host, &args, ctx->stream),
         "h3_video_qkv_rope_f32");
+    if (ok && kv_hm) ctx->sdpa_kv_already_hm = 1;
+    return ok;
 }
 
 int h3_gpu_conv1d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -1805,11 +2056,48 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_bf16(ctx, output, count, "SDPA output")) {
         return 0;
     }
-    h3_sdpa_args args = {sequence, heads, head_dim, scale, 0u};
+    h3_sdpa_args args = {sequence, heads, head_dim, scale, 0u, 0u};
+    const uint16_t *key_ptr = (const uint16_t *)tensor_ptr(key)->host;
+    const uint16_t *value_ptr = (const uint16_t *)tensor_ptr(value)->host;
+    /* Default: transpose K/V to head-major for wave SDPA locality.
+     * H3_SDPA_KV_HM=1: inputs already head-major. H3_SDPA_NO_KV_HM=1: skip.
+     * QKV/RoPE may also set ctx->sdpa_kv_already_hm after writing HM. */
+    int already_hm = ctx->sdpa_kv_already_hm ||
+                     (getenv("H3_SDPA_KV_HM") &&
+                      strcmp(getenv("H3_SDPA_KV_HM"), "0") != 0);
+    ctx->sdpa_kv_already_hm = 0;
+    int disable_hm = getenv("H3_SDPA_NO_KV_HM") &&
+                     strcmp(getenv("H3_SDPA_NO_KV_HM"), "0") != 0;
+    if (already_hm) {
+        args.kv_head_major = 1u;
+    } else if (!disable_hm && (head_dim == 128 || head_dim == 64)) {
+        size_t need = count * sizeof(uint16_t) * 2u;
+        if (need > ctx->kv_hm_scratch_bytes) {
+            void *scratch = NULL;
+            if (hipHostMalloc(&scratch, need, hipHostMallocDefault) !=
+                hipSuccess) {
+                h3_hip_set_error(ctx, "cannot allocate SDPA KV scratch");
+                return 0;
+            }
+            if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
+            ctx->kv_hm_scratch = scratch;
+            ctx->kv_hm_scratch_bytes = need;
+        }
+        uint16_t *key_hm = (uint16_t *)ctx->kv_hm_scratch;
+        uint16_t *value_hm = key_hm + count;
+        if (!h3_launch_transpose_shd_hsd_bf16(key_ptr, key_hm, sequence, heads,
+                                              head_dim, ctx->stream) ||
+            !h3_launch_transpose_shd_hsd_bf16(value_ptr, value_hm, sequence,
+                                              heads, head_dim, ctx->stream)) {
+            h3_hip_set_error(ctx, "SDPA KV transpose failed");
+            return 0;
+        }
+        key_ptr = key_hm;
+        value_ptr = value_hm;
+        args.kv_head_major = 1u;
+    }
     return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
-        (const uint16_t *)tensor_ptr(query)->host,
-        (const uint16_t *)tensor_ptr(key)->host,
-        (const uint16_t *)tensor_ptr(value)->host,
+        (const uint16_t *)tensor_ptr(query)->host, key_ptr, value_ptr,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
         "h3_sdpa_bf16");
 }
@@ -1827,11 +2115,45 @@ int h3_gpu_sdpa_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_f32(ctx, output, count, "SDPA output")) {
         return 0;
     }
-    h3_sdpa_args args = {sequence, heads, head_dim, scale, 0u};
+    h3_sdpa_args args = {sequence, heads, head_dim, scale, 0u, 0u};
+    const float *key_ptr = (const float *)tensor_ptr(key)->host;
+    const float *value_ptr = (const float *)tensor_ptr(value)->host;
+    int already_hm = ctx->sdpa_kv_already_hm ||
+                     (getenv("H3_SDPA_KV_HM") &&
+                      strcmp(getenv("H3_SDPA_KV_HM"), "0") != 0);
+    ctx->sdpa_kv_already_hm = 0;
+    int disable_hm = getenv("H3_SDPA_NO_KV_HM") &&
+                     strcmp(getenv("H3_SDPA_NO_KV_HM"), "0") != 0;
+    if (already_hm) {
+        args.kv_head_major = 1u;
+    } else if (!disable_hm && (head_dim == 128 || head_dim == 64)) {
+        size_t need = count * sizeof(float) * 2u;
+        if (need > ctx->kv_hm_scratch_bytes) {
+            void *scratch = NULL;
+            if (hipHostMalloc(&scratch, need, hipHostMallocDefault) !=
+                hipSuccess) {
+                h3_hip_set_error(ctx, "cannot allocate SDPA KV scratch");
+                return 0;
+            }
+            if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
+            ctx->kv_hm_scratch = scratch;
+            ctx->kv_hm_scratch_bytes = need;
+        }
+        float *key_hm = (float *)ctx->kv_hm_scratch;
+        float *value_hm = key_hm + count;
+        if (!h3_launch_transpose_shd_hsd_f32(key_ptr, key_hm, sequence, heads,
+                                             head_dim, ctx->stream) ||
+            !h3_launch_transpose_shd_hsd_f32(value_ptr, value_hm, sequence,
+                                             heads, head_dim, ctx->stream)) {
+            h3_hip_set_error(ctx, "SDPA KV transpose failed");
+            return 0;
+        }
+        key_ptr = key_hm;
+        value_ptr = value_hm;
+        args.kv_head_major = 1u;
+    }
     return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_f32(
-        (const float *)tensor_ptr(query)->host,
-        (const float *)tensor_ptr(key)->host,
-        (const float *)tensor_ptr(value)->host,
+        (const float *)tensor_ptr(query)->host, key_ptr, value_ptr,
         (float *)tensor_ptr(output)->host, &args, ctx->stream),
         "h3_sdpa_f32");
 }
@@ -1851,11 +2173,45 @@ int h3_gpu_sdpa_bf16_head_major_output(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_bf16(ctx, output, count, "SDPA output")) {
         return 0;
     }
-    h3_sdpa_args args = {sequence, heads, head_dim, scale, 1u};
+    h3_sdpa_args args = {sequence, heads, head_dim, scale, 1u, 0u};
+    const uint16_t *key_ptr = (const uint16_t *)tensor_ptr(key)->host;
+    const uint16_t *value_ptr = (const uint16_t *)tensor_ptr(value)->host;
+    int already_hm = ctx->sdpa_kv_already_hm ||
+                     (getenv("H3_SDPA_KV_HM") &&
+                      strcmp(getenv("H3_SDPA_KV_HM"), "0") != 0);
+    ctx->sdpa_kv_already_hm = 0;
+    int disable_hm = getenv("H3_SDPA_NO_KV_HM") &&
+                     strcmp(getenv("H3_SDPA_NO_KV_HM"), "0") != 0;
+    if (already_hm) {
+        args.kv_head_major = 1u;
+    } else if (!disable_hm && (head_dim == 128 || head_dim == 64)) {
+        size_t need = count * sizeof(uint16_t) * 2u;
+        if (need > ctx->kv_hm_scratch_bytes) {
+            void *scratch = NULL;
+            if (hipHostMalloc(&scratch, need, hipHostMallocDefault) !=
+                hipSuccess) {
+                h3_hip_set_error(ctx, "cannot allocate SDPA KV scratch");
+                return 0;
+            }
+            if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
+            ctx->kv_hm_scratch = scratch;
+            ctx->kv_hm_scratch_bytes = need;
+        }
+        uint16_t *key_hm = (uint16_t *)ctx->kv_hm_scratch;
+        uint16_t *value_hm = key_hm + count;
+        if (!h3_launch_transpose_shd_hsd_bf16(key_ptr, key_hm, sequence, heads,
+                                              head_dim, ctx->stream) ||
+            !h3_launch_transpose_shd_hsd_bf16(value_ptr, value_hm, sequence,
+                                              heads, head_dim, ctx->stream)) {
+            h3_hip_set_error(ctx, "SDPA KV transpose failed");
+            return 0;
+        }
+        key_ptr = key_hm;
+        value_ptr = value_hm;
+        args.kv_head_major = 1u;
+    }
     return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
-        (const uint16_t *)tensor_ptr(query)->host,
-        (const uint16_t *)tensor_ptr(key)->host,
-        (const uint16_t *)tensor_ptr(value)->host,
+        (const uint16_t *)tensor_ptr(query)->host, key_ptr, value_ptr,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
         "h3_sdpa_bf16_head_major_output");
 }
@@ -2075,9 +2431,10 @@ int h3_gpu_grouped_qkv_linear_rope_bf16(
     uint32_t inner = heads * head_dim;
     return h3_gpu_linear_bf16(gpu, qkv, input, weight, NULL, rows, input_dim,
                                 inner * 3) &&
-           h3_gpu_grouped_qkv_rope_bf16(gpu, query, key, value, qkv, q_norm,
-                                        k_norm, rope_cos, rope_sin, rows,
-                                        heads, head_dim, rope_half, epsilon);
+           h3_gpu_qkv_rope_bf16_layout(gpu, query, key, value, qkv, q_norm,
+                                       k_norm, rope_cos, rope_sin, rows,
+                                       heads, head_dim, rope_half, 1,
+                                       epsilon, 1);
 }
 
 int h3_gpu_embedding_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -2443,21 +2800,21 @@ static int h3_hip_launch_linear_int8_prequant(
         (const float *)tensor_ptr(weight_scales)->host;
     uint16_t *output_ptr = (uint16_t *)tensor_ptr(output)->host;
     if (!(input_dim % 32) && !getenv("H3_INT8_LEGACY")) {
-        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_nax_r64(
+        return h3_hip_launch_linear(ctx, h3_launch_linear_int8_nax_r64(
             input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
             output_ptr, &args, ctx->stream),
             input_dim == 14336 ? "h3_linear_int8_nax_r64_k14336" :
             input_dim == 5376 ? "h3_linear_int8_nax_r64_k5376" :
-                                "h3_linear_int8_nax_r64");
+                                "h3_linear_int8_nax_r64", 0);
     }
     if (!(input_dim % 128) && !(output_dim % 128)) {
-        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_nax_r128(
+        return h3_hip_launch_linear(ctx, h3_launch_linear_int8_nax_r128(
             input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
-            output_ptr, &args, ctx->stream), "h3_linear_int8_nax_r128");
+            output_ptr, &args, ctx->stream), "h3_linear_int8_nax_r128", 0);
     }
-    return h3_hip_launch_ok(ctx, h3_launch_linear_int8_bf16_naive(
+    return h3_hip_launch_linear(ctx, h3_launch_linear_int8_bf16_naive(
         input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr, output_ptr,
-        &args, ctx->stream), "h3_linear_int8_bf16_naive");
+        &args, ctx->stream), "h3_linear_int8_bf16_naive", 0);
 }
 
 static int h3_hip_launch_fc1_swiglu_int8_prequant(
@@ -2467,24 +2824,24 @@ static int h3_hip_launch_fc1_swiglu_int8_prequant(
     uint32_t rows, uint32_t input_dim, uint32_t hidden_dim) {
     if (!(input_dim % 32) && !getenv("H3_INT8_LEGACY")) {
         h3_linear_args args = {rows, input_dim, hidden_dim, 0};
-        return h3_hip_launch_ok(ctx, h3_launch_fc1_swiglu_int8_nax_r64(
+        return h3_hip_launch_linear(ctx, h3_launch_fc1_swiglu_int8_nax_r64(
             (const int8_t *)tensor_ptr(quantized_input)->host,
             (const int8_t *)tensor_ptr(weight)->host,
             (const float *)tensor_ptr(input_scales)->host,
             (const float *)tensor_ptr(weight_scales)->host,
             (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
             input_dim == 5376 ? "h3_fc1_swiglu_int8_nax_r64_k5376" :
-                                "h3_fc1_swiglu_int8_nax_r64");
+                                "h3_fc1_swiglu_int8_nax_r64", 0);
     }
     if (input_dim % 128 || hidden_dim % 128) return 0;
     h3_linear_args args = {rows, input_dim, hidden_dim, 0};
-    return h3_hip_launch_ok(ctx, h3_launch_fc1_swiglu_int8_nax_r128(
+    return h3_hip_launch_linear(ctx, h3_launch_fc1_swiglu_int8_nax_r128(
         (const int8_t *)tensor_ptr(quantized_input)->host,
         (const int8_t *)tensor_ptr(weight)->host,
         (const float *)tensor_ptr(input_scales)->host,
         (const float *)tensor_ptr(weight_scales)->host,
         (uint16_t *)tensor_ptr(output)->host, &args, ctx->stream),
-        "h3_fc1_swiglu_int8_nax_r128");
+        "h3_fc1_swiglu_int8_nax_r128", 0);
 }
 
 static int h3_hip_launch_linear_int8_grouped_prequant(
@@ -2505,22 +2862,22 @@ static int h3_hip_launch_linear_int8_grouped_prequant(
         (const float *)tensor_ptr(weight_scales)->host;
     uint16_t *output_ptr = (uint16_t *)tensor_ptr(output)->host;
     if (!(group_size % 32u) && !getenv("H3_INT8_LEGACY")) {
-        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_grouped_nax_r64(
+        return h3_hip_launch_linear(ctx, h3_launch_linear_int8_grouped_nax_r64(
             input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
             output_ptr, &args, ctx->stream),
             input_dim == 14336 && group_size == 1024u ?
                 "h3_linear_int8_grouped_nax_r64_k14336" :
-                "h3_linear_int8_grouped_nax_r64");
+                "h3_linear_int8_grouped_nax_r64", 0);
     }
     if (group_size == 1024u && !(input_dim % 128) && !(output_dim % 64)) {
-        return h3_hip_launch_ok(ctx, h3_launch_linear_int8_grouped_nax_r128x64(
+        return h3_hip_launch_linear(ctx, h3_launch_linear_int8_grouped_nax_r128x64(
             input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr,
             output_ptr, &args, ctx->stream),
-            "h3_linear_int8_grouped_nax_r128x64");
+            "h3_linear_int8_grouped_nax_r128x64", 0);
     }
-    return h3_hip_launch_ok(ctx, h3_launch_linear_int8_grouped_naive(
+    return h3_hip_launch_linear(ctx, h3_launch_linear_int8_grouped_naive(
         input_ptr, weight_ptr, input_scale_ptr, weight_scale_ptr, output_ptr,
-        &args, ctx->stream), "h3_linear_int8_grouped_naive");
+        &args, ctx->stream), "h3_linear_int8_grouped_naive", 0);
 }
 
 int h3_hip_launch_linear_int8_grouped_dispatch(
@@ -2867,9 +3224,9 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
             rows, input_dim, qkv_dim)) {
         ok = 0;
     }
-    if (ok && !h3_gpu_grouped_qkv_rope_bf16(
+    if (ok && !h3_gpu_qkv_rope_bf16_layout(
             gpu, query, key, value, qkv, q_norm, k_norm, rope_cos, rope_sin,
-            rows, heads, head_dim, rope_half, epsilon)) {
+            rows, heads, head_dim, rope_half, 1, epsilon, 1)) {
         ok = 0;
     }
     h3_gpu_tensor_free(qkv);

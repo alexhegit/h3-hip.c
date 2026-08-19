@@ -5,9 +5,19 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 __device__ __host__ inline float h3_bf16_to_f32(uint16_t value) {
-    return __bfloat162float(*reinterpret_cast<__hip_bfloat16 *>(&value));
+    /* Exact bf16→f32: place mantissa/exp in the high half of an f32. Avoids
+     * a library convert on the SDPA/GEMM hot paths. */
+#if defined(__HIP_DEVICE_COMPILE__)
+    return __uint_as_float((uint32_t)value << 16);
+#else
+    uint32_t bits = (uint32_t)value << 16;
+    float out;
+    memcpy(&out, &bits, sizeof(out));
+    return out;
+#endif
 }
 
 __device__ __host__ inline uint16_t h3_f32_to_bf16(float value) {
@@ -785,9 +795,11 @@ __global__ void h3_qkv_rope_bf16_kernel(const uint16_t *qkv,
         k0 = k0 * c + k1 * s;
     }
     uint32_t output_index = (row * args.heads + head) * args.head_dim + dimension;
+    uint32_t kv_index = args.kv_head_major ?
+        (head * args.sequence + row) * args.head_dim + dimension : output_index;
     query[output_index] = h3_f32_to_bf16(q0);
-    key[output_index] = h3_f32_to_bf16(k0);
-    value[output_index] = qkv[v_base + dimension];
+    key[kv_index] = h3_f32_to_bf16(k0);
+    value[kv_index] = qkv[v_base + dimension];
 }
 
 __global__ void h3_qkv_rope_f32_kernel(const float *qkv, const float *q_weight,
@@ -839,9 +851,11 @@ __global__ void h3_qkv_rope_f32_kernel(const float *qkv, const float *q_weight,
         k0 = k0 * c + k1 * s;
     }
     uint32_t output_index = (row * args.heads + head) * args.head_dim + dimension;
+    uint32_t kv_index = args.kv_head_major ?
+        (head * args.sequence + row) * args.head_dim + dimension : output_index;
     query[output_index] = q0;
-    key[output_index] = k0;
-    value[output_index] = qkv[v_base + dimension];
+    key[kv_index] = k0;
+    value[kv_index] = qkv[v_base + dimension];
 }
 
 __global__ void h3_video_qkv_rope_f32_kernel(
@@ -883,9 +897,11 @@ __global__ void h3_video_qkv_rope_f32_kernel(
     }
     uint32_t output_index =
         (row * args.heads + head) * args.head_dim + dimension;
+    uint32_t kv_index = args.kv_head_major ?
+        (head * args.sequence + row) * args.head_dim + dimension : output_index;
     query[output_index] = q0;
-    key[output_index] = k0;
-    value[output_index] = qkv[base + args.head_dim * 2 + dimension];
+    key[kv_index] = k0;
+    value[kv_index] = qkv[base + args.head_dim * 2 + dimension];
 }
 
 __global__ void h3_vision_qkv_rope_bf16_kernel(
@@ -1023,6 +1039,10 @@ __device__ inline float h3_warp_reduce_sum(float value) {
     return value;
 }
 
+__device__ inline float h3_fast_exp(float x) {
+    return exp2f(x * 1.4426950408889634f);
+}
+
 /* AudioVAE encoder uses 8 heads x 256; VAE/text stay <= 128. One warp covers
  * 32-wide chunks, so 8 chunks reach head_dim 256. */
 __global__ void __launch_bounds__(32)
@@ -1056,8 +1076,8 @@ h3_sdpa_causal_f32_wave_kernel(const float *query, const float *key,
         }
         float score = h3_warp_reduce_sum(partial);
         float new_max = fmaxf(maximum, score);
-        float alpha = expf(maximum - new_max);
-        float probability = expf(score - new_max);
+        float alpha = h3_fast_exp(maximum - new_max);
+        float probability = h3_fast_exp(score - new_max);
 #pragma unroll
         for (int item = 0; item < 8; item++) {
             uint32_t dimension = lane + (uint32_t)item * 32u;
@@ -1080,8 +1100,8 @@ __global__ void __launch_bounds__(32)
 h3_sdpa_bf16_wave_d128_kernel(const uint16_t *query, const uint16_t *key,
                               const uint16_t *value, uint16_t *output,
                               h3_sdpa_args args) {
-    uint32_t head = blockIdx.x;
-    uint32_t q_pos = blockIdx.y;
+    uint32_t q_pos = blockIdx.x;
+    uint32_t head = blockIdx.y;
     uint32_t lane = threadIdx.x;
     uint32_t q_base = (q_pos * args.heads + head) * 128u;
     float q0 = h3_bf16_to_f32(query[q_base + lane]) * args.scale;
@@ -1091,26 +1111,28 @@ h3_sdpa_bf16_wave_d128_kernel(const uint16_t *query, const uint16_t *key,
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
     float maximum = -1e30f;
     float sum = 0.0f;
-    uint32_t stride = args.heads * 128u;
-    uint32_t k_base = head * 128u;
+    /* Seq-major K/V: stride = heads*128. Head-major: contiguous per head. */
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 128u
+                                         : head * 128u;
     for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
-        float partial =
-            q0 * h3_bf16_to_f32(key[k_base + lane]) +
-            q1 * h3_bf16_to_f32(key[k_base + 32u + lane]) +
-            q2 * h3_bf16_to_f32(key[k_base + 64u + lane]) +
-            q3 * h3_bf16_to_f32(key[k_base + 96u + lane]);
+        float k0 = h3_bf16_to_f32(key[k_base + lane]);
+        float k1v = h3_bf16_to_f32(key[k_base + 32u + lane]);
+        float k2 = h3_bf16_to_f32(key[k_base + 64u + lane]);
+        float k3 = h3_bf16_to_f32(key[k_base + 96u + lane]);
+        float v0 = h3_bf16_to_f32(value[k_base + lane]);
+        float v1 = h3_bf16_to_f32(value[k_base + 32u + lane]);
+        float v2 = h3_bf16_to_f32(value[k_base + 64u + lane]);
+        float v3 = h3_bf16_to_f32(value[k_base + 96u + lane]);
+        float partial = q0 * k0 + q1 * k1v + q2 * k2 + q3 * k3;
         float score = h3_warp_reduce_sum(partial);
         float new_max = fmaxf(maximum, score);
-        float alpha = expf(maximum - new_max);
-        float probability = expf(score - new_max);
-        acc0 = fmaf(probability, h3_bf16_to_f32(value[k_base + lane]),
-                    acc0 * alpha);
-        acc1 = fmaf(probability, h3_bf16_to_f32(value[k_base + 32u + lane]),
-                    acc1 * alpha);
-        acc2 = fmaf(probability, h3_bf16_to_f32(value[k_base + 64u + lane]),
-                    acc2 * alpha);
-        acc3 = fmaf(probability, h3_bf16_to_f32(value[k_base + 96u + lane]),
-                    acc3 * alpha);
+        float alpha = h3_fast_exp(maximum - new_max);
+        float probability = h3_fast_exp(score - new_max);
+        acc0 = fmaf(probability, v0, acc0 * alpha);
+        acc1 = fmaf(probability, v1, acc1 * alpha);
+        acc2 = fmaf(probability, v2, acc2 * alpha);
+        acc3 = fmaf(probability, v3, acc3 * alpha);
         sum = fmaf(sum, alpha, probability);
         maximum = new_max;
         k_base += stride;
@@ -1126,12 +1148,175 @@ h3_sdpa_bf16_wave_d128_kernel(const uint16_t *query, const uint16_t *key,
         h3_f32_to_bf16(acc3 * inv);
 }
 
+/* Flash-style blocked SDPA for DiT head_dim=128: several Q rows share each
+ * K/V tile in LDS so global traffic drops by ~Q_TILE. Wave32 RDNA path.
+ * Rows are padded to 132 floats to avoid 4-way LDS bank conflicts when a
+ * warp reads lane, lane+32, lane+64, lane+96. */
+#define H3_SDPA_FLASH_Q 4u
+#define H3_SDPA_FLASH_K 32u
+#define H3_SDPA_FLASH_STRIDE 132u
+
+__global__ void __launch_bounds__(128)
+h3_sdpa_bf16_flash_d128_kernel(const uint16_t *query, const uint16_t *key,
+                               const uint16_t *value, uint16_t *output,
+                               h3_sdpa_args args) {
+    __shared__ float smem_k[H3_SDPA_FLASH_K * H3_SDPA_FLASH_STRIDE];
+    __shared__ float smem_v[H3_SDPA_FLASH_K * H3_SDPA_FLASH_STRIDE];
+
+    uint32_t head = blockIdx.x;
+    uint32_t q_tile = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    uint32_t q_local = threadIdx.y;
+    uint32_t q_pos = q_tile * H3_SDPA_FLASH_Q + q_local;
+    uint32_t tid = q_local * 32u + lane;
+    int active = q_pos < args.sequence;
+
+    float q0 = 0.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    float maximum = -1e30f;
+    float sum = 0.0f;
+    if (active) {
+        uint32_t q_base = (q_pos * args.heads + head) * 128u;
+        q0 = h3_bf16_to_f32(query[q_base + lane]) * args.scale;
+        q1 = h3_bf16_to_f32(query[q_base + 32u + lane]) * args.scale;
+        q2 = h3_bf16_to_f32(query[q_base + 64u + lane]) * args.scale;
+        q3 = h3_bf16_to_f32(query[q_base + 96u + lane]) * args.scale;
+    }
+
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    for (uint32_t k_start = 0; k_start < args.sequence;
+         k_start += H3_SDPA_FLASH_K) {
+        uint32_t tile = args.sequence - k_start;
+        if (tile > H3_SDPA_FLASH_K) tile = H3_SDPA_FLASH_K;
+        for (uint32_t index = tid; index < tile * 128u; index += 128u) {
+            uint32_t k_local = index >> 7;
+            uint32_t dimension = index & 127u;
+            uint32_t src = args.kv_head_major ?
+                (head * args.sequence + k_start + k_local) * 128u + dimension :
+                (k_start + k_local) * stride + head * 128u + dimension;
+            uint32_t dst = k_local * H3_SDPA_FLASH_STRIDE + dimension;
+            smem_k[dst] = h3_bf16_to_f32(key[src]);
+            smem_v[dst] = h3_bf16_to_f32(value[src]);
+        }
+        __syncthreads();
+
+        if (active) {
+            for (uint32_t k_local = 0; k_local < tile; k_local++) {
+                const float *k_row = smem_k + k_local * H3_SDPA_FLASH_STRIDE;
+                const float *v_row = smem_v + k_local * H3_SDPA_FLASH_STRIDE;
+                float partial = q0 * k_row[lane] + q1 * k_row[32u + lane] +
+                                q2 * k_row[64u + lane] +
+                                q3 * k_row[96u + lane];
+                float score = h3_warp_reduce_sum(partial);
+                float new_max = fmaxf(maximum, score);
+                float alpha = h3_fast_exp(maximum - new_max);
+                float probability = h3_fast_exp(score - new_max);
+                acc0 = fmaf(probability, v_row[lane], acc0 * alpha);
+                acc1 = fmaf(probability, v_row[32u + lane], acc1 * alpha);
+                acc2 = fmaf(probability, v_row[64u + lane], acc2 * alpha);
+                acc3 = fmaf(probability, v_row[96u + lane], acc3 * alpha);
+                sum = fmaf(sum, alpha, probability);
+                maximum = new_max;
+            }
+        }
+        __syncthreads();
+    }
+
+    if (active) {
+        float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+        output[h3_sdpa_output_index(args, q_pos, head, lane)] =
+            h3_f32_to_bf16(acc0 * inv);
+        output[h3_sdpa_output_index(args, q_pos, head, 32u + lane)] =
+            h3_f32_to_bf16(acc1 * inv);
+        output[h3_sdpa_output_index(args, q_pos, head, 64u + lane)] =
+            h3_f32_to_bf16(acc2 * inv);
+        output[h3_sdpa_output_index(args, q_pos, head, 96u + lane)] =
+            h3_f32_to_bf16(acc3 * inv);
+    }
+}
+
+__global__ void __launch_bounds__(128)
+h3_sdpa_f32_flash_d128_kernel(const float *query, const float *key,
+                              const float *value, float *output,
+                              h3_sdpa_args args) {
+    __shared__ float smem_k[H3_SDPA_FLASH_K * H3_SDPA_FLASH_STRIDE];
+    __shared__ float smem_v[H3_SDPA_FLASH_K * H3_SDPA_FLASH_STRIDE];
+
+    uint32_t head = blockIdx.x;
+    uint32_t q_tile = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    uint32_t q_local = threadIdx.y;
+    uint32_t q_pos = q_tile * H3_SDPA_FLASH_Q + q_local;
+    uint32_t tid = q_local * 32u + lane;
+    int active = q_pos < args.sequence;
+
+    float q0 = 0.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    float maximum = -1e30f;
+    float sum = 0.0f;
+    if (active) {
+        uint32_t q_base = (q_pos * args.heads + head) * 128u;
+        q0 = query[q_base + lane] * args.scale;
+        q1 = query[q_base + 32u + lane] * args.scale;
+        q2 = query[q_base + 64u + lane] * args.scale;
+        q3 = query[q_base + 96u + lane] * args.scale;
+    }
+
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    for (uint32_t k_start = 0; k_start < args.sequence;
+         k_start += H3_SDPA_FLASH_K) {
+        uint32_t tile = args.sequence - k_start;
+        if (tile > H3_SDPA_FLASH_K) tile = H3_SDPA_FLASH_K;
+        for (uint32_t index = tid; index < tile * 128u; index += 128u) {
+            uint32_t k_local = index >> 7;
+            uint32_t dimension = index & 127u;
+            uint32_t src = args.kv_head_major ?
+                (head * args.sequence + k_start + k_local) * 128u + dimension :
+                (k_start + k_local) * stride + head * 128u + dimension;
+            uint32_t dst = k_local * H3_SDPA_FLASH_STRIDE + dimension;
+            smem_k[dst] = key[src];
+            smem_v[dst] = value[src];
+        }
+        __syncthreads();
+
+        if (active) {
+            for (uint32_t k_local = 0; k_local < tile; k_local++) {
+                const float *k_row = smem_k + k_local * H3_SDPA_FLASH_STRIDE;
+                const float *v_row = smem_v + k_local * H3_SDPA_FLASH_STRIDE;
+                float partial = q0 * k_row[lane] + q1 * k_row[32u + lane] +
+                                q2 * k_row[64u + lane] +
+                                q3 * k_row[96u + lane];
+                float score = h3_warp_reduce_sum(partial);
+                float new_max = fmaxf(maximum, score);
+                float alpha = h3_fast_exp(maximum - new_max);
+                float probability = h3_fast_exp(score - new_max);
+                acc0 = fmaf(probability, v_row[lane], acc0 * alpha);
+                acc1 = fmaf(probability, v_row[32u + lane], acc1 * alpha);
+                acc2 = fmaf(probability, v_row[64u + lane], acc2 * alpha);
+                acc3 = fmaf(probability, v_row[96u + lane], acc3 * alpha);
+                sum = fmaf(sum, alpha, probability);
+                maximum = new_max;
+            }
+        }
+        __syncthreads();
+    }
+
+    if (active) {
+        float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+        uint32_t q_base = (q_pos * args.heads + head) * 128u;
+        output[q_base + lane] = acc0 * inv;
+        output[q_base + 32u + lane] = acc1 * inv;
+        output[q_base + 64u + lane] = acc2 * inv;
+        output[q_base + 96u + lane] = acc3 * inv;
+    }
+}
+
 __global__ void __launch_bounds__(32)
 h3_sdpa_f32_wave_d128_kernel(const float *query, const float *key,
                              const float *value, float *output,
                              h3_sdpa_args args) {
-    uint32_t head = blockIdx.x;
-    uint32_t q_pos = blockIdx.y;
+    uint32_t q_pos = blockIdx.x;
+    uint32_t head = blockIdx.y;
     uint32_t lane = threadIdx.x;
     uint32_t q_base = (q_pos * args.heads + head) * 128u;
     float q0 = query[q_base + lane] * args.scale;
@@ -1141,20 +1326,27 @@ h3_sdpa_f32_wave_d128_kernel(const float *query, const float *key,
     float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
     float maximum = -1e30f;
     float sum = 0.0f;
-    uint32_t stride = args.heads * 128u;
-    uint32_t k_base = head * 128u;
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 128u
+                                         : head * 128u;
     for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
-        float partial = q0 * key[k_base + lane] + q1 * key[k_base + 32u + lane] +
-                        q2 * key[k_base + 64u + lane] +
-                        q3 * key[k_base + 96u + lane];
+        float k0 = key[k_base + lane];
+        float k1v = key[k_base + 32u + lane];
+        float k2 = key[k_base + 64u + lane];
+        float k3 = key[k_base + 96u + lane];
+        float v0 = value[k_base + lane];
+        float v1 = value[k_base + 32u + lane];
+        float v2 = value[k_base + 64u + lane];
+        float v3 = value[k_base + 96u + lane];
+        float partial = q0 * k0 + q1 * k1v + q2 * k2 + q3 * k3;
         float score = h3_warp_reduce_sum(partial);
         float new_max = fmaxf(maximum, score);
-        float alpha = expf(maximum - new_max);
-        float probability = expf(score - new_max);
-        acc0 = fmaf(probability, value[k_base + lane], acc0 * alpha);
-        acc1 = fmaf(probability, value[k_base + 32u + lane], acc1 * alpha);
-        acc2 = fmaf(probability, value[k_base + 64u + lane], acc2 * alpha);
-        acc3 = fmaf(probability, value[k_base + 96u + lane], acc3 * alpha);
+        float alpha = h3_fast_exp(maximum - new_max);
+        float probability = h3_fast_exp(score - new_max);
+        acc0 = fmaf(probability, v0, acc0 * alpha);
+        acc1 = fmaf(probability, v1, acc1 * alpha);
+        acc2 = fmaf(probability, v2, acc2 * alpha);
+        acc3 = fmaf(probability, v3, acc3 * alpha);
         sum = fmaf(sum, alpha, probability);
         maximum = new_max;
         k_base += stride;
@@ -1167,11 +1359,100 @@ h3_sdpa_f32_wave_d128_kernel(const float *query, const float *key,
 }
 
 __global__ void __launch_bounds__(32)
+h3_sdpa_f32_wave_d64_kernel(const float *query, const float *key,
+                            const float *value, float *output,
+                            h3_sdpa_args args) {
+    uint32_t q_pos = blockIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    uint32_t q_base = (q_pos * args.heads + head) * 64u;
+    float q0 = query[q_base + lane] * args.scale;
+    float q1 = query[q_base + 32u + lane] * args.scale;
+    float acc0 = 0.0f, acc1 = 0.0f;
+    float maximum = -1e30f;
+    float sum = 0.0f;
+    uint32_t stride = args.kv_head_major ? 64u : args.heads * 64u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 64u
+                                         : head * 64u;
+    /* Four-key online softmax on VAE d64 (2-key helped; try 4). */
+    uint32_t k_pos = 0;
+    for (; k_pos + 3u < args.sequence; k_pos += 4u) {
+        float score[4];
+        float v0s[4], v1s[4];
+#pragma unroll
+        for (int t = 0; t < 4; t++) {
+            uint32_t base = k_base + (uint32_t)t * stride;
+            float k0 = key[base + lane];
+            float k1v = key[base + 32u + lane];
+            v0s[t] = value[base + lane];
+            v1s[t] = value[base + 32u + lane];
+            score[t] = h3_warp_reduce_sum(q0 * k0 + q1 * k1v);
+        }
+        float new_max = fmaxf(maximum, fmaxf(fmaxf(score[0], score[1]),
+                                             fmaxf(score[2], score[3])));
+        float alpha = h3_fast_exp(maximum - new_max);
+        float p0 = h3_fast_exp(score[0] - new_max);
+        float p1 = h3_fast_exp(score[1] - new_max);
+        float p2 = h3_fast_exp(score[2] - new_max);
+        float p3 = h3_fast_exp(score[3] - new_max);
+        acc0 = fmaf(p0, v0s[0],
+                    fmaf(p1, v0s[1],
+                         fmaf(p2, v0s[2], fmaf(p3, v0s[3], acc0 * alpha))));
+        acc1 = fmaf(p0, v1s[0],
+                    fmaf(p1, v1s[1],
+                         fmaf(p2, v1s[2], fmaf(p3, v1s[3], acc1 * alpha))));
+        sum = fmaf(sum, alpha, p0 + p1 + p2 + p3);
+        maximum = new_max;
+        k_base += 4u * stride;
+    }
+    for (; k_pos + 1u < args.sequence; k_pos += 2u) {
+        float k0a = key[k_base + lane];
+        float k1a = key[k_base + 32u + lane];
+        float v0a = value[k_base + lane];
+        float v1a = value[k_base + 32u + lane];
+        uint32_t k_base1 = k_base + stride;
+        float k0b = key[k_base1 + lane];
+        float k1b = key[k_base1 + 32u + lane];
+        float v0b = value[k_base1 + lane];
+        float v1b = value[k_base1 + 32u + lane];
+        float score_a = h3_warp_reduce_sum(q0 * k0a + q1 * k1a);
+        float score_b = h3_warp_reduce_sum(q0 * k0b + q1 * k1b);
+        float new_max = fmaxf(maximum, fmaxf(score_a, score_b));
+        float alpha = h3_fast_exp(maximum - new_max);
+        float pa = h3_fast_exp(score_a - new_max);
+        float pb = h3_fast_exp(score_b - new_max);
+        acc0 = fmaf(pa, v0a, fmaf(pb, v0b, acc0 * alpha));
+        acc1 = fmaf(pa, v1a, fmaf(pb, v1b, acc1 * alpha));
+        sum = fmaf(sum, alpha, pa + pb);
+        maximum = new_max;
+        k_base = k_base1 + stride;
+    }
+    for (; k_pos < args.sequence; k_pos++) {
+        float k0 = key[k_base + lane];
+        float k1v = key[k_base + 32u + lane];
+        float v0 = value[k_base + lane];
+        float v1 = value[k_base + 32u + lane];
+        float score = h3_warp_reduce_sum(q0 * k0 + q1 * k1v);
+        float new_max = fmaxf(maximum, score);
+        float alpha = h3_fast_exp(maximum - new_max);
+        float probability = h3_fast_exp(score - new_max);
+        acc0 = fmaf(probability, v0, acc0 * alpha);
+        acc1 = fmaf(probability, v1, acc1 * alpha);
+        sum = fmaf(sum, alpha, probability);
+        maximum = new_max;
+        k_base += stride;
+    }
+    float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+    output[q_base + lane] = acc0 * inv;
+    output[q_base + 32u + lane] = acc1 * inv;
+}
+
+__global__ void __launch_bounds__(32)
 h3_sdpa_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
                          const uint16_t *value, uint16_t *output,
                          h3_sdpa_args args) {
-    uint32_t head = blockIdx.x;
-    uint32_t q_pos = blockIdx.y;
+    uint32_t q_pos = blockIdx.x;
+    uint32_t head = blockIdx.y;
     uint32_t lane = threadIdx.x;
     uint32_t q_base = (q_pos * args.heads + head) * args.head_dim;
     float q[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1184,8 +1465,11 @@ h3_sdpa_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
     }
     float maximum = -1e30f;
     float sum = 0.0f;
+    uint32_t stride = args.kv_head_major ? args.head_dim
+                                         : args.heads * args.head_dim;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * args.head_dim
+                                         : head * args.head_dim;
     for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
-        uint32_t k_base = (k_pos * args.heads + head) * args.head_dim;
         float partial = 0.0f;
 #pragma unroll
         for (int item = 0; item < 4; item++) {
@@ -1196,8 +1480,8 @@ h3_sdpa_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
         }
         float score = h3_warp_reduce_sum(partial);
         float new_max = fmaxf(maximum, score);
-        float alpha = expf(maximum - new_max);
-        float probability = expf(score - new_max);
+        float alpha = h3_fast_exp(maximum - new_max);
+        float probability = h3_fast_exp(score - new_max);
 #pragma unroll
         for (int item = 0; item < 4; item++) {
             uint32_t dimension = lane + (uint32_t)item * 32u;
@@ -1208,6 +1492,7 @@ h3_sdpa_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
         }
         sum = fmaf(sum, alpha, probability);
         maximum = new_max;
+        k_base += stride;
     }
     float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
 #pragma unroll
@@ -1222,8 +1507,8 @@ h3_sdpa_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
 __global__ void __launch_bounds__(32)
 h3_sdpa_f32_wave_kernel(const float *query, const float *key,
                         const float *value, float *output, h3_sdpa_args args) {
-    uint32_t head = blockIdx.x;
-    uint32_t q_pos = blockIdx.y;
+    uint32_t q_pos = blockIdx.x;
+    uint32_t head = blockIdx.y;
     uint32_t lane = threadIdx.x;
     uint32_t q_base = (q_pos * args.heads + head) * args.head_dim;
     float q[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -1236,8 +1521,11 @@ h3_sdpa_f32_wave_kernel(const float *query, const float *key,
     }
     float maximum = -1e30f;
     float sum = 0.0f;
+    uint32_t stride = args.kv_head_major ? args.head_dim
+                                         : args.heads * args.head_dim;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * args.head_dim
+                                         : head * args.head_dim;
     for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
-        uint32_t k_base = (k_pos * args.heads + head) * args.head_dim;
         float partial = 0.0f;
 #pragma unroll
         for (int item = 0; item < 4; item++) {
@@ -1247,8 +1535,8 @@ h3_sdpa_f32_wave_kernel(const float *query, const float *key,
         }
         float score = h3_warp_reduce_sum(partial);
         float new_max = fmaxf(maximum, score);
-        float alpha = expf(maximum - new_max);
-        float probability = expf(score - new_max);
+        float alpha = h3_fast_exp(maximum - new_max);
+        float probability = h3_fast_exp(score - new_max);
 #pragma unroll
         for (int item = 0; item < 4; item++) {
             uint32_t dimension = lane + (uint32_t)item * 32u;
@@ -1257,6 +1545,7 @@ h3_sdpa_f32_wave_kernel(const float *query, const float *key,
         }
         sum = fmaf(sum, alpha, probability);
         maximum = new_max;
+        k_base += stride;
     }
     float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
 #pragma unroll
@@ -1989,6 +2278,59 @@ extern "C" int h3_launch_vision_qkv_rope_bf16(
            hipSuccess;
 }
 
+__global__ void h3_transpose_shd_hsd_bf16_kernel(const uint16_t *input,
+                                                 uint16_t *output,
+                                                 uint32_t sequence,
+                                                 uint32_t heads,
+                                                 uint32_t head_dim) {
+    uint32_t dimension = threadIdx.x;
+    uint32_t head = blockIdx.x;
+    uint32_t row = blockIdx.y;
+    if (dimension >= head_dim || head >= heads || row >= sequence) return;
+    uint32_t src = (row * heads + head) * head_dim + dimension;
+    uint32_t dst = (head * sequence + row) * head_dim + dimension;
+    output[dst] = input[src];
+}
+
+__global__ void h3_transpose_shd_hsd_f32_kernel(const float *input,
+                                                float *output,
+                                                uint32_t sequence,
+                                                uint32_t heads,
+                                                uint32_t head_dim) {
+    uint32_t dimension = threadIdx.x;
+    uint32_t head = blockIdx.x;
+    uint32_t row = blockIdx.y;
+    if (dimension >= head_dim || head >= heads || row >= sequence) return;
+    uint32_t src = (row * heads + head) * head_dim + dimension;
+    uint32_t dst = (head * sequence + row) * head_dim + dimension;
+    output[dst] = input[src];
+}
+
+extern "C" int h3_launch_transpose_shd_hsd_bf16(
+    const uint16_t *input, uint16_t *output, uint32_t sequence, uint32_t heads,
+    uint32_t head_dim, hipStream_t stream) {
+    if (!sequence || !heads || !head_dim || head_dim > 256) return 0;
+    void *kernel_args[] = {&input, &output, &sequence, &heads, &head_dim};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_transpose_shd_hsd_bf16_kernel),
+               dim3(heads, sequence, 1), dim3(head_dim, 1, 1), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_transpose_shd_hsd_f32(const float *input,
+                                               float *output,
+                                               uint32_t sequence,
+                                               uint32_t heads,
+                                               uint32_t head_dim,
+                                               hipStream_t stream) {
+    if (!sequence || !heads || !head_dim || head_dim > 256) return 0;
+    void *kernel_args[] = {&input, &output, &sequence, &heads, &head_dim};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_transpose_shd_hsd_f32_kernel),
+               dim3(heads, sequence, 1), dim3(head_dim, 1, 1), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
 extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, uint16_t *output,
                                    const h3_sdpa_args *args,
@@ -1999,14 +2341,33 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
     }
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
-    dim3 grid(host_args.heads, host_args.sequence, 1);
     if (!getenv("H3_SDPA_LEGACY")) {
+        /* Default: one-warp-per-query online softmax. Optional flash path
+         * (H3_SDPA_FLASH=1) stages K/V tiles in LDS for multi-Q reuse; kept
+         * opt-in after regressing vs wave on gfx1151 DiT shapes. */
+        if (host_args.head_dim == 128 && getenv("H3_SDPA_FLASH") &&
+            strcmp(getenv("H3_SDPA_FLASH"), "0") != 0) {
+            dim3 grid(host_args.heads,
+                      (host_args.sequence + H3_SDPA_FLASH_Q - 1u) /
+                          H3_SDPA_FLASH_Q,
+                      1);
+            dim3 block(32, H3_SDPA_FLASH_Q, 1);
+            return hipLaunchKernel(
+                       reinterpret_cast<const void *>(
+                           h3_sdpa_bf16_flash_d128_kernel),
+                       grid, block, kernel_args, sizeof(kernel_args),
+                       stream) == hipSuccess;
+        }
+        /* Grid (sequence, heads): consecutive blocks share one KV head so
+         * head-major K/V stays hot in L2 (gfx1151). */
+        dim3 grid(host_args.sequence, host_args.heads, 1);
         const void *kernel = host_args.head_dim == 128 ?
             reinterpret_cast<const void *>(h3_sdpa_bf16_wave_d128_kernel) :
             reinterpret_cast<const void *>(h3_sdpa_bf16_wave_kernel);
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
                                sizeof(kernel_args), stream) == hipSuccess;
     }
+    dim3 grid(host_args.heads, host_args.sequence, 1);
     if (host_args.sequence <= H3_SDPA_TILE) {
         return hipLaunchKernel(
                    reinterpret_cast<const void *>(h3_sdpa_bf16_kernel), grid,
@@ -2029,14 +2390,30 @@ extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
     }
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
-    dim3 grid(host_args.heads, host_args.sequence, 1);
     if (!getenv("H3_SDPA_LEGACY")) {
+        if (host_args.head_dim == 128 && getenv("H3_SDPA_FLASH") &&
+            strcmp(getenv("H3_SDPA_FLASH"), "0") != 0) {
+            dim3 grid(host_args.heads,
+                      (host_args.sequence + H3_SDPA_FLASH_Q - 1u) /
+                          H3_SDPA_FLASH_Q,
+                      1);
+            dim3 block(32, H3_SDPA_FLASH_Q, 1);
+            return hipLaunchKernel(
+                       reinterpret_cast<const void *>(
+                           h3_sdpa_f32_flash_d128_kernel),
+                       grid, block, kernel_args, sizeof(kernel_args),
+                       stream) == hipSuccess;
+        }
+        dim3 grid(host_args.sequence, host_args.heads, 1);
         const void *kernel = host_args.head_dim == 128 ?
             reinterpret_cast<const void *>(h3_sdpa_f32_wave_d128_kernel) :
+            host_args.head_dim == 64 ?
+            reinterpret_cast<const void *>(h3_sdpa_f32_wave_d64_kernel) :
             reinterpret_cast<const void *>(h3_sdpa_f32_wave_kernel);
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
                                sizeof(kernel_args), stream) == hipSuccess;
     }
+    dim3 grid(host_args.heads, host_args.sequence, 1);
     if (host_args.sequence <= H3_SDPA_TILE) {
         return hipLaunchKernel(
                    reinterpret_cast<const void *>(h3_sdpa_f32_kernel), grid,

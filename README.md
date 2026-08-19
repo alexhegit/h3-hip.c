@@ -43,7 +43,7 @@ MODEL=/path/to/MiniMax-H3
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
 | Runtime INT8 MLP | ✅ |
 | `--frames-dir` / `--ssd-streaming` / `--token-reduction` | ✅ |
-| Performance vs Metal / HIP `--profile` phases | 📋 planned |
+| Performance vs Metal / HIP `--profile` phases | 🔧 profiling in progress |
 
 Port plan: [`docs/AMD_HIP_PORT_PLAN.md`](docs/AMD_HIP_PORT_PLAN.md) · Known gaps:
 [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)

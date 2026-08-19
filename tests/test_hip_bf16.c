@@ -667,9 +667,11 @@ static void cpu_video_qkv_rope_f32(const float *qkv, const float *rope_cos,
                 }
                 uint32_t output_index =
                     (row * heads + head) * head_dim + dimension;
+                uint32_t kv_index =
+                    (head * sequence + row) * head_dim + dimension;
                 query[output_index] = q0;
-                key[output_index] = k0;
-                value[output_index] = qkv[base + head_dim * 2 + dimension];
+                key[kv_index] = k0;
+                value[kv_index] = qkv[base + head_dim * 2 + dimension];
             }
         }
     }
@@ -3059,8 +3061,20 @@ static int test_grouped_qkv_linear_rope(h3_gpu *gpu) {
     CHECK(h3_gpu_tensor_read_bf16(plain_v, got_plain_v, ROWS * INNER));
     CHECK(h3_gpu_tensor_read_bf16(fused_v, got_fused_v, ROWS * INNER));
     CHECK(memcmp(got_plain_q, got_fused_q, sizeof(got_plain_q)) == 0);
-    CHECK(memcmp(got_plain_k, got_fused_k, sizeof(got_plain_k)) == 0);
-    CHECK(memcmp(got_plain_v, got_fused_v, sizeof(got_plain_v)) == 0);
+    /* Fused path writes K/V head-major for SDPA; plain rope stays seq-major. */
+    uint16_t plain_k_hm[ROWS * INNER], plain_v_hm[ROWS * INNER];
+    for (uint32_t row = 0; row < ROWS; row++) {
+        for (uint32_t head = 0; head < HEADS; head++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                size_t src = ((size_t)row * HEADS + head) * HEAD_DIM + d;
+                size_t dst = ((size_t)head * ROWS + row) * HEAD_DIM + d;
+                plain_k_hm[dst] = got_plain_k[src];
+                plain_v_hm[dst] = got_plain_v[src];
+            }
+        }
+    }
+    CHECK(memcmp(plain_k_hm, got_fused_k, sizeof(plain_k_hm)) == 0);
+    CHECK(memcmp(plain_v_hm, got_fused_v, sizeof(plain_v_hm)) == 0);
     h3_gpu_tensor_free(gpu_input);
     h3_gpu_tensor_free(gpu_weight);
     h3_gpu_tensor_free(gpu_q_norm);
@@ -5105,6 +5119,7 @@ static double h3_monotonic_seconds(void) {
 static int bench_sdpa(h3_gpu *gpu) {
     enum { SEQUENCE = 1920, HEADS = 56, HEAD_DIM = 128, ITERATIONS = 3 };
     size_t count = (size_t)SEQUENCE * HEADS * HEAD_DIM;
+    int kv_hm = getenv("H3_SDPA_KV_HM") && strcmp(getenv("H3_SDPA_KV_HM"), "0") != 0;
     uint16_t *query = calloc(count, sizeof(*query));
     uint16_t *key = calloc(count, sizeof(*key));
     uint16_t *value = calloc(count, sizeof(*value));
@@ -5113,6 +5128,25 @@ static int bench_sdpa(h3_gpu *gpu) {
         query[i] = f32_to_bf16((float)((i % 17) - 8) * 0.03f);
         key[i] = f32_to_bf16((float)((i % 13) - 6) * 0.02f);
         value[i] = f32_to_bf16((float)((i % 11) - 5) * 0.04f);
+    }
+    if (kv_hm) {
+        uint16_t *key_hm = calloc(count, sizeof(*key_hm));
+        uint16_t *value_hm = calloc(count, sizeof(*value_hm));
+        CHECK(key_hm && value_hm);
+        for (uint32_t s = 0; s < SEQUENCE; s++) {
+            for (uint32_t h = 0; h < HEADS; h++) {
+                for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                    size_t src = ((size_t)s * HEADS + h) * HEAD_DIM + d;
+                    size_t dst = ((size_t)h * SEQUENCE + s) * HEAD_DIM + d;
+                    key_hm[dst] = key[src];
+                    value_hm[dst] = value[src];
+                }
+            }
+        }
+        free(key);
+        free(value);
+        key = key_hm;
+        value = value_hm;
     }
     h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, count);
     h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, count);
@@ -5134,8 +5168,9 @@ static int bench_sdpa(h3_gpu *gpu) {
     }
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa bench"));
     double ms = (h3_monotonic_seconds() - start) * 1000.0 / (double)ITERATIONS;
-    printf("sdpa bf16 seq=%d heads=%d dim=%d: %.1f ms%s\n", SEQUENCE, HEADS,
-           HEAD_DIM, ms, getenv("H3_SDPA_LEGACY") ? " (legacy)" : "");
+    printf("sdpa bf16 seq=%d heads=%d dim=%d: %.1f ms%s%s\n", SEQUENCE, HEADS,
+           HEAD_DIM, ms, getenv("H3_SDPA_LEGACY") ? " (legacy)" : "",
+           kv_hm ? " (kv-hm)" : "");
     h3_gpu_tensor_free(gpu_q);
     h3_gpu_tensor_free(gpu_k);
     h3_gpu_tensor_free(gpu_v);

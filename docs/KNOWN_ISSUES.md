@@ -47,7 +47,22 @@ tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 
 | ID | Topic | Status |
 |----|-------|--------|
-| P | Perf + HIP `--profile` marks vs Metal | Planned later |
+| P | Perf + HIP `--profile` marks vs Metal | In progress — phase marks fixed; op-class GPU timing under `H3_PROFILE` |
 | V | `--ref-video-audio VIDEO AUDIO` E2E clip | Same kernels as `--ref-video`; not separately showcased |
+
+### Profiling notes (HIP)
+
+`--profile` sets `H3_PROFILE=1` and prints Metal-compatible phase lines plus an
+`op-classes` breakdown (linear / sdpa / conv / other) from HIP events flushed
+on each submit. DiT emits `load` then `Euler denoise` (or GPU/RES variants) as
+per-phase deltas. On HIP, `wait`/`root-gpu` is stream-sync only; use
+`op-classes` for GPU time. Baseline numbers and hotspot order:
+[`PERF_BASELINE.md`](PERF_BASELINE.md).
+
+```bash
+rocprofv3 --hip-trace --kernel-trace --stats -o /tmp/h3-prof -- \
+  ./h3 --profile -d "$MODEL" -p "..." --width 512 --height 512 \
+  --frames 22 --steps 2 --layers 35 --reuse 1 -o /tmp/prof.mp4
+```
 
 Port plan: [`AMD_HIP_PORT_PLAN.md`](AMD_HIP_PORT_PLAN.md)

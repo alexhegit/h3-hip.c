@@ -57,7 +57,7 @@ static void usage(const char *program) {
         "      --frames-dir PATH  Write generated frames as PPM files\n"
         "      --show             Display a frame after every denoising step (M5)\n"
         "      --zoom N           Terminal image zoom (default: 2 for Retina)\n"
-        "      --profile          Print per-phase Metal timing and allocation data\n"
+        "      --profile          Print per-phase GPU timing and allocation data\n"
         "      --info             Inspect model/device without mapping weights\n"
         "  -h, --help             Show this help\n",
         program, program, program);
