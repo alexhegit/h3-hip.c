@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -166,6 +167,24 @@ static void cleanup(vae_context *vae) {
     memset(vae, 0, sizeof(*vae));
 }
 
+typedef struct {
+    vae_context *vae;
+    char name[160];
+    uint64_t rows;
+    uint64_t columns;
+    h3_gpu_tensor **dst;
+    char error[256];
+    int ok;
+} vae_f2_job;
+
+static void *vae_f2_worker(void *arg) {
+    vae_f2_job *job = (vae_f2_job *)arg;
+    *job->dst = f2(job->vae, job->name, job->rows, job->columns, job->error,
+                   sizeof(job->error));
+    job->ok = *job->dst != NULL;
+    return NULL;
+}
+
 static int load_block(vae_context *vae, int index, char *error,
                       size_t error_size) {
     vae_block *block = &vae->blocks[index];
@@ -176,25 +195,68 @@ static int load_block(vae_context *vae, int index, char *error,
     block->field = f1(vae, name, width, error, error_size);                     \
     if (!block->field) return 0;                                                \
 } while (0)
-#define F2(field, suffix, rows, columns) do {                                   \
-    snprintf(name, sizeof(name), "%s%s", prefix, suffix);                    \
-    block->field = f2(vae, name, rows, columns, error, error_size);             \
-    if (!block->field) return 0;                                                \
-} while (0)
     F1(norm1, "norm1.weight", HIDDEN);
-    F2(qkv_w, "attn.to_qkv.weight", INNER * 3, HIDDEN);
     F1(qkv_b, "attn.to_qkv.bias", INNER * 3);
-    F2(out_w, "attn.to_out.weight", HIDDEN, INNER);
     F1(out_b, "attn.to_out.bias", HIDDEN);
     F1(scale1, "scale1", HIDDEN);
     F1(norm2, "norm2.weight", HIDDEN);
-    F2(w1, "ff.w1.weight", FFN * 2, HIDDEN);
     F1(w1_b, "ff.w1.bias", FFN * 2);
-    F2(w2, "ff.w2.weight", HIDDEN, FFN);
     F1(w2_b, "ff.w2.bias", HIDDEN);
     F1(scale2, "scale2", HIDDEN);
 #undef F1
-#undef F2
+
+    vae_f2_job jobs[4];
+    memset(jobs, 0, sizeof(jobs));
+    snprintf(jobs[0].name, sizeof(jobs[0].name), "%s%s", prefix,
+             "attn.to_qkv.weight");
+    jobs[0].vae = vae;
+    jobs[0].rows = INNER * 3;
+    jobs[0].columns = HIDDEN;
+    jobs[0].dst = &block->qkv_w;
+    snprintf(jobs[1].name, sizeof(jobs[1].name), "%s%s", prefix,
+             "attn.to_out.weight");
+    jobs[1].vae = vae;
+    jobs[1].rows = HIDDEN;
+    jobs[1].columns = INNER;
+    jobs[1].dst = &block->out_w;
+    snprintf(jobs[2].name, sizeof(jobs[2].name), "%s%s", prefix,
+             "ff.w1.weight");
+    jobs[2].vae = vae;
+    jobs[2].rows = FFN * 2;
+    jobs[2].columns = HIDDEN;
+    jobs[2].dst = &block->w1;
+    snprintf(jobs[3].name, sizeof(jobs[3].name), "%s%s", prefix,
+             "ff.w2.weight");
+    jobs[3].vae = vae;
+    jobs[3].rows = HIDDEN;
+    jobs[3].columns = FFN;
+    jobs[3].dst = &block->w2;
+
+    if (getenv("H3_VAE_LOAD_SERIAL")) {
+        for (unsigned i = 0; i < 4; i++) {
+            vae_f2_worker(&jobs[i]);
+            if (!jobs[i].ok) {
+                fail(error, error_size, "%s", jobs[i].error);
+                return 0;
+            }
+        }
+        return 1;
+    }
+
+    pthread_t threads[4];
+    int started[4] = {0, 0, 0, 0};
+    for (unsigned i = 0; i < 4; i++) {
+        started[i] =
+            pthread_create(&threads[i], NULL, vae_f2_worker, &jobs[i]) == 0;
+        if (!started[i]) vae_f2_worker(&jobs[i]);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        if (started[i]) pthread_join(threads[i], NULL);
+        if (!jobs[i].ok) {
+            fail(error, error_size, "%s", jobs[i].error);
+            return 0;
+        }
+    }
     return 1;
 }
 

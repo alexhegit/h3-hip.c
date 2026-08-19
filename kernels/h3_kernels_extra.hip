@@ -491,12 +491,30 @@ __global__ void h3_linear_f32_r64_kernel(const float *input, const float *weight
     for (int i = 0; i < 4; i++) {
         uint32_t row = block_row + ty * 4u + (uint32_t)i;
         if (row < args.rows) {
-            for (int j = 0; j < 4; j++) {
-                uint32_t column = block_col + tx * 4u + (uint32_t)j;
-                if (column < args.output_dim) {
-                    float value = acc[i][j];
-                    if (args.has_bias) value += bias[column];
-                    output[(size_t)row * args.output_dim + column] = value;
+            uint32_t column0 = block_col + tx * 4u;
+            if (column0 + 3u < args.output_dim && (column0 % 4u) == 0u) {
+                float4 out;
+                out.x = acc[i][0];
+                out.y = acc[i][1];
+                out.z = acc[i][2];
+                out.w = acc[i][3];
+                if (args.has_bias) {
+                    float4 b = *reinterpret_cast<const float4 *>(bias + column0);
+                    out.x += b.x;
+                    out.y += b.y;
+                    out.z += b.z;
+                    out.w += b.w;
+                }
+                *reinterpret_cast<float4 *>(
+                    output + (size_t)row * args.output_dim + column0) = out;
+            } else {
+                for (int j = 0; j < 4; j++) {
+                    uint32_t column = column0 + (uint32_t)j;
+                    if (column < args.output_dim) {
+                        float value = acc[i][j];
+                        if (args.has_bias) value += bias[column];
+                        output[(size_t)row * args.output_dim + column] = value;
+                    }
                 }
             }
         }
@@ -1145,7 +1163,7 @@ extern "C" int h3_launch_gqa_causal_bf16(const uint16_t *query,
 __global__ void h3_quantize_bf16_int8_rows_kernel(
     const uint16_t *input, int8_t *output, float *scales,
     h3_int8_quant_args args) {
-    __shared__ float reductions[256];
+    __shared__ float warp_max[16];
     uint32_t row = blockIdx.x;
     uint32_t tid = threadIdx.x;
     uint32_t threads = blockDim.x;
@@ -1157,28 +1175,69 @@ __global__ void h3_quantize_bf16_int8_rows_kernel(
         return;
     }
     float local_max = 0.0f;
-    for (uint32_t column = tid; column < args.columns; column += threads) {
-        local_max = fmaxf(local_max,
-                          fabsf(h3_bf16_to_f32(input[base + column])));
-    }
-    reductions[tid] = local_max;
-    __syncthreads();
-    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
-        if (tid < stride) {
-            reductions[tid] = fmaxf(reductions[tid], reductions[tid + stride]);
+    if ((args.columns & 3u) == 0u) {
+        /* Four BF16 values per iteration (uint2 = 4×u16). */
+        for (uint32_t column = tid * 4u; column < args.columns;
+             column += threads * 4u) {
+            uint2 packed =
+                *reinterpret_cast<const uint2 *>(input + base + column);
+            uint16_t a0 = (uint16_t)(packed.x & 0xffffu);
+            uint16_t a1 = (uint16_t)(packed.x >> 16);
+            uint16_t a2 = (uint16_t)(packed.y & 0xffffu);
+            uint16_t a3 = (uint16_t)(packed.y >> 16);
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a0)));
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a1)));
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a2)));
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a3)));
         }
-        __syncthreads();
+    } else {
+        for (uint32_t column = tid; column < args.columns; column += threads) {
+            local_max = fmaxf(local_max,
+                              fabsf(h3_bf16_to_f32(input[base + column])));
+        }
     }
-    float clipped_max = reductions[0] * args.clip;
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        local_max = fmaxf(local_max, __shfl_xor(local_max, offset));
+    if ((tid & 31u) == 0u) warp_max[tid >> 5] = local_max;
+    __syncthreads();
+    if (tid < 16u) {
+        float value = (tid < (threads >> 5)) ? warp_max[tid] : 0.0f;
+#pragma unroll
+        for (int offset = 8; offset > 0; offset >>= 1)
+            value = fmaxf(value, __shfl_xor(value, offset));
+        if (tid == 0) warp_max[0] = value;
+    }
+    __syncthreads();
+    float clipped_max = warp_max[0] * args.clip;
     float scale = clipped_max > 0.0f ? clipped_max / 127.0f : 1.0f / 127.0f;
     float inverse = clipped_max > 0.0f ? 127.0f / clipped_max : 127.0f;
     if (tid == 0) scales[row] = scale;
-    for (uint32_t column = tid; column < args.columns; column += threads) {
-        int quantized =
-            (int)rintf(h3_bf16_to_f32(input[base + column]) * inverse);
-        if (quantized > 127) quantized = 127;
-        if (quantized < -127) quantized = -127;
-        output[base + column] = (int8_t)quantized;
+    if ((args.columns & 3u) == 0u) {
+        for (uint32_t column = tid * 4u; column < args.columns;
+             column += threads * 4u) {
+            uint2 packed =
+                *reinterpret_cast<const uint2 *>(input + base + column);
+            uint16_t vals[4] = {
+                (uint16_t)(packed.x & 0xffffu), (uint16_t)(packed.x >> 16),
+                (uint16_t)(packed.y & 0xffffu), (uint16_t)(packed.y >> 16)};
+#pragma unroll
+            for (int i = 0; i < 4; i++) {
+                int quantized =
+                    (int)rintf(h3_bf16_to_f32(vals[i]) * inverse);
+                if (quantized > 127) quantized = 127;
+                if (quantized < -127) quantized = -127;
+                output[base + column + (uint32_t)i] = (int8_t)quantized;
+            }
+        }
+    } else {
+        for (uint32_t column = tid; column < args.columns; column += threads) {
+            int quantized =
+                (int)rintf(h3_bf16_to_f32(input[base + column]) * inverse);
+            if (quantized > 127) quantized = 127;
+            if (quantized < -127) quantized = -127;
+            output[base + column] = (int8_t)quantized;
+        }
     }
 }
 
@@ -1188,7 +1247,11 @@ extern "C" int h3_launch_quantize_bf16_int8_rows(
     hipStream_t stream) {
     h3_int8_quant_args host_args = *args;
     void *kernel_args[] = {&input, &output, &scales, &host_args};
-    dim3 block(256, 1, 1);
+    /* 512 threads when wide rows (DiT FC / QKV); else 256. */
+    uint32_t block_threads =
+        host_args.columns >= 4096u && (host_args.columns % 4u) == 0u ? 512u
+                                                                     : 256u;
+    dim3 block(block_threads, 1, 1);
     dim3 grid(dispatch_rows, 1, 1);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_quantize_bf16_int8_rows_kernel),
@@ -1513,13 +1576,31 @@ h3_linear_int8_r64_kernel(const int8_t *input, const int8_t *weight,
     for (int i = 0; i < 4; i++) {
         uint32_t row = block_row + ty * 4u + (uint32_t)i;
         if (row >= args.rows) continue;
+        uint32_t column0 = block_col + tx * 4u;
+        if (column0 + 3u < args.output_dim) {
+            float sa = scale_a[ty * 4u + (uint32_t)i];
+            uint16_t o0 = h3_f32_to_bf16((float)acc[i][0] * sa *
+                                         scale_b[tx * 4u + 0u]);
+            uint16_t o1 = h3_f32_to_bf16((float)acc[i][1] * sa *
+                                         scale_b[tx * 4u + 1u]);
+            uint16_t o2 = h3_f32_to_bf16((float)acc[i][2] * sa *
+                                         scale_b[tx * 4u + 2u]);
+            uint16_t o3 = h3_f32_to_bf16((float)acc[i][3] * sa *
+                                         scale_b[tx * 4u + 3u]);
+            uint2 packed;
+            packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+            packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+            *reinterpret_cast<uint2 *>(output + (size_t)row * args.output_dim +
+                                       column0) = packed;
+        } else {
 #pragma unroll
-        for (int j = 0; j < 4; j++) {
-            uint32_t column = block_col + tx * 4u + (uint32_t)j;
-            if (column >= args.output_dim) continue;
-            float value = (float)acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
-                          scale_b[tx * 4u + (uint32_t)j];
-            output[row * args.output_dim + column] = h3_f32_to_bf16(value);
+            for (int j = 0; j < 4; j++) {
+                uint32_t column = column0 + (uint32_t)j;
+                if (column >= args.output_dim) continue;
+                float value = (float)acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
+                              scale_b[tx * 4u + (uint32_t)j];
+                output[row * args.output_dim + column] = h3_f32_to_bf16(value);
+            }
         }
     }
 }
@@ -1605,16 +1686,35 @@ h3_fc1_swiglu_int8_r64_kernel(const int8_t *input, const int8_t *weight,
     for (int i = 0; i < 4; i++) {
         uint32_t row = block_row + ty * 4u + (uint32_t)i;
         if (row >= args.rows) continue;
+        uint32_t column0 = block_col + tx * 4u;
+        if (column0 + 3u < hidden_dim) {
+            float sa = scale_a[ty * 4u + (uint32_t)i];
+            uint16_t outs[4];
 #pragma unroll
-        for (int j = 0; j < 4; j++) {
-            uint32_t column = block_col + tx * 4u + (uint32_t)j;
-            if (column >= hidden_dim) continue;
-            float gate = (float)gate_acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
-                         gate_scale[tx * 4u + (uint32_t)j];
-            float up = (float)up_acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
-                       up_scale[tx * 4u + (uint32_t)j];
-            output[row * hidden_dim + column] =
-                h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
+            for (int j = 0; j < 4; j++) {
+                float gate =
+                    (float)gate_acc[i][j] * sa * gate_scale[tx * 4u + (uint32_t)j];
+                float up =
+                    (float)up_acc[i][j] * sa * up_scale[tx * 4u + (uint32_t)j];
+                outs[j] = h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
+            }
+            uint2 packed;
+            packed.x = (uint32_t)outs[0] | ((uint32_t)outs[1] << 16);
+            packed.y = (uint32_t)outs[2] | ((uint32_t)outs[3] << 16);
+            *reinterpret_cast<uint2 *>(output + (size_t)row * hidden_dim +
+                                       column0) = packed;
+        } else {
+#pragma unroll
+            for (int j = 0; j < 4; j++) {
+                uint32_t column = column0 + (uint32_t)j;
+                if (column >= hidden_dim) continue;
+                float gate = (float)gate_acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
+                             gate_scale[tx * 4u + (uint32_t)j];
+                float up = (float)up_acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
+                           up_scale[tx * 4u + (uint32_t)j];
+                output[row * hidden_dim + column] =
+                    h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
+            }
         }
     }
 }

@@ -1374,7 +1374,7 @@ h3_sdpa_f32_wave_d64_kernel(const float *query, const float *key,
     uint32_t stride = args.kv_head_major ? 64u : args.heads * 64u;
     uint32_t k_base = args.kv_head_major ? head * args.sequence * 64u
                                          : head * 64u;
-    /* Four-key online softmax on VAE d64 (2-key helped; try 4). */
+    /* Four-key online softmax on VAE d64 (2-key helped; 8-key flat). */
     uint32_t k_pos = 0;
     for (; k_pos + 3u < args.sequence; k_pos += 4u) {
         float score[4];
@@ -1445,6 +1445,107 @@ h3_sdpa_f32_wave_d64_kernel(const float *query, const float *key,
     float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
     output[q_base + lane] = acc0 * inv;
     output[q_base + 32u + lane] = acc1 * inv;
+}
+
+/* Two queries share each K/V load (d64 VAE). Opt out: H3_SDPA_D64_Q1=1. */
+__global__ void __launch_bounds__(32)
+h3_sdpa_f32_wave_d64_q2_kernel(const float *query, const float *key,
+                               const float *value, float *output,
+                               h3_sdpa_args args) {
+    uint32_t q_pos = blockIdx.x * 2u;
+    uint32_t head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    int q1_live = (q_pos + 1u) < args.sequence;
+    uint32_t q_base0 = (q_pos * args.heads + head) * 64u;
+    uint32_t q_base1 = q_base0 + args.heads * 64u;
+    float a0 = query[q_base0 + lane] * args.scale;
+    float a1 = query[q_base0 + 32u + lane] * args.scale;
+    float b0 = 0.0f, b1 = 0.0f;
+    if (q1_live) {
+        b0 = query[q_base1 + lane] * args.scale;
+        b1 = query[q_base1 + 32u + lane] * args.scale;
+    }
+    float acc_a0 = 0.0f, acc_a1 = 0.0f, acc_b0 = 0.0f, acc_b1 = 0.0f;
+    float max_a = -1e30f, max_b = -1e30f, sum_a = 0.0f, sum_b = 0.0f;
+    uint32_t stride = args.kv_head_major ? 64u : args.heads * 64u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 64u
+                                         : head * 64u;
+    uint32_t k_pos = 0;
+    for (; k_pos + 3u < args.sequence; k_pos += 4u) {
+        float v0s[4], v1s[4], sa[4], sb[4];
+#pragma unroll
+        for (int t = 0; t < 4; t++) {
+            uint32_t base = k_base + (uint32_t)t * stride;
+            float k0 = key[base + lane];
+            float k1v = key[base + 32u + lane];
+            v0s[t] = value[base + lane];
+            v1s[t] = value[base + 32u + lane];
+            sa[t] = h3_warp_reduce_sum(a0 * k0 + a1 * k1v);
+            sb[t] = q1_live ? h3_warp_reduce_sum(b0 * k0 + b1 * k1v) : 0.0f;
+        }
+        float new_a = fmaxf(max_a, fmaxf(fmaxf(sa[0], sa[1]),
+                                         fmaxf(sa[2], sa[3])));
+        float alpha_a = h3_fast_exp(max_a - new_a);
+        float pa0 = h3_fast_exp(sa[0] - new_a);
+        float pa1 = h3_fast_exp(sa[1] - new_a);
+        float pa2 = h3_fast_exp(sa[2] - new_a);
+        float pa3 = h3_fast_exp(sa[3] - new_a);
+        acc_a0 = fmaf(pa0, v0s[0], fmaf(pa1, v0s[1],
+                     fmaf(pa2, v0s[2], fmaf(pa3, v0s[3], acc_a0 * alpha_a))));
+        acc_a1 = fmaf(pa0, v1s[0], fmaf(pa1, v1s[1],
+                     fmaf(pa2, v1s[2], fmaf(pa3, v1s[3], acc_a1 * alpha_a))));
+        sum_a = fmaf(sum_a, alpha_a, pa0 + pa1 + pa2 + pa3);
+        max_a = new_a;
+        if (q1_live) {
+            float new_b = fmaxf(max_b, fmaxf(fmaxf(sb[0], sb[1]),
+                                             fmaxf(sb[2], sb[3])));
+            float alpha_b = h3_fast_exp(max_b - new_b);
+            float pb0 = h3_fast_exp(sb[0] - new_b);
+            float pb1 = h3_fast_exp(sb[1] - new_b);
+            float pb2 = h3_fast_exp(sb[2] - new_b);
+            float pb3 = h3_fast_exp(sb[3] - new_b);
+            acc_b0 = fmaf(pb0, v0s[0], fmaf(pb1, v0s[1],
+                         fmaf(pb2, v0s[2], fmaf(pb3, v0s[3], acc_b0 * alpha_b))));
+            acc_b1 = fmaf(pb0, v1s[0], fmaf(pb1, v1s[1],
+                         fmaf(pb2, v1s[2], fmaf(pb3, v1s[3], acc_b1 * alpha_b))));
+            sum_b = fmaf(sum_b, alpha_b, pb0 + pb1 + pb2 + pb3);
+            max_b = new_b;
+        }
+        k_base += 4u * stride;
+    }
+    for (; k_pos < args.sequence; k_pos++) {
+        float k0 = key[k_base + lane];
+        float k1v = key[k_base + 32u + lane];
+        float v0 = value[k_base + lane];
+        float v1 = value[k_base + 32u + lane];
+        float score_a = h3_warp_reduce_sum(a0 * k0 + a1 * k1v);
+        float new_a = fmaxf(max_a, score_a);
+        float alpha_a = h3_fast_exp(max_a - new_a);
+        float pa = h3_fast_exp(score_a - new_a);
+        acc_a0 = fmaf(pa, v0, acc_a0 * alpha_a);
+        acc_a1 = fmaf(pa, v1, acc_a1 * alpha_a);
+        sum_a = fmaf(sum_a, alpha_a, pa);
+        max_a = new_a;
+        if (q1_live) {
+            float score_b = h3_warp_reduce_sum(b0 * k0 + b1 * k1v);
+            float new_b = fmaxf(max_b, score_b);
+            float alpha_b = h3_fast_exp(max_b - new_b);
+            float pb = h3_fast_exp(score_b - new_b);
+            acc_b0 = fmaf(pb, v0, acc_b0 * alpha_b);
+            acc_b1 = fmaf(pb, v1, acc_b1 * alpha_b);
+            sum_b = fmaf(sum_b, alpha_b, pb);
+            max_b = new_b;
+        }
+        k_base += stride;
+    }
+    float inv_a = sum_a > 0.0f ? 1.0f / sum_a : 0.0f;
+    output[q_base0 + lane] = acc_a0 * inv_a;
+    output[q_base0 + 32u + lane] = acc_a1 * inv_a;
+    if (q1_live) {
+        float inv_b = sum_b > 0.0f ? 1.0f / sum_b : 0.0f;
+        output[q_base1 + lane] = acc_b0 * inv_b;
+        output[q_base1 + 32u + lane] = acc_b1 * inv_b;
+    }
 }
 
 __global__ void __launch_bounds__(32)
@@ -2410,6 +2511,13 @@ extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
             host_args.head_dim == 64 ?
             reinterpret_cast<const void *>(h3_sdpa_f32_wave_d64_kernel) :
             reinterpret_cast<const void *>(h3_sdpa_f32_wave_kernel);
+        if (host_args.head_dim == 64 &&
+            !(getenv("H3_SDPA_D64_Q1") &&
+              strcmp(getenv("H3_SDPA_D64_Q1"), "0") != 0)) {
+            grid = dim3((host_args.sequence + 1u) / 2u, host_args.heads, 1);
+            kernel = reinterpret_cast<const void *>(
+                h3_sdpa_f32_wave_d64_q2_kernel);
+        }
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
                                sizeof(kernel_args), stream) == hipSuccess;
     }
