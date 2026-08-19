@@ -5,9 +5,17 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 __device__ __host__ inline float h3_bf16_to_f32(uint16_t value) {
-    return __bfloat162float(*reinterpret_cast<__hip_bfloat16 *>(&value));
+#if defined(__HIP_DEVICE_COMPILE__)
+    return __uint_as_float((uint32_t)value << 16);
+#else
+    uint32_t bits = (uint32_t)value << 16;
+    float out;
+    memcpy(&out, &bits, sizeof(out));
+    return out;
+#endif
 }
 
 __device__ __host__ inline uint16_t h3_f32_to_bf16(float value) {
@@ -413,9 +421,9 @@ __global__ void h3_linear_f32_kernel(const float *input, const float *weight,
     output[row * args.output_dim + column] = sum;
 }
 
-template <int BK>
+template <int BK, int LDS_K>
 __device__ inline void h3_load_f32_tile_64xk(
-    float dst[64][BK], const float *src, uint32_t block_index, uint32_t k0,
+    float dst[64][LDS_K], const float *src, uint32_t block_index, uint32_t k0,
     uint32_t bound, uint32_t stride, uint32_t tid) {
     uint32_t local_row = tid / 4u;
     uint32_t index = block_index + local_row;
@@ -423,18 +431,14 @@ __device__ inline void h3_load_f32_tile_64xk(
 #pragma unroll
     for (int half = 0; half < BK / 16; half++) {
         uint32_t local_k = (tid % 4u) * 4u + (uint32_t)half * 16u;
-        float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
-        if (index < bound) {
-            const float *ptr = src + (size_t)index * stride + k0 + local_k;
-            v0 = ptr[0];
-            v1 = ptr[1];
-            v2 = ptr[2];
-            v3 = ptr[3];
-        }
-        dst[local_row][local_k + 0u] = v0;
-        dst[local_row][local_k + 1u] = v1;
-        dst[local_row][local_k + 2u] = v2;
-        dst[local_row][local_k + 3u] = v3;
+        float4 packed = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        if (index < bound)
+            packed = *reinterpret_cast<const float4 *>(
+                src + (size_t)index * stride + k0 + local_k);
+        dst[local_row][local_k + 0u] = packed.x;
+        dst[local_row][local_k + 1u] = packed.y;
+        dst[local_row][local_k + 2u] = packed.z;
+        dst[local_row][local_k + 3u] = packed.w;
     }
 }
 
@@ -443,8 +447,10 @@ __global__ void h3_linear_f32_r64_kernel(const float *input, const float *weight
                                          const float *bias, float *output,
                                          h3_linear_args args) {
     constexpr int BM = 64, BN = 64;
-    __shared__ float As[BM][BK];
-    __shared__ float Bs[BN][BK];
+    /* +1 pads LDS rows so As[r][k] and As[r+1][k] avoid 32-bank collisions
+     * when BK is a multiple of 32 (default BK=32). */
+    __shared__ float As[BM][BK + 1];
+    __shared__ float Bs[BN][BK + 1];
     uint32_t block_row = blockIdx.y * (uint32_t)BM;
     uint32_t block_col = blockIdx.x * (uint32_t)BN;
     uint32_t tx = threadIdx.x;
@@ -459,10 +465,11 @@ __global__ void h3_linear_f32_r64_kernel(const float *input, const float *weight
 #pragma unroll 1
     for (uint32_t kt = 0; kt < k_tiles; kt++) {
         uint32_t k0 = kt * (uint32_t)BK;
-        h3_load_f32_tile_64xk<BK>(As, input, block_row, k0, args.rows,
-                                  args.input_dim, tid);
-        h3_load_f32_tile_64xk<BK>(Bs, weight, block_col, k0, args.output_dim,
-                                  args.input_dim, tid);
+        h3_load_f32_tile_64xk<BK, BK + 1>(As, input, block_row, k0, args.rows,
+                                           args.input_dim, tid);
+        h3_load_f32_tile_64xk<BK, BK + 1>(Bs, weight, block_col, k0,
+                                           args.output_dim, args.input_dim,
+                                           tid);
         __syncthreads();
 #pragma unroll
         for (int k = 0; k < BK; k++) {
@@ -720,6 +727,7 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
         dim3 block(16, 16, 1);
         dim3 grid((host_args.output_dim + 63u) / 64u,
                   (host_args.rows + 63u) / 64u, 1);
+        /* BK=32 beats BK=64 on gfx1151 VAE shapes; BK=16 for odd alignments. */
         const void *kernel = host_args.input_dim % 32u == 0 ?
             reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<32>) :
             reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<16>);
@@ -1416,27 +1424,42 @@ __device__ inline int32_t h3_i8dot4(int32_t a, int32_t b, int32_t acc) {
 #endif
 }
 
-__device__ inline void h3_load_i8_tile_64x32(
-    int8_t dst[64][32], const int8_t *src, uint32_t block_index, uint32_t k0,
+template <int LDS_K, int BK>
+__device__ inline void h3_load_i8_tile_64xk(
+    int8_t dst[64][LDS_K], const int8_t *src, uint32_t block_index, uint32_t k0,
     uint32_t bound, uint32_t stride, uint32_t tid) {
     uint32_t local_row = tid / 4u;
-    uint32_t local_k = (tid % 4u) * 8u;
     uint32_t index = block_index + local_row;
-    int64_t packed = 0;
-    if (index < bound)
-        packed = *reinterpret_cast<const int64_t *>(
-            src + (size_t)index * stride + k0 + local_k);
-    *reinterpret_cast<int64_t *>(&dst[local_row][local_k]) = packed;
+#pragma unroll
+    for (int chunk = 0; chunk < BK / 32; chunk++) {
+        uint32_t local_k = (tid % 4u) * 8u + (uint32_t)chunk * 32u;
+        int64_t packed = 0;
+        if (index < bound)
+            packed = *reinterpret_cast<const int64_t *>(
+                src + (size_t)index * stride + k0 + local_k);
+        *reinterpret_cast<int64_t *>(&dst[local_row][local_k]) = packed;
+    }
 }
 
-template <int K_CONST>
+template <int LDS_K>
+__device__ inline void h3_load_i8_tile_64x32(
+    int8_t dst[64][LDS_K], const int8_t *src, uint32_t block_index, uint32_t k0,
+    uint32_t bound, uint32_t stride, uint32_t tid) {
+    h3_load_i8_tile_64xk<LDS_K, 32>(dst, src, block_index, k0, bound, stride,
+                                     tid);
+}
+
+template <int K_CONST, int BK>
 __global__ void __launch_bounds__(256)
 h3_linear_int8_r64_kernel(const int8_t *input, const int8_t *weight,
                           const float *input_scales, const float *weight_scales,
                           uint16_t *output, h3_linear_args args) {
-    constexpr int BM = 64, BN = 64, BK = 32;
-    __shared__ int8_t As[BM][BK];
-    __shared__ int8_t Bs[BN][BK];
+    constexpr int BM = 64, BN = 64;
+    static_assert(BK == 32 || BK == 64 || BK == 128, "INT8 BK 32/64/128");
+    /* +4 pads each LDS row so int32 column reads avoid 32-bank collisions. */
+    constexpr int LDS_K = BK + 4;
+    __shared__ int8_t As[BM][LDS_K];
+    __shared__ int8_t Bs[BN][LDS_K];
     __shared__ float scale_a[BM];
     __shared__ float scale_b[BN];
     uint32_t block_row = blockIdx.y * (uint32_t)BM;
@@ -1462,10 +1485,10 @@ h3_linear_int8_r64_kernel(const int8_t *input, const int8_t *weight,
         for (int j = 0; j < 4; j++) acc[i][j] = 0;
     for (uint32_t kt = 0; kt < k_tiles; kt++) {
         uint32_t k0 = kt * (uint32_t)BK;
-        h3_load_i8_tile_64x32(As, input, block_row, k0, args.rows, input_dim,
-                              tid);
-        h3_load_i8_tile_64x32(Bs, weight, block_col, k0, args.output_dim,
-                              input_dim, tid);
+        h3_load_i8_tile_64xk<LDS_K, BK>(As, input, block_row, k0, args.rows,
+                                         input_dim, tid);
+        h3_load_i8_tile_64xk<LDS_K, BK>(Bs, weight, block_col, k0,
+                                         args.output_dim, input_dim, tid);
         __syncthreads();
 #pragma unroll
         for (int k = 0; k < BK; k += 4) {
@@ -1501,16 +1524,18 @@ h3_linear_int8_r64_kernel(const int8_t *input, const int8_t *weight,
     }
 }
 
-template <int K_CONST>
+template <int K_CONST, int BK>
 __global__ void __launch_bounds__(256)
 h3_fc1_swiglu_int8_r64_kernel(const int8_t *input, const int8_t *weight,
                               const float *input_scales,
                               const float *weight_scales, uint16_t *output,
                               h3_linear_args args) {
-    constexpr int BM = 64, BN = 64, BK = 32;
-    __shared__ int8_t As[BM][BK];
-    __shared__ int8_t gate_bs[BN][BK];
-    __shared__ int8_t up_bs[BN][BK];
+    constexpr int BM = 64, BN = 64;
+    static_assert(BK == 32 || BK == 64 || BK == 128, "INT8 BK 32/64/128");
+    constexpr int LDS_K = BK + 4;
+    __shared__ int8_t As[BM][LDS_K];
+    __shared__ int8_t gate_bs[BN][LDS_K];
+    __shared__ int8_t up_bs[BN][LDS_K];
     __shared__ float scale_a[BM];
     __shared__ float gate_scale[BN];
     __shared__ float up_scale[BN];
@@ -1544,12 +1569,13 @@ h3_fc1_swiglu_int8_r64_kernel(const int8_t *input, const int8_t *weight,
         }
     for (uint32_t kt = 0; kt < k_tiles; kt++) {
         uint32_t k0 = kt * (uint32_t)BK;
-        h3_load_i8_tile_64x32(As, input, block_row, k0, args.rows, input_dim,
-                              tid);
-        h3_load_i8_tile_64x32(gate_bs, weight, block_col, k0, hidden_dim,
-                              input_dim, tid);
-        h3_load_i8_tile_64x32(up_bs, weight + (size_t)hidden_dim * input_dim,
-                              block_col, k0, hidden_dim, input_dim, tid);
+        h3_load_i8_tile_64xk<LDS_K, BK>(As, input, block_row, k0, args.rows,
+                                         input_dim, tid);
+        h3_load_i8_tile_64xk<LDS_K, BK>(gate_bs, weight, block_col, k0,
+                                         hidden_dim, input_dim, tid);
+        h3_load_i8_tile_64xk<LDS_K, BK>(
+            up_bs, weight + (size_t)hidden_dim * input_dim, block_col, k0,
+            hidden_dim, input_dim, tid);
         __syncthreads();
 #pragma unroll
         for (int k = 0; k < BK; k += 4) {
@@ -1601,6 +1627,13 @@ static int h3_launch_linear_int8_r64_dispatch(
         args->input_dim % 32u) {
         return 0;
     }
+    /* Prefer larger BK when K divides evenly. Opt out: H3_INT8_BK32 / BK64. */
+    int force_bk32 = getenv("H3_INT8_BK32") &&
+                     strcmp(getenv("H3_INT8_BK32"), "0") != 0;
+    int force_bk64 = getenv("H3_INT8_BK64") &&
+                     strcmp(getenv("H3_INT8_BK64"), "0") != 0;
+    int use_bk128 = (args->input_dim % 128u) == 0 && !force_bk32 && !force_bk64;
+    int use_bk64 = (args->input_dim % 64u) == 0 && !force_bk32 && !use_bk128;
     h3_linear_args host_args = *args;
     void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
                            &output, &host_args};
@@ -1609,18 +1642,56 @@ static int h3_launch_linear_int8_r64_dispatch(
               (host_args.rows + 63u) / 64u, 1);
     const void *kernel = NULL;
     if (fc1_swiglu) {
-        if (host_args.input_dim == 5376)
+        if (use_bk128) {
+            if (host_args.input_dim == 5376)
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r64_kernel<5376, 128>);
+            else
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r64_kernel<0, 128>);
+        } else if (use_bk64) {
+            if (host_args.input_dim == 5376)
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r64_kernel<5376, 64>);
+            else
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r64_kernel<0, 64>);
+        } else if (host_args.input_dim == 5376) {
             kernel = reinterpret_cast<const void *>(
-                h3_fc1_swiglu_int8_r64_kernel<5376>);
+                h3_fc1_swiglu_int8_r64_kernel<5376, 32>);
+        } else {
+            kernel = reinterpret_cast<const void *>(
+                h3_fc1_swiglu_int8_r64_kernel<0, 32>);
+        }
+    } else if (use_bk128) {
+        if (host_args.input_dim == 14336)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_r64_kernel<14336, 128>);
+        else if (host_args.input_dim == 5376)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_r64_kernel<5376, 128>);
         else
             kernel = reinterpret_cast<const void *>(
-                h3_fc1_swiglu_int8_r64_kernel<0>);
+                h3_linear_int8_r64_kernel<0, 128>);
+    } else if (use_bk64) {
+        if (host_args.input_dim == 14336)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_r64_kernel<14336, 64>);
+        else if (host_args.input_dim == 5376)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_r64_kernel<5376, 64>);
+        else
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_r64_kernel<0, 64>);
     } else if (host_args.input_dim == 14336) {
-        kernel = reinterpret_cast<const void *>(h3_linear_int8_r64_kernel<14336>);
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_r64_kernel<14336, 32>);
     } else if (host_args.input_dim == 5376) {
-        kernel = reinterpret_cast<const void *>(h3_linear_int8_r64_kernel<5376>);
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_r64_kernel<5376, 32>);
     } else {
-        kernel = reinterpret_cast<const void *>(h3_linear_int8_r64_kernel<0>);
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_r64_kernel<0, 32>);
     }
     return hipLaunchKernel(kernel, grid, block, kernel_args,
                            sizeof(kernel_args), stream) == hipSuccess;
@@ -1691,15 +1762,17 @@ extern "C" int h3_launch_fc1_swiglu_int8_nax_r64(
                                               stream, 1);
 }
 
-template <int K_CONST, int GROUP_CONST>
+template <int K_CONST, int GROUP_CONST, int BK>
 __global__ void __launch_bounds__(256)
 h3_linear_int8_grouped_r64_kernel(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output,
     h3_linear_int8_grouped_args args) {
-    constexpr int BM = 64, BN = 64, BK = 32;
-    __shared__ int8_t As[BM][BK];
-    __shared__ int8_t Bs[BN][BK];
+    constexpr int BM = 64, BN = 64;
+    static_assert(BK == 32 || BK == 64 || BK == 128, "INT8 BK 32/64/128");
+    constexpr int LDS_K = BK + 4;
+    __shared__ int8_t As[BM][LDS_K];
+    __shared__ int8_t Bs[BN][LDS_K];
     __shared__ float scale_a[BM];
     __shared__ float scale_b[BN];
     uint32_t block_row = blockIdx.y * (uint32_t)BM;
@@ -1735,10 +1808,10 @@ h3_linear_int8_grouped_r64_kernel(
         uint32_t group_k0 = group * group_size;
         for (uint32_t kt = 0; kt < k_tiles; kt++) {
             uint32_t k0 = group_k0 + kt * (uint32_t)BK;
-            h3_load_i8_tile_64x32(As, input, block_row, k0, args.rows,
-                                  input_dim, tid);
-            h3_load_i8_tile_64x32(Bs, weight, block_col, k0, args.output_dim,
-                                  input_dim, tid);
+            h3_load_i8_tile_64xk<LDS_K, BK>(As, input, block_row, k0, args.rows,
+                                             input_dim, tid);
+            h3_load_i8_tile_64xk<LDS_K, BK>(Bs, weight, block_col, k0,
+                                             args.output_dim, input_dim, tid);
             __syncthreads();
 #pragma unroll
             for (int k = 0; k < BK; k += 4) {
@@ -1792,6 +1865,13 @@ extern "C" int h3_launch_linear_int8_grouped_nax_r64(
         args->input_dim % args->group_size) {
         return 0;
     }
+    int force_bk32 = getenv("H3_INT8_BK32") &&
+                     strcmp(getenv("H3_INT8_BK32"), "0") != 0;
+    int force_bk64 = getenv("H3_INT8_BK64") &&
+                     strcmp(getenv("H3_INT8_BK64"), "0") != 0;
+    int use_bk128 =
+        (args->group_size % 128u) == 0 && !force_bk32 && !force_bk64;
+    int use_bk64 = (args->group_size % 64u) == 0 && !force_bk32 && !use_bk128;
     h3_linear_int8_grouped_args host_args = *args;
     void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
                            &output, &host_args};
@@ -1799,15 +1879,36 @@ extern "C" int h3_launch_linear_int8_grouped_nax_r64(
     dim3 grid((host_args.output_dim + 63u) / 64u,
               (host_args.rows + 63u) / 64u, 1);
     const void *kernel = NULL;
-    if (host_args.input_dim == 14336 && host_args.group_size == 1024)
+    if (use_bk128) {
+        if (host_args.input_dim == 14336 && host_args.group_size == 1024)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_grouped_r64_kernel<14336, 1024, 128>);
+        else if (host_args.group_size == 1024)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_grouped_r64_kernel<0, 1024, 128>);
+        else
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_grouped_r64_kernel<0, 0, 128>);
+    } else if (use_bk64) {
+        if (host_args.input_dim == 14336 && host_args.group_size == 1024)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_grouped_r64_kernel<14336, 1024, 64>);
+        else if (host_args.group_size == 1024)
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_grouped_r64_kernel<0, 1024, 64>);
+        else
+            kernel = reinterpret_cast<const void *>(
+                h3_linear_int8_grouped_r64_kernel<0, 0, 64>);
+    } else if (host_args.input_dim == 14336 && host_args.group_size == 1024) {
         kernel = reinterpret_cast<const void *>(
-            h3_linear_int8_grouped_r64_kernel<14336, 1024>);
-    else if (host_args.group_size == 1024)
+            h3_linear_int8_grouped_r64_kernel<14336, 1024, 32>);
+    } else if (host_args.group_size == 1024) {
         kernel = reinterpret_cast<const void *>(
-            h3_linear_int8_grouped_r64_kernel<0, 1024>);
-    else
+            h3_linear_int8_grouped_r64_kernel<0, 1024, 32>);
+    } else {
         kernel = reinterpret_cast<const void *>(
-            h3_linear_int8_grouped_r64_kernel<0, 0>);
+            h3_linear_int8_grouped_r64_kernel<0, 0, 32>);
+    }
     return hipLaunchKernel(kernel, grid, block, kernel_args,
                            sizeof(kernel_args), stream) == hipSuccess;
 }

@@ -22,7 +22,7 @@ ifeq ($(H3_BACKEND),hip)
 	-I$(ROCM_PATH)/include --offload-arch=$(HIP_ARCH)
   HIPCFLAGS_C := -std=c11 -O3 -DH3_HIP -I. -Ikernels \
 	-I$(ROCM_PATH)/include
-  LDLIBS := -L$(ROCM_PATH)/lib -lamdhip64 -lm
+  LDLIBS := -L$(ROCM_PATH)/lib -lamdhip64 -lm -pthread
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \
 	backends/h3_hip_probe.o backends/h3_device.o \
 	backends/h3_tokenizer.o kernels/h3_kernels.o \

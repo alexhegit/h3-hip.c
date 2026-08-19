@@ -699,22 +699,16 @@ static int quantize_block_mlp(h3_dit *dit, h3_dit_block *block,
     block->fc2_scales = h3_gpu_tensor_new_f32(dit->gpu, HIDDEN);
     int ok = block->fc1_int8 && block->fc1_scales &&
              block->fc2_int8 && block->fc2_scales &&
-             h3_gpu_begin(dit->gpu) &&
              h3_gpu_quantize_weight_int8(
                  dit->gpu, block->fc1_int8, block->fc1_scales, block->fc1,
                  FFN * 2, HIDDEN) &&
              h3_gpu_quantize_weight_int8(
                  dit->gpu, block->fc2_int8, block->fc2_scales, block->fc2,
-                 HIDDEN, FFN) &&
-             h3_gpu_submit(dit->gpu);
+                 HIDDEN, FFN);
     if (!ok) {
         fail(error, error_size, "cannot quantize DiT MLP weights: %s",
              h3_gpu_error(dit->gpu));
         return 0;
-    }
-    if (!dit->keep_bf16_mlp) {
-        free_tensor(&block->fc1);
-        free_tensor(&block->fc2);
     }
     return 1;
 }
@@ -725,17 +719,14 @@ static int quantize_block_qkv(h3_dit *dit, h3_dit_block *block,
         dit->gpu, (size_t)INNER * 3 * HIDDEN);
     block->qkv_scales = h3_gpu_tensor_new_f32(dit->gpu, INNER * 3);
     int ok = block->qkv_int8 && block->qkv_scales &&
-             h3_gpu_begin(dit->gpu) &&
              h3_gpu_quantize_weight_int8(
                  dit->gpu, block->qkv_int8, block->qkv_scales, block->qkv,
-                 INNER * 3, HIDDEN) &&
-             h3_gpu_submit(dit->gpu);
+                 INNER * 3, HIDDEN);
     if (!ok) {
         fail(error, error_size, "cannot quantize DiT QKV weight: %s",
              h3_gpu_error(dit->gpu));
         return 0;
     }
-    if (!dit->keep_bf16_qkv) free_tensor(&block->qkv);
     return 1;
 }
 
@@ -745,18 +736,44 @@ static int quantize_block_attention_out(h3_dit *dit, h3_dit_block *block,
         dit->gpu, (size_t)HIDDEN * INNER);
     block->out_scales = h3_gpu_tensor_new_f32(dit->gpu, HIDDEN);
     int ok = block->out_int8 && block->out_scales &&
-             h3_gpu_begin(dit->gpu) &&
              h3_gpu_quantize_weight_int8(
                  dit->gpu, block->out_int8, block->out_scales, block->out,
-                 HIDDEN, INNER) &&
-             h3_gpu_submit(dit->gpu);
+                 HIDDEN, INNER);
     if (!ok) {
         fail(error, error_size,
              "cannot quantize DiT attention-output weight: %s",
              h3_gpu_error(dit->gpu));
         return 0;
     }
-    if (!dit->keep_bf16_attention_out) free_tensor(&block->out);
+    return 1;
+}
+
+static void free_block_quant_sources(h3_dit *dit, h3_dit_block *block) {
+    if (dit->int8_mlp && !dit->keep_bf16_mlp) {
+        free_tensor(&block->fc1);
+        free_tensor(&block->fc2);
+    }
+    if (dit->int8_qkv && !dit->keep_bf16_qkv)
+        free_tensor(&block->qkv);
+    if (dit->int8_attention_out && !dit->keep_bf16_attention_out)
+        free_tensor(&block->out);
+}
+
+/* Flush a deferred INT8 quantize batch: sync stream, then drop BF16 sources.
+ * Batching lets CPU shard I/O overlap GPU quantize for prior blocks. */
+static int flush_dit_quant_batch(h3_dit *dit, unsigned *pending,
+                                 unsigned *n_pending, int *quant_open,
+                                 char *error, size_t error_size) {
+    if (!*n_pending) return 1;
+    if (*quant_open && !h3_gpu_submit(dit->gpu)) {
+        fail(error, error_size, "cannot submit DiT quantize: %s",
+             h3_gpu_error(dit->gpu));
+        return 0;
+    }
+    *quant_open = 0;
+    for (unsigned i = 0; i < *n_pending; i++)
+        free_block_quant_sources(dit, &dit->blocks[pending[i]]);
+    *n_pending = 0;
     return 1;
 }
 
@@ -1240,6 +1257,17 @@ static void configure_gate_ranked_blocks(h3_dit *dit) {
 
 static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                      char *error, size_t error_size) {
+    /* Default batch=4: ~4GB BF16 peak, overlaps I/O with prior quantize.
+     * H3_DIT_QUANT_BATCH=1 restores per-block sync. Cap at 8 for RAM. */
+    unsigned quant_batch = 4;
+    const char *batch_env = getenv("H3_DIT_QUANT_BATCH");
+    if (batch_env && *batch_env) {
+        int parsed = atoi(batch_env);
+        if (parsed >= 1 && parsed <= 8) quant_batch = (unsigned)parsed;
+    }
+    unsigned pending[8];
+    unsigned n_pending = 0;
+    int quant_open = 0;
     for (unsigned index = 0; index < H3_DIT_BLOCKS; index++) {
         if (!dit->block_active[index]) {
             report(progress, opaque, "load transformer core", (int)index + 1,
@@ -1256,19 +1284,41 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
         } else {
             if (!load_block(dit, &dit->blocks[index], prefix,
                             error, error_size)) return 0;
-            if (dit->int8_mlp &&
-                !quantize_block_mlp(dit, &dit->blocks[index],
-                                    error, error_size)) return 0;
-            if (dit->int8_qkv &&
-                !quantize_block_qkv(dit, &dit->blocks[index],
-                                    error, error_size)) return 0;
-            if (dit->int8_attention_out &&
-                !quantize_block_attention_out(
-                    dit, &dit->blocks[index], error, error_size)) return 0;
+            int need_quant = dit->int8_mlp || dit->int8_qkv ||
+                             dit->int8_attention_out;
+            if (need_quant) {
+                if (!quant_open) {
+                    if (!h3_gpu_begin(dit->gpu)) {
+                        fail(error, error_size,
+                             "cannot begin DiT quantize: %s",
+                             h3_gpu_error(dit->gpu));
+                        return 0;
+                    }
+                    quant_open = 1;
+                }
+                if (dit->int8_mlp &&
+                    !quantize_block_mlp(dit, &dit->blocks[index],
+                                        error, error_size)) return 0;
+                if (dit->int8_qkv &&
+                    !quantize_block_qkv(dit, &dit->blocks[index],
+                                        error, error_size)) return 0;
+                if (dit->int8_attention_out &&
+                    !quantize_block_attention_out(
+                        dit, &dit->blocks[index], error, error_size))
+                    return 0;
+                pending[n_pending++] = index;
+                if (n_pending >= quant_batch &&
+                    !flush_dit_quant_batch(dit, pending, &n_pending,
+                                           &quant_open, error, error_size))
+                    return 0;
+            }
         }
         report(progress, opaque, "load transformer core", (int)index + 1,
                H3_DIT_BLOCKS);
     }
+    if (!flush_dit_quant_batch(dit, pending, &n_pending, &quant_open,
+                               error, error_size))
+        return 0;
     if (dit->ssd_streaming) {
         if (!allocate_stream_slot(dit, &dit->stream_slots[0],
                                   error, error_size) ||
