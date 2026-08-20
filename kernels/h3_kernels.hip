@@ -1148,6 +1148,91 @@ h3_sdpa_bf16_wave_d128_kernel(const uint16_t *query, const uint16_t *key,
         h3_f32_to_bf16(acc3 * inv);
 }
 
+/* Two queries share each K/V load (d128 DiT). Not 2-key/4-key unroll.
+ * Opt out: H3_SDPA_D128_Q1=1. */
+__global__ void __launch_bounds__(32)
+h3_sdpa_bf16_wave_d128_q2_kernel(const uint16_t *query, const uint16_t *key,
+                                 const uint16_t *value, uint16_t *output,
+                                 h3_sdpa_args args) {
+    uint32_t q_pos = blockIdx.x * 2u;
+    uint32_t head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    int q1_live = (q_pos + 1u) < args.sequence;
+    uint32_t q_base0 = (q_pos * args.heads + head) * 128u;
+    uint32_t q_base1 = q_base0 + args.heads * 128u;
+    float a0 = h3_bf16_to_f32(query[q_base0 + lane]) * args.scale;
+    float a1 = h3_bf16_to_f32(query[q_base0 + 32u + lane]) * args.scale;
+    float a2 = h3_bf16_to_f32(query[q_base0 + 64u + lane]) * args.scale;
+    float a3 = h3_bf16_to_f32(query[q_base0 + 96u + lane]) * args.scale;
+    float b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, b3 = 0.0f;
+    if (q1_live) {
+        b0 = h3_bf16_to_f32(query[q_base1 + lane]) * args.scale;
+        b1 = h3_bf16_to_f32(query[q_base1 + 32u + lane]) * args.scale;
+        b2 = h3_bf16_to_f32(query[q_base1 + 64u + lane]) * args.scale;
+        b3 = h3_bf16_to_f32(query[q_base1 + 96u + lane]) * args.scale;
+    }
+    float acc_a0 = 0.0f, acc_a1 = 0.0f, acc_a2 = 0.0f, acc_a3 = 0.0f;
+    float acc_b0 = 0.0f, acc_b1 = 0.0f, acc_b2 = 0.0f, acc_b3 = 0.0f;
+    float max_a = -1e30f, max_b = -1e30f, sum_a = 0.0f, sum_b = 0.0f;
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 128u
+                                         : head * 128u;
+    for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
+        float k0 = h3_bf16_to_f32(key[k_base + lane]);
+        float k1v = h3_bf16_to_f32(key[k_base + 32u + lane]);
+        float k2 = h3_bf16_to_f32(key[k_base + 64u + lane]);
+        float k3 = h3_bf16_to_f32(key[k_base + 96u + lane]);
+        float v0 = h3_bf16_to_f32(value[k_base + lane]);
+        float v1 = h3_bf16_to_f32(value[k_base + 32u + lane]);
+        float v2 = h3_bf16_to_f32(value[k_base + 64u + lane]);
+        float v3 = h3_bf16_to_f32(value[k_base + 96u + lane]);
+        float score_a = h3_warp_reduce_sum(a0 * k0 + a1 * k1v + a2 * k2 + a3 * k3);
+        float new_a = fmaxf(max_a, score_a);
+        float alpha_a = h3_fast_exp(max_a - new_a);
+        float pa = h3_fast_exp(score_a - new_a);
+        acc_a0 = fmaf(pa, v0, acc_a0 * alpha_a);
+        acc_a1 = fmaf(pa, v1, acc_a1 * alpha_a);
+        acc_a2 = fmaf(pa, v2, acc_a2 * alpha_a);
+        acc_a3 = fmaf(pa, v3, acc_a3 * alpha_a);
+        sum_a = fmaf(sum_a, alpha_a, pa);
+        max_a = new_a;
+        if (q1_live) {
+            float score_b =
+                h3_warp_reduce_sum(b0 * k0 + b1 * k1v + b2 * k2 + b3 * k3);
+            float new_b = fmaxf(max_b, score_b);
+            float alpha_b = h3_fast_exp(max_b - new_b);
+            float pb = h3_fast_exp(score_b - new_b);
+            acc_b0 = fmaf(pb, v0, acc_b0 * alpha_b);
+            acc_b1 = fmaf(pb, v1, acc_b1 * alpha_b);
+            acc_b2 = fmaf(pb, v2, acc_b2 * alpha_b);
+            acc_b3 = fmaf(pb, v3, acc_b3 * alpha_b);
+            sum_b = fmaf(sum_b, alpha_b, pb);
+            max_b = new_b;
+        }
+        k_base += stride;
+    }
+    float inv_a = sum_a > 0.0f ? 1.0f / sum_a : 0.0f;
+    output[h3_sdpa_output_index(args, q_pos, head, lane)] =
+        h3_f32_to_bf16(acc_a0 * inv_a);
+    output[h3_sdpa_output_index(args, q_pos, head, 32u + lane)] =
+        h3_f32_to_bf16(acc_a1 * inv_a);
+    output[h3_sdpa_output_index(args, q_pos, head, 64u + lane)] =
+        h3_f32_to_bf16(acc_a2 * inv_a);
+    output[h3_sdpa_output_index(args, q_pos, head, 96u + lane)] =
+        h3_f32_to_bf16(acc_a3 * inv_a);
+    if (q1_live) {
+        float inv_b = sum_b > 0.0f ? 1.0f / sum_b : 0.0f;
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, lane)] =
+            h3_f32_to_bf16(acc_b0 * inv_b);
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, 32u + lane)] =
+            h3_f32_to_bf16(acc_b1 * inv_b);
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, 64u + lane)] =
+            h3_f32_to_bf16(acc_b2 * inv_b);
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, 96u + lane)] =
+            h3_f32_to_bf16(acc_b3 * inv_b);
+    }
+}
+
 /* Flash-style blocked SDPA for DiT head_dim=128: several Q rows share each
  * K/V tile in LDS so global traffic drops by ~Q_TILE. Wave32 RDNA path.
  * Rows are padded to 132 floats to avoid 4-way LDS bank conflicts when a
@@ -2465,6 +2550,13 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
         const void *kernel = host_args.head_dim == 128 ?
             reinterpret_cast<const void *>(h3_sdpa_bf16_wave_d128_kernel) :
             reinterpret_cast<const void *>(h3_sdpa_bf16_wave_kernel);
+        if (host_args.head_dim == 128 &&
+            !(getenv("H3_SDPA_D128_Q1") &&
+              strcmp(getenv("H3_SDPA_D128_Q1"), "0") != 0)) {
+            grid = dim3((host_args.sequence + 1u) / 2u, host_args.heads, 1);
+            kernel = reinterpret_cast<const void *>(
+                h3_sdpa_bf16_wave_d128_q2_kernel);
+        }
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
                                sizeof(kernel_args), stream) == hipSuccess;
     }
