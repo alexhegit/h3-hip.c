@@ -3,7 +3,7 @@
 Started: 2026-08-20 07:40 CST  
 Budget: ~10 hours  
 Stop after: 2026-08-20 17:40 CST  
-Git: INT8 t128 pending (`662e268` + kernel)  
+Git: d128 Q2 pending (`530480d` + kernel)  
 Baseline: n3 warm E2E **104.3s** (VAE GPU 18.5 · sdpa 6.5 · linear 11.5; denoise GPU 17.2)  
 Order: VAE F32 linear → DiT INT8 linear → remaining load I/O  
 Loop: 45m one-shot wakes (`AGENT_LOOP_WAKE_perf_day4`) until 17:40
@@ -24,7 +24,10 @@ Loop: 45m one-shot wakes (`AGENT_LOOP_WAKE_perf_day4`) until 17:40
 - **KEEP** INT8 linear 128×128 / 8×8 sudot4 (`h3_linear_int8_t128_kernel`). Opt-out `H3_INT8_R64=1`.
 - **REJECT** INT8 fc1 SwiGLU t128 (denoise linear 8.01 vs 7.97; extra LDS, no win).
 - **REJECT** F32 LDS double-buffer (K=8192 14.4→16.5 ms). Reverted before r128.
-- Next: grouped INT8 t128, leftover VAE F32 K=8192.
+- **REJECT** DiT d128 wave 4-key (SDPA bench 109→120 ms).
+- **REJECT** F32 256×64 tile for K≥8192 (13.8/14.2→16.3 ms).
+- **REJECT** VAE fused F32 fc1+SwiGLU r64 (VAE linear 10.5→11.2s; dual-B loses r128).
+- Next: load I/O (not mmap memcpy), denoise sdpa without 4-key. Do not retry fused SwiGLU r64 / d128 4-key / F32 r256.
 
 ## Log
 
@@ -35,3 +38,8 @@ Loop: 45m one-shot wakes (`AGENT_LOOP_WAKE_perf_day4`) until 17:40
 | ~08:20 | F32 r128 tile | KEEP VAE linear 11.5→10.5s (`662e268`) |
 | ~08:40 | INT8 linear t128 | KEEP denoise linear 8.5→8.0s |
 | ~08:55 | INT8 fc1 t128 | REJECT (no denoise win) |
+| ~09:05 | F32 r128 BK=16 for K≥8192 | REJECT (16.3 vs 13.8 ms) |
+| ~08:50 | d128 SDPA 4-key | REJECT (109→120 ms) |
+| ~09:00 | F32 256×64 K≥8192 | REJECT (14.2→16.3 ms) |
+| ~09:50 | VAE fused SwiGLU r64 | REJECT (linear 10.5→11.2s) |
+| ~10:45 | DiT d128 Q2 SDPA | KEEP denoise sdpa 8.1→5.3s |
