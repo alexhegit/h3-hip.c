@@ -50,7 +50,9 @@ static int h3_hip_open_weight_fd(const char *path, int *from_cache) {
         return -1;
     }
 #if defined(POSIX_FADV_SEQUENTIAL)
-    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    /* Sequential hint fights 8-way striped pread. Keep it only for serial I/O. */
+    if (getenv("H3_PREAD_SERIAL"))
+        posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 #endif
     void *map = MAP_FAILED;
     size_t size = 0;

@@ -1233,8 +1233,7 @@ h3_sdpa_bf16_wave_d128_q2_kernel(const uint16_t *query, const uint16_t *key,
     }
 }
 
-/* Three queries share each K/V load. Default for d128. Opt out:
- * H3_SDPA_D128_Q2=1 or H3_SDPA_D128_Q1=1. */
+/* Three queries share each K/V load. Opt in: H3_SDPA_D128_Q3=1. */
 __global__ void __launch_bounds__(32)
 h3_sdpa_bf16_wave_d128_q3_kernel(const uint16_t *query, const uint16_t *key,
                                  const uint16_t *value, uint16_t *output,
@@ -1351,6 +1350,161 @@ h3_sdpa_bf16_wave_d128_q3_kernel(const uint16_t *query, const uint16_t *key,
             h3_f32_to_bf16(acc_c2 * inv_c);
         output[h3_sdpa_output_index(args, q_pos + 2u, head, 96u + lane)] =
             h3_f32_to_bf16(acc_c3 * inv_c);
+    }
+}
+
+/* Four queries share each K/V load. Default for d128. Opt out:
+ * H3_SDPA_D128_Q3=1, H3_SDPA_D128_Q2=1, or H3_SDPA_D128_Q1=1. */
+__global__ void __launch_bounds__(32)
+h3_sdpa_bf16_wave_d128_q4_kernel(const uint16_t *query, const uint16_t *key,
+                                 const uint16_t *value, uint16_t *output,
+                                 h3_sdpa_args args) {
+    uint32_t q_pos = blockIdx.x * 4u;
+    uint32_t head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    int q1_live = (q_pos + 1u) < args.sequence;
+    int q2_live = (q_pos + 2u) < args.sequence;
+    int q3_live = (q_pos + 3u) < args.sequence;
+    uint32_t q_base0 = (q_pos * args.heads + head) * 128u;
+    uint32_t q_stride = args.heads * 128u;
+    float a0 = h3_bf16_to_f32(query[q_base0 + lane]) * args.scale;
+    float a1 = h3_bf16_to_f32(query[q_base0 + 32u + lane]) * args.scale;
+    float a2 = h3_bf16_to_f32(query[q_base0 + 64u + lane]) * args.scale;
+    float a3 = h3_bf16_to_f32(query[q_base0 + 96u + lane]) * args.scale;
+    float b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, b3 = 0.0f;
+    float c0 = 0.0f, c1 = 0.0f, c2 = 0.0f, c3 = 0.0f;
+    float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
+    if (q1_live) {
+        uint32_t q_base1 = q_base0 + q_stride;
+        b0 = h3_bf16_to_f32(query[q_base1 + lane]) * args.scale;
+        b1 = h3_bf16_to_f32(query[q_base1 + 32u + lane]) * args.scale;
+        b2 = h3_bf16_to_f32(query[q_base1 + 64u + lane]) * args.scale;
+        b3 = h3_bf16_to_f32(query[q_base1 + 96u + lane]) * args.scale;
+    }
+    if (q2_live) {
+        uint32_t q_base2 = q_base0 + 2u * q_stride;
+        c0 = h3_bf16_to_f32(query[q_base2 + lane]) * args.scale;
+        c1 = h3_bf16_to_f32(query[q_base2 + 32u + lane]) * args.scale;
+        c2 = h3_bf16_to_f32(query[q_base2 + 64u + lane]) * args.scale;
+        c3 = h3_bf16_to_f32(query[q_base2 + 96u + lane]) * args.scale;
+    }
+    if (q3_live) {
+        uint32_t q_base3 = q_base0 + 3u * q_stride;
+        d0 = h3_bf16_to_f32(query[q_base3 + lane]) * args.scale;
+        d1 = h3_bf16_to_f32(query[q_base3 + 32u + lane]) * args.scale;
+        d2 = h3_bf16_to_f32(query[q_base3 + 64u + lane]) * args.scale;
+        d3 = h3_bf16_to_f32(query[q_base3 + 96u + lane]) * args.scale;
+    }
+    float acc_a0 = 0.0f, acc_a1 = 0.0f, acc_a2 = 0.0f, acc_a3 = 0.0f;
+    float acc_b0 = 0.0f, acc_b1 = 0.0f, acc_b2 = 0.0f, acc_b3 = 0.0f;
+    float acc_c0 = 0.0f, acc_c1 = 0.0f, acc_c2 = 0.0f, acc_c3 = 0.0f;
+    float acc_d0 = 0.0f, acc_d1 = 0.0f, acc_d2 = 0.0f, acc_d3 = 0.0f;
+    float max_a = -1e30f, max_b = -1e30f, max_c = -1e30f, max_d = -1e30f;
+    float sum_a = 0.0f, sum_b = 0.0f, sum_c = 0.0f, sum_d = 0.0f;
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 128u
+                                         : head * 128u;
+    for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
+        float k0 = h3_bf16_to_f32(key[k_base + lane]);
+        float k1v = h3_bf16_to_f32(key[k_base + 32u + lane]);
+        float k2 = h3_bf16_to_f32(key[k_base + 64u + lane]);
+        float k3 = h3_bf16_to_f32(key[k_base + 96u + lane]);
+        float v0 = h3_bf16_to_f32(value[k_base + lane]);
+        float v1 = h3_bf16_to_f32(value[k_base + 32u + lane]);
+        float v2 = h3_bf16_to_f32(value[k_base + 64u + lane]);
+        float v3 = h3_bf16_to_f32(value[k_base + 96u + lane]);
+        float score_a = h3_warp_reduce_sum(a0 * k0 + a1 * k1v + a2 * k2 + a3 * k3);
+        float new_a = fmaxf(max_a, score_a);
+        float alpha_a = h3_fast_exp(max_a - new_a);
+        float pa = h3_fast_exp(score_a - new_a);
+        acc_a0 = fmaf(pa, v0, acc_a0 * alpha_a);
+        acc_a1 = fmaf(pa, v1, acc_a1 * alpha_a);
+        acc_a2 = fmaf(pa, v2, acc_a2 * alpha_a);
+        acc_a3 = fmaf(pa, v3, acc_a3 * alpha_a);
+        sum_a = fmaf(sum_a, alpha_a, pa);
+        max_a = new_a;
+        if (q1_live) {
+            float score_b =
+                h3_warp_reduce_sum(b0 * k0 + b1 * k1v + b2 * k2 + b3 * k3);
+            float new_b = fmaxf(max_b, score_b);
+            float alpha_b = h3_fast_exp(max_b - new_b);
+            float pb = h3_fast_exp(score_b - new_b);
+            acc_b0 = fmaf(pb, v0, acc_b0 * alpha_b);
+            acc_b1 = fmaf(pb, v1, acc_b1 * alpha_b);
+            acc_b2 = fmaf(pb, v2, acc_b2 * alpha_b);
+            acc_b3 = fmaf(pb, v3, acc_b3 * alpha_b);
+            sum_b = fmaf(sum_b, alpha_b, pb);
+            max_b = new_b;
+        }
+        if (q2_live) {
+            float score_c =
+                h3_warp_reduce_sum(c0 * k0 + c1 * k1v + c2 * k2 + c3 * k3);
+            float new_c = fmaxf(max_c, score_c);
+            float alpha_c = h3_fast_exp(max_c - new_c);
+            float pc = h3_fast_exp(score_c - new_c);
+            acc_c0 = fmaf(pc, v0, acc_c0 * alpha_c);
+            acc_c1 = fmaf(pc, v1, acc_c1 * alpha_c);
+            acc_c2 = fmaf(pc, v2, acc_c2 * alpha_c);
+            acc_c3 = fmaf(pc, v3, acc_c3 * alpha_c);
+            sum_c = fmaf(sum_c, alpha_c, pc);
+            max_c = new_c;
+        }
+        if (q3_live) {
+            float score_d =
+                h3_warp_reduce_sum(d0 * k0 + d1 * k1v + d2 * k2 + d3 * k3);
+            float new_d = fmaxf(max_d, score_d);
+            float alpha_d = h3_fast_exp(max_d - new_d);
+            float pd = h3_fast_exp(score_d - new_d);
+            acc_d0 = fmaf(pd, v0, acc_d0 * alpha_d);
+            acc_d1 = fmaf(pd, v1, acc_d1 * alpha_d);
+            acc_d2 = fmaf(pd, v2, acc_d2 * alpha_d);
+            acc_d3 = fmaf(pd, v3, acc_d3 * alpha_d);
+            sum_d = fmaf(sum_d, alpha_d, pd);
+            max_d = new_d;
+        }
+        k_base += stride;
+    }
+    float inv_a = sum_a > 0.0f ? 1.0f / sum_a : 0.0f;
+    output[h3_sdpa_output_index(args, q_pos, head, lane)] =
+        h3_f32_to_bf16(acc_a0 * inv_a);
+    output[h3_sdpa_output_index(args, q_pos, head, 32u + lane)] =
+        h3_f32_to_bf16(acc_a1 * inv_a);
+    output[h3_sdpa_output_index(args, q_pos, head, 64u + lane)] =
+        h3_f32_to_bf16(acc_a2 * inv_a);
+    output[h3_sdpa_output_index(args, q_pos, head, 96u + lane)] =
+        h3_f32_to_bf16(acc_a3 * inv_a);
+    if (q1_live) {
+        float inv_b = sum_b > 0.0f ? 1.0f / sum_b : 0.0f;
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, lane)] =
+            h3_f32_to_bf16(acc_b0 * inv_b);
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, 32u + lane)] =
+            h3_f32_to_bf16(acc_b1 * inv_b);
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, 64u + lane)] =
+            h3_f32_to_bf16(acc_b2 * inv_b);
+        output[h3_sdpa_output_index(args, q_pos + 1u, head, 96u + lane)] =
+            h3_f32_to_bf16(acc_b3 * inv_b);
+    }
+    if (q2_live) {
+        float inv_c = sum_c > 0.0f ? 1.0f / sum_c : 0.0f;
+        output[h3_sdpa_output_index(args, q_pos + 2u, head, lane)] =
+            h3_f32_to_bf16(acc_c0 * inv_c);
+        output[h3_sdpa_output_index(args, q_pos + 2u, head, 32u + lane)] =
+            h3_f32_to_bf16(acc_c1 * inv_c);
+        output[h3_sdpa_output_index(args, q_pos + 2u, head, 64u + lane)] =
+            h3_f32_to_bf16(acc_c2 * inv_c);
+        output[h3_sdpa_output_index(args, q_pos + 2u, head, 96u + lane)] =
+            h3_f32_to_bf16(acc_c3 * inv_c);
+    }
+    if (q3_live) {
+        float inv_d = sum_d > 0.0f ? 1.0f / sum_d : 0.0f;
+        output[h3_sdpa_output_index(args, q_pos + 3u, head, lane)] =
+            h3_f32_to_bf16(acc_d0 * inv_d);
+        output[h3_sdpa_output_index(args, q_pos + 3u, head, 32u + lane)] =
+            h3_f32_to_bf16(acc_d1 * inv_d);
+        output[h3_sdpa_output_index(args, q_pos + 3u, head, 64u + lane)] =
+            h3_f32_to_bf16(acc_d2 * inv_d);
+        output[h3_sdpa_output_index(args, q_pos + 3u, head, 96u + lane)] =
+            h3_f32_to_bf16(acc_d3 * inv_d);
     }
 }
 
@@ -2676,14 +2830,20 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
               strcmp(getenv("H3_SDPA_D128_Q1"), "0") != 0)) {
             int force_q2 = getenv("H3_SDPA_D128_Q2") &&
                            strcmp(getenv("H3_SDPA_D128_Q2"), "0") != 0;
+            int force_q3 = getenv("H3_SDPA_D128_Q3") &&
+                           strcmp(getenv("H3_SDPA_D128_Q3"), "0") != 0;
             if (force_q2) {
                 grid = dim3((host_args.sequence + 1u) / 2u, host_args.heads, 1);
                 kernel = reinterpret_cast<const void *>(
                     h3_sdpa_bf16_wave_d128_q2_kernel);
-            } else {
+            } else if (force_q3) {
                 grid = dim3((host_args.sequence + 2u) / 3u, host_args.heads, 1);
                 kernel = reinterpret_cast<const void *>(
                     h3_sdpa_bf16_wave_d128_q3_kernel);
+            } else {
+                grid = dim3((host_args.sequence + 3u) / 4u, host_args.heads, 1);
+                kernel = reinterpret_cast<const void *>(
+                    h3_sdpa_bf16_wave_d128_q4_kernel);
             }
         }
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
