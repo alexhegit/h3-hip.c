@@ -1576,6 +1576,14 @@ __global__ void h3_fc1_swiglu_int8_nax_r128_kernel(
     }
 }
 
+__device__ inline float h3_fast_exp(float x) {
+    return exp2f(x * 1.4426950408889634f);
+}
+
+__device__ inline float h3_silu(float gate) {
+    return gate * (1.0f / (1.0f + h3_fast_exp(-gate)));
+}
+
 __device__ inline int32_t h3_i8dot4_scalar(int32_t a, int32_t b, int32_t acc) {
     acc += (int32_t)(int8_t)a * (int32_t)(int8_t)b;
     acc += (int32_t)(int8_t)(a >> 8) * (int32_t)(int8_t)(b >> 8);
@@ -1913,7 +1921,7 @@ h3_fc1_swiglu_int8_r64_kernel(const int8_t *input, const int8_t *weight,
                     (float)gate_acc[i][j] * sa * gate_scale[tx * 4u + (uint32_t)j];
                 float up =
                     (float)up_acc[i][j] * sa * up_scale[tx * 4u + (uint32_t)j];
-                outs[j] = h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
+                outs[j] = h3_f32_to_bf16(h3_silu(gate) * up);
             }
             uint2 packed;
             packed.x = (uint32_t)outs[0] | ((uint32_t)outs[1] << 16);
@@ -1930,7 +1938,126 @@ h3_fc1_swiglu_int8_r64_kernel(const int8_t *input, const int8_t *weight,
                 float up = (float)up_acc[i][j] * scale_a[ty * 4u + (uint32_t)i] *
                            up_scale[tx * 4u + (uint32_t)j];
                 output[row * hidden_dim + column] =
-                    h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
+                    h3_f32_to_bf16(h3_silu(gate) * up);
+            }
+        }
+    }
+}
+
+/* fc1 SwiGLU: 128×64 output, two 64-wide B tiles. Not 128×128 (rejected).
+ * Opt out: H3_INT8_FC1_R64=1. */
+template <int K_CONST, int BK>
+__global__ void __launch_bounds__(256)
+h3_fc1_swiglu_int8_r128x64_kernel(const int8_t *input, const int8_t *weight,
+                                  const float *input_scales,
+                                  const float *weight_scales, uint16_t *output,
+                                  h3_linear_args args) {
+    constexpr int BM = 128, BN = 64, TM = 8, TN = 4;
+    static_assert(BK == 32 || BK == 64 || BK == 128, "INT8 BK 32/64/128");
+    constexpr int LDS_K = BK + 4;
+    __shared__ int8_t As[BM][LDS_K];
+    __shared__ int8_t gate_bs[BN][LDS_K];
+    __shared__ int8_t up_bs[BN][LDS_K];
+    __shared__ float scale_a[BM];
+    __shared__ float gate_scale[BN];
+    __shared__ float up_scale[BN];
+    uint32_t block_row = blockIdx.y * (uint32_t)BM;
+    uint32_t block_col = blockIdx.x * (uint32_t)BN;
+    uint32_t tx = threadIdx.x;
+    uint32_t ty = threadIdx.y;
+    uint32_t tid = ty * 16u + tx;
+    uint32_t input_dim = K_CONST ? (uint32_t)K_CONST : args.input_dim;
+    uint32_t hidden_dim = args.output_dim;
+    uint32_t k_tiles = input_dim / (uint32_t)BK;
+    if (tid < (uint32_t)BM) {
+        uint32_t row = block_row + tid;
+        scale_a[tid] = row < args.rows ? input_scales[row] : 0.0f;
+    }
+    if (tid < (uint32_t)BN) {
+        uint32_t column = block_col + tid;
+        gate_scale[tid] =
+            column < hidden_dim ? weight_scales[column] : 0.0f;
+        up_scale[tid] = column < hidden_dim ?
+            weight_scales[hidden_dim + column] : 0.0f;
+    }
+    int32_t gate_acc[TM][TN];
+    int32_t up_acc[TM][TN];
+#pragma unroll
+    for (int i = 0; i < TM; i++)
+#pragma unroll
+        for (int j = 0; j < TN; j++) {
+            gate_acc[i][j] = 0;
+            up_acc[i][j] = 0;
+        }
+    for (uint32_t kt = 0; kt < k_tiles; kt++) {
+        uint32_t k0 = kt * (uint32_t)BK;
+        h3_load_i8_tile_bmxk<BM, LDS_K, BK>(As, input, block_row, k0, args.rows,
+                                             input_dim, tid);
+        h3_load_i8_tile_bmxk<BN, LDS_K, BK>(gate_bs, weight, block_col, k0,
+                                             hidden_dim, input_dim, tid);
+        h3_load_i8_tile_bmxk<BN, LDS_K, BK>(
+            up_bs, weight + (size_t)hidden_dim * input_dim, block_col, k0,
+            hidden_dim, input_dim, tid);
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < BK; k += 4) {
+            int32_t av[TM], gv[TN], uv[TN];
+#pragma unroll
+            for (int i = 0; i < TM; i++)
+                av[i] = *reinterpret_cast<const int32_t *>(
+                    &As[ty * (uint32_t)TM + (uint32_t)i][k]);
+#pragma unroll
+            for (int j = 0; j < TN; j++) {
+                gv[j] = *reinterpret_cast<const int32_t *>(
+                    &gate_bs[tx * (uint32_t)TN + (uint32_t)j][k]);
+                uv[j] = *reinterpret_cast<const int32_t *>(
+                    &up_bs[tx * (uint32_t)TN + (uint32_t)j][k]);
+            }
+#pragma unroll
+            for (int i = 0; i < TM; i++)
+#pragma unroll
+                for (int j = 0; j < TN; j++) {
+                    gate_acc[i][j] = h3_i8dot4(av[i], gv[j], gate_acc[i][j]);
+                    up_acc[i][j] = h3_i8dot4(av[i], uv[j], up_acc[i][j]);
+                }
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < TM; i++) {
+        uint32_t row = block_row + ty * (uint32_t)TM + (uint32_t)i;
+        if (row >= args.rows) continue;
+        uint32_t column0 = block_col + tx * (uint32_t)TN;
+        if (column0 + (uint32_t)TN - 1u < hidden_dim) {
+            float sa = scale_a[ty * (uint32_t)TM + (uint32_t)i];
+            uint16_t outs[TN];
+#pragma unroll
+            for (int j = 0; j < TN; j++) {
+                float gate = (float)gate_acc[i][j] * sa *
+                             gate_scale[tx * (uint32_t)TN + (uint32_t)j];
+                float up = (float)up_acc[i][j] * sa *
+                           up_scale[tx * (uint32_t)TN + (uint32_t)j];
+                outs[j] = h3_f32_to_bf16(h3_silu(gate) * up);
+            }
+            uint2 packed;
+            packed.x = (uint32_t)outs[0] | ((uint32_t)outs[1] << 16);
+            packed.y = (uint32_t)outs[2] | ((uint32_t)outs[3] << 16);
+            *reinterpret_cast<uint2 *>(output + (size_t)row * hidden_dim +
+                                       column0) = packed;
+        } else {
+#pragma unroll
+            for (int j = 0; j < TN; j++) {
+                uint32_t column = column0 + (uint32_t)j;
+                if (column >= hidden_dim) continue;
+                float gate =
+                    (float)gate_acc[i][j] *
+                    scale_a[ty * (uint32_t)TM + (uint32_t)i] *
+                    gate_scale[tx * (uint32_t)TN + (uint32_t)j];
+                float up = (float)up_acc[i][j] *
+                           scale_a[ty * (uint32_t)TM + (uint32_t)i] *
+                           up_scale[tx * (uint32_t)TN + (uint32_t)j];
+                output[row * hidden_dim + column] =
+                    h3_f32_to_bf16(h3_silu(gate) * up);
             }
         }
     }
@@ -1953,16 +2080,18 @@ static int h3_launch_linear_int8_r64_dispatch(
     int use_bk64 = (args->input_dim % 64u) == 0 && !force_bk32 && !use_bk128;
     int force_r64 = getenv("H3_INT8_R64") &&
                     strcmp(getenv("H3_INT8_R64"), "0") != 0;
+    int force_fc1_r64 = getenv("H3_INT8_FC1_R64") &&
+                        strcmp(getenv("H3_INT8_FC1_R64"), "0") != 0;
     int use_t128 = !fc1_swiglu && !force_r64;
+    int use_fc1_r128x64 = fc1_swiglu && !force_fc1_r64 && !force_r64;
     h3_linear_args host_args = *args;
     void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
                            &output, &host_args};
     dim3 block(16, 16, 1);
-    dim3 grid(
-        (host_args.output_dim + (use_t128 ? 127u : 63u)) /
-            (use_t128 ? 128u : 64u),
-        (host_args.rows + (use_t128 ? 127u : 63u)) / (use_t128 ? 128u : 64u),
-        1);
+    uint32_t tile_n = use_t128 ? 128u : 64u;
+    uint32_t tile_m = (use_t128 || use_fc1_r128x64) ? 128u : 64u;
+    dim3 grid((host_args.output_dim + tile_n - 1u) / tile_n,
+              (host_args.rows + tile_m - 1u) / tile_m, 1);
     if (use_t128) {
         const void *t128 = NULL;
         if (use_bk128) {
@@ -1999,6 +2128,31 @@ static int h3_launch_linear_int8_r64_dispatch(
                                sizeof(kernel_args), stream) == hipSuccess;
     }
     const void *kernel = NULL;
+    if (use_fc1_r128x64) {
+        if (use_bk128) {
+            if (host_args.input_dim == 5376)
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r128x64_kernel<5376, 128>);
+            else
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r128x64_kernel<0, 128>);
+        } else if (use_bk64) {
+            if (host_args.input_dim == 5376)
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r128x64_kernel<5376, 64>);
+            else
+                kernel = reinterpret_cast<const void *>(
+                    h3_fc1_swiglu_int8_r128x64_kernel<0, 64>);
+        } else if (host_args.input_dim == 5376) {
+            kernel = reinterpret_cast<const void *>(
+                h3_fc1_swiglu_int8_r128x64_kernel<5376, 32>);
+        } else {
+            kernel = reinterpret_cast<const void *>(
+                h3_fc1_swiglu_int8_r128x64_kernel<0, 32>);
+        }
+        return hipLaunchKernel(kernel, grid, block, kernel_args,
+                               sizeof(kernel_args), stream) == hipSuccess;
+    }
     if (fc1_swiglu) {
         if (use_bk128) {
             if (host_args.input_dim == 5376)
