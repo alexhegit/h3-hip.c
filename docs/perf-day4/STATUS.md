@@ -3,7 +3,7 @@
 Started: 2026-08-20 07:40 CST  
 Budget: ~10 hours  
 Stop after: 2026-08-20 17:40 CST  
-Git: `404f4b3`  
+Git: `e6fd8be`  
 Baseline: n3 warm E2E **104.3s** (VAE GPU 18.5 · sdpa 6.5 · linear 11.5; denoise GPU 17.2)  
 Order: VAE F32 linear → DiT INT8 linear → remaining load I/O  
 Loop: 45m one-shot wakes (`AGENT_LOOP_WAKE_perf_day4`) until 17:40
@@ -29,7 +29,8 @@ Loop: 45m one-shot wakes (`AGENT_LOOP_WAKE_perf_day4`) until 17:40
 - **REJECT** DiT d128 wave 4-key (SDPA bench 109→120 ms).
 - **REJECT** F32 256×64 tile for K≥8192 (13.8/14.2→16.3 ms).
 - **REJECT** VAE fused F32 fc1+SwiGLU r64 (VAE linear 10.5→11.2s; dual-B loses r128).
-- Next: load I/O (not mmap memcpy), denoise linear ~7.9s, VAE linear ~10.5s.
+- **REJECT** INT8 fc1 t128 BK=32 (denoise linear 7.9→10.2s).
+- Next: load I/O (not mmap memcpy), VAE linear ~10.5s. Do not retry fc1 t128.
 
 ## Log
 
@@ -45,3 +46,5 @@ Loop: 45m one-shot wakes (`AGENT_LOOP_WAKE_perf_day4`) until 17:40
 | ~09:00 | F32 256×64 K≥8192 | REJECT (14.2→16.3 ms) |
 | ~09:50 | VAE fused SwiGLU r64 | REJECT (linear 10.5→11.2s) |
 | ~10:45 | DiT d128 Q2 SDPA | KEEP denoise sdpa 8.1→5.3s (`404f4b3`) |
+| ~11:35 | INT8 fc1 t128 BK=32 | REJECT (linear 7.9→10.2s) |
+| ~12:25 | pread WILLNEED/RANDOM | UNTESTED (hipcc link hung); reverted |

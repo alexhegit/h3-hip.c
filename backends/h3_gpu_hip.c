@@ -130,6 +130,10 @@ static void *h3_hip_pread_worker(void *arg) {
 /* Parallel pread for large weight tensors (NVMe can serve concurrent reads). */
 static int h3_hip_pread_all(int fd, void *data, size_t bytes, off_t offset) {
     enum { H3_PREAD_THREADS = 8, H3_PREAD_MIN = 16u << 20 };
+#if defined(POSIX_FADV_WILLNEED)
+    if (bytes >= H3_PREAD_MIN)
+        posix_fadvise(fd, offset, (off_t)bytes, POSIX_FADV_WILLNEED);
+#endif
     if (bytes < H3_PREAD_MIN || getenv("H3_PREAD_SERIAL"))
         return h3_hip_pread_serial(fd, data, bytes, offset);
 
