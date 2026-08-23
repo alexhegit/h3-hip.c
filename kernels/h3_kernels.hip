@@ -1507,8 +1507,7 @@ h3_sdpa_bf16_wave_d128_q4_kernel(const uint16_t *query, const uint16_t *key,
     }
 }
 
-/* Five queries share each K/V load. Default for d128. Opt out:
- * H3_SDPA_D128_Q4=1, Q3, Q2, or Q1. */
+/* Five queries share each K/V load. Opt in: H3_SDPA_D128_Q5=1. */
 __global__ void __launch_bounds__(32)
 h3_sdpa_bf16_wave_d128_q5_kernel(const uint16_t *query, const uint16_t *key,
                                  const uint16_t *value, uint16_t *output,
@@ -1694,6 +1693,80 @@ h3_sdpa_bf16_wave_d128_q5_kernel(const uint16_t *query, const uint16_t *key,
             h3_f32_to_bf16(acc_e2 * inv_e);
         output[h3_sdpa_output_index(args, q_pos + 4u, head, 96u + lane)] =
             h3_f32_to_bf16(acc_e3 * inv_e);
+    }
+}
+
+
+/* Six queries share each K/V load. Default for d128. Opt out:
+ * H3_SDPA_D128_Q5=1, Q4, Q3, Q2, or Q1. */
+__global__ void __launch_bounds__(32)
+h3_sdpa_bf16_wave_d128_q6_kernel(const uint16_t *query, const uint16_t *key,
+                                 const uint16_t *value, uint16_t *output,
+                                 h3_sdpa_args args) {
+    uint32_t q_pos = blockIdx.x * 6u;
+    uint32_t head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    int live[6];
+    for (int i = 0; i < 6; i++)
+        live[i] = (q_pos + (uint32_t)i) < args.sequence;
+    uint32_t q_base0 = (q_pos * args.heads + head) * 128u;
+    uint32_t q_stride = args.heads * 128u;
+    float q[6][4];
+#pragma unroll
+    for (int qi = 0; qi < 6; qi++) {
+#pragma unroll
+        for (int d = 0; d < 4; d++) q[qi][d] = 0.0f;
+        if (!live[qi]) continue;
+        uint32_t qb = q_base0 + (uint32_t)qi * q_stride;
+#pragma unroll
+        for (int d = 0; d < 4; d++)
+            q[qi][d] = h3_bf16_to_f32(query[qb + 32u * (uint32_t)d + lane]) *
+                       args.scale;
+    }
+    float acc[6][4];
+    float mx[6], sm[6];
+#pragma unroll
+    for (int qi = 0; qi < 6; qi++) {
+        mx[qi] = -1e30f;
+        sm[qi] = 0.0f;
+#pragma unroll
+        for (int d = 0; d < 4; d++) acc[qi][d] = 0.0f;
+    }
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 128u
+                                         : head * 128u;
+    for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
+        float kv[4], vv[4];
+#pragma unroll
+        for (int d = 0; d < 4; d++) {
+            kv[d] = h3_bf16_to_f32(key[k_base + 32u * (uint32_t)d + lane]);
+            vv[d] = h3_bf16_to_f32(value[k_base + 32u * (uint32_t)d + lane]);
+        }
+#pragma unroll
+        for (int qi = 0; qi < 6; qi++) {
+            if (qi && !live[qi]) continue;
+            float score = h3_warp_reduce_sum(q[qi][0] * kv[0] + q[qi][1] * kv[1] +
+                                             q[qi][2] * kv[2] + q[qi][3] * kv[3]);
+            float nw = fmaxf(mx[qi], score);
+            float alpha = h3_fast_exp(mx[qi] - nw);
+            float p = h3_fast_exp(score - nw);
+#pragma unroll
+            for (int d = 0; d < 4; d++)
+                acc[qi][d] = fmaf(p, vv[d], acc[qi][d] * alpha);
+            sm[qi] = fmaf(sm[qi], alpha, p);
+            mx[qi] = nw;
+        }
+        k_base += stride;
+    }
+#pragma unroll
+    for (int qi = 0; qi < 6; qi++) {
+        if (!live[qi]) continue;
+        float inv = sm[qi] > 0.0f ? 1.0f / sm[qi] : 0.0f;
+#pragma unroll
+        for (int d = 0; d < 4; d++)
+            output[h3_sdpa_output_index(args, q_pos + (uint32_t)qi, head,
+                                        32u * (uint32_t)d + lane)] =
+                h3_f32_to_bf16(acc[qi][d] * inv);
     }
 }
 
@@ -3023,6 +3096,8 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                            strcmp(getenv("H3_SDPA_D128_Q3"), "0") != 0;
             int force_q4 = getenv("H3_SDPA_D128_Q4") &&
                            strcmp(getenv("H3_SDPA_D128_Q4"), "0") != 0;
+            int force_q5 = getenv("H3_SDPA_D128_Q5") &&
+                           strcmp(getenv("H3_SDPA_D128_Q5"), "0") != 0;
             if (force_q2) {
                 grid = dim3((host_args.sequence + 1u) / 2u, host_args.heads, 1);
                 kernel = reinterpret_cast<const void *>(
@@ -3035,10 +3110,14 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                 grid = dim3((host_args.sequence + 3u) / 4u, host_args.heads, 1);
                 kernel = reinterpret_cast<const void *>(
                     h3_sdpa_bf16_wave_d128_q4_kernel);
-            } else {
+            } else if (force_q5) {
                 grid = dim3((host_args.sequence + 4u) / 5u, host_args.heads, 1);
                 kernel = reinterpret_cast<const void *>(
                     h3_sdpa_bf16_wave_d128_q5_kernel);
+            } else {
+                grid = dim3((host_args.sequence + 5u) / 6u, host_args.heads, 1);
+                kernel = reinterpret_cast<const void *>(
+                    h3_sdpa_bf16_wave_d128_q6_kernel);
             }
         }
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
