@@ -1774,21 +1774,30 @@ h3_linear_int8_t128_kernel(const int8_t *input, const int8_t *weight,
                                              args.output_dim, input_dim, tid);
         __syncthreads();
 #pragma unroll
-        for (int k = 0; k < BK; k += 8) {
-            int32_t av0[TM], av1[TM], bv0[TN], bv1[TN];
+        for (int k = 0; k < BK; k += 16) {
+            int32_t av0[TM], av1[TM], av2[TM], av3[TM];
+            int32_t bv0[TN], bv1[TN], bv2[TN], bv3[TN];
 #pragma unroll
             for (int i = 0; i < TM; i++) {
-                uint64_t packed = *reinterpret_cast<const uint64_t *>(
+                uint64_t p0 = *reinterpret_cast<const uint64_t *>(
                     &As[ty * (uint32_t)TM + (uint32_t)i][k]);
-                av0[i] = (int32_t)packed;
-                av1[i] = (int32_t)(packed >> 32);
+                uint64_t p1 = *reinterpret_cast<const uint64_t *>(
+                    &As[ty * (uint32_t)TM + (uint32_t)i][k + 8]);
+                av0[i] = (int32_t)p0;
+                av1[i] = (int32_t)(p0 >> 32);
+                av2[i] = (int32_t)p1;
+                av3[i] = (int32_t)(p1 >> 32);
             }
 #pragma unroll
             for (int j = 0; j < TN; j++) {
-                uint64_t packed = *reinterpret_cast<const uint64_t *>(
+                uint64_t p0 = *reinterpret_cast<const uint64_t *>(
                     &Bs[tx * (uint32_t)TN + (uint32_t)j][k]);
-                bv0[j] = (int32_t)packed;
-                bv1[j] = (int32_t)(packed >> 32);
+                uint64_t p1 = *reinterpret_cast<const uint64_t *>(
+                    &Bs[tx * (uint32_t)TN + (uint32_t)j][k + 8]);
+                bv0[j] = (int32_t)p0;
+                bv1[j] = (int32_t)(p0 >> 32);
+                bv2[j] = (int32_t)p1;
+                bv3[j] = (int32_t)(p1 >> 32);
             }
 #pragma unroll
             for (int i = 0; i < TM; i++)
@@ -1796,6 +1805,8 @@ h3_linear_int8_t128_kernel(const int8_t *input, const int8_t *weight,
                 for (int j = 0; j < TN; j++) {
                     acc[i][j] = h3_i8dot4(av0[i], bv0[j], acc[i][j]);
                     acc[i][j] = h3_i8dot4(av1[i], bv1[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av2[i], bv2[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av3[i], bv3[j], acc[i][j]);
                 }
         }
         __syncthreads();
@@ -2008,25 +2019,39 @@ h3_fc1_swiglu_int8_r128x64_kernel(const int8_t *input, const int8_t *weight,
             hidden_dim, input_dim, tid);
         __syncthreads();
 #pragma unroll
-        for (int k = 0; k < BK; k += 8) {
-            int32_t av0[TM], av1[TM], gv0[TN], gv1[TN], uv0[TN], uv1[TN];
+        for (int k = 0; k < BK; k += 16) {
+            int32_t av0[TM], av1[TM], av2[TM], av3[TM];
+            int32_t gv0[TN], gv1[TN], gv2[TN], gv3[TN];
+            int32_t uv0[TN], uv1[TN], uv2[TN], uv3[TN];
 #pragma unroll
             for (int i = 0; i < TM; i++) {
-                uint64_t packed = *reinterpret_cast<const uint64_t *>(
+                uint64_t p0 = *reinterpret_cast<const uint64_t *>(
                     &As[ty * (uint32_t)TM + (uint32_t)i][k]);
-                av0[i] = (int32_t)packed;
-                av1[i] = (int32_t)(packed >> 32);
+                uint64_t p1 = *reinterpret_cast<const uint64_t *>(
+                    &As[ty * (uint32_t)TM + (uint32_t)i][k + 8]);
+                av0[i] = (int32_t)p0;
+                av1[i] = (int32_t)(p0 >> 32);
+                av2[i] = (int32_t)p1;
+                av3[i] = (int32_t)(p1 >> 32);
             }
 #pragma unroll
             for (int j = 0; j < TN; j++) {
-                uint64_t gp = *reinterpret_cast<const uint64_t *>(
+                uint64_t gp0 = *reinterpret_cast<const uint64_t *>(
                     &gate_bs[tx * (uint32_t)TN + (uint32_t)j][k]);
-                uint64_t up = *reinterpret_cast<const uint64_t *>(
+                uint64_t gp1 = *reinterpret_cast<const uint64_t *>(
+                    &gate_bs[tx * (uint32_t)TN + (uint32_t)j][k + 8]);
+                uint64_t up0 = *reinterpret_cast<const uint64_t *>(
                     &up_bs[tx * (uint32_t)TN + (uint32_t)j][k]);
-                gv0[j] = (int32_t)gp;
-                gv1[j] = (int32_t)(gp >> 32);
-                uv0[j] = (int32_t)up;
-                uv1[j] = (int32_t)(up >> 32);
+                uint64_t up1 = *reinterpret_cast<const uint64_t *>(
+                    &up_bs[tx * (uint32_t)TN + (uint32_t)j][k + 8]);
+                gv0[j] = (int32_t)gp0;
+                gv1[j] = (int32_t)(gp0 >> 32);
+                gv2[j] = (int32_t)gp1;
+                gv3[j] = (int32_t)(gp1 >> 32);
+                uv0[j] = (int32_t)up0;
+                uv1[j] = (int32_t)(up0 >> 32);
+                uv2[j] = (int32_t)up1;
+                uv3[j] = (int32_t)(up1 >> 32);
             }
 #pragma unroll
             for (int i = 0; i < TM; i++)
@@ -2036,6 +2061,10 @@ h3_fc1_swiglu_int8_r128x64_kernel(const int8_t *input, const int8_t *weight,
                     up_acc[i][j] = h3_i8dot4(av0[i], uv0[j], up_acc[i][j]);
                     gate_acc[i][j] = h3_i8dot4(av1[i], gv1[j], gate_acc[i][j]);
                     up_acc[i][j] = h3_i8dot4(av1[i], uv1[j], up_acc[i][j]);
+                    gate_acc[i][j] = h3_i8dot4(av2[i], gv2[j], gate_acc[i][j]);
+                    up_acc[i][j] = h3_i8dot4(av2[i], uv2[j], up_acc[i][j]);
+                    gate_acc[i][j] = h3_i8dot4(av3[i], gv3[j], gate_acc[i][j]);
+                    up_acc[i][j] = h3_i8dot4(av3[i], uv3[j], up_acc[i][j]);
                 }
         }
         __syncthreads();
