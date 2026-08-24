@@ -2,6 +2,7 @@
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
+#include <hipblas/hipblas.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -2109,6 +2110,140 @@ h3_fc1_swiglu_int8_r128x64_kernel(const int8_t *input, const int8_t *weight,
     }
 }
 
+static hipblasHandle_t h3_hipblas = NULL;
+static int32_t *h3_int8_i32_scratch = NULL;
+static size_t h3_int8_i32_scratch_bytes = 0;
+
+/* 4-wide i32 load + packed bf16 store. D[m,n] = acc[m,n] * sa[m] * sb[n]. */
+__global__ void __launch_bounds__(256)
+h3_i32_scale_to_bf16_kernel(const int32_t *acc, const float *sa, const float *sb,
+                            uint16_t *out, uint32_t rows, uint32_t cols) {
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= cols) return;
+    float srow = sa[row];
+    const int32_t *in = acc + (size_t)row * cols + col;
+    uint16_t *dst = out + (size_t)row * cols + col;
+    if (col + 3u < cols) {
+        int4 v = *reinterpret_cast<const int4 *>(in);
+        uint16_t o0 = h3_f32_to_bf16((float)v.x * srow * sb[col]);
+        uint16_t o1 = h3_f32_to_bf16((float)v.y * srow * sb[col + 1u]);
+        uint16_t o2 = h3_f32_to_bf16((float)v.z * srow * sb[col + 2u]);
+        uint16_t o3 = h3_f32_to_bf16((float)v.w * srow * sb[col + 3u]);
+        uint2 packed;
+        packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+        packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < cols; j++)
+            dst[j] = h3_f32_to_bf16((float)in[j] * srow * sb[col + j]);
+    }
+}
+
+/* acc is [rows, 2H] from gemm; gate = [0:H), up = [H:2H). */
+__global__ void __launch_bounds__(256)
+h3_i32_swiglu_to_bf16_kernel(const int32_t *acc, const float *sa,
+                             const float *sb, uint16_t *out, uint32_t rows,
+                             uint32_t hidden) {
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= hidden) return;
+    float srow = sa[row];
+    const int32_t *gate_in =
+        acc + ((size_t)row * hidden * 2u) + col;
+    const int32_t *up_in = gate_in + hidden;
+    uint16_t *dst = out + (size_t)row * hidden + col;
+    if (col + 3u < hidden) {
+        int4 g = *reinterpret_cast<const int4 *>(gate_in);
+        int4 u = *reinterpret_cast<const int4 *>(up_in);
+        uint16_t o0 = h3_f32_to_bf16(
+            h3_silu((float)g.x * srow * sb[col]) *
+            ((float)u.x * srow * sb[hidden + col]));
+        uint16_t o1 = h3_f32_to_bf16(
+            h3_silu((float)g.y * srow * sb[col + 1u]) *
+            ((float)u.y * srow * sb[hidden + col + 1u]));
+        uint16_t o2 = h3_f32_to_bf16(
+            h3_silu((float)g.z * srow * sb[col + 2u]) *
+            ((float)u.z * srow * sb[hidden + col + 2u]));
+        uint16_t o3 = h3_f32_to_bf16(
+            h3_silu((float)g.w * srow * sb[col + 3u]) *
+            ((float)u.w * srow * sb[hidden + col + 3u]));
+        uint2 packed;
+        packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+        packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < hidden; j++) {
+            float gate = (float)gate_in[j] * srow * sb[col + j];
+            float up = (float)up_in[j] * srow * sb[hidden + col + j];
+            dst[j] = h3_f32_to_bf16(h3_silu(gate) * up);
+        }
+    }
+}
+
+static int h3_int8_hipblas_opt_in(int fc1_swiglu) {
+    static int plain = -1;
+    static int fc1 = -1;
+    if (plain < 0) {
+        const char *t128 = getenv("H3_INT8_T128");
+        const char *off = getenv("H3_INT8_HIPBLAS");
+        plain = 1;
+        if (t128 && strcmp(t128, "0") != 0) plain = 0;
+        if (off && strcmp(off, "0") == 0) plain = 0;
+        const char *fc1_off = getenv("H3_INT8_FC1_HIPBLAS");
+        fc1 = plain;
+        if (fc1_off && strcmp(fc1_off, "0") == 0) fc1 = 0;
+        if (getenv("H3_INT8_FC1_R64") &&
+            strcmp(getenv("H3_INT8_FC1_R64"), "0") != 0)
+            fc1 = 0;
+    }
+    return fc1_swiglu ? fc1 : plain;
+}
+
+static int h3_int8_hipblas_linear(const int8_t *input, const int8_t *weight,
+                                  const float *input_scales,
+                                  const float *weight_scales, uint16_t *output,
+                                  const h3_linear_args *args, hipStream_t stream,
+                                  int fc1_swiglu) {
+    if (!h3_int8_hipblas_opt_in(fc1_swiglu)) return 0;
+    uint32_t hidden = args->output_dim;
+    uint32_t gemm_n = fc1_swiglu ? hidden * 2u : hidden;
+    if (args->input_dim % 4u || args->input_dim < 32u || gemm_n < 16u)
+        return 0;
+    if (!h3_hipblas && hipblasCreate(&h3_hipblas) != HIPBLAS_STATUS_SUCCESS)
+        return 0;
+    if (hipblasSetStream(h3_hipblas, stream) != HIPBLAS_STATUS_SUCCESS)
+        return 0;
+    size_t bytes = (size_t)args->rows * gemm_n * sizeof(int32_t);
+    if (bytes > h3_int8_i32_scratch_bytes) {
+        int32_t *next = NULL;
+        if (hipMalloc(&next, bytes) != hipSuccess) return 0;
+        if (h3_int8_i32_scratch) (void)hipFree(h3_int8_i32_scratch);
+        h3_int8_i32_scratch = next;
+        h3_int8_i32_scratch_bytes = bytes;
+    }
+    int32_t alpha = 1, beta = 0;
+    int m = (int)gemm_n;
+    int n = (int)args->rows;
+    int k = (int)args->input_dim;
+    if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
+                      weight, HIP_R_8I, k, input, HIP_R_8I, k, &beta,
+                      h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
+                      HIPBLAS_GEMM_DEFAULT) != HIPBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    uint32_t rows = args->rows;
+    uint32_t cols = hidden;
+    dim3 block(256, 1, 1);
+    dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
+    void *ep_host[] = {&h3_int8_i32_scratch, &input_scales, &weight_scales,
+                       &output, &rows, &cols};
+    const void *ep = fc1_swiglu ?
+        reinterpret_cast<const void *>(h3_i32_swiglu_to_bf16_kernel) :
+        reinterpret_cast<const void *>(h3_i32_scale_to_bf16_kernel);
+    return hipLaunchKernel(ep, grid, block, ep_host, 0, stream) == hipSuccess;
+}
+
 static int h3_launch_linear_int8_r64_dispatch(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, const h3_linear_args *args,
@@ -2128,6 +2263,10 @@ static int h3_launch_linear_int8_r64_dispatch(
                     strcmp(getenv("H3_INT8_R64"), "0") != 0;
     int force_fc1_r64 = getenv("H3_INT8_FC1_R64") &&
                         strcmp(getenv("H3_INT8_FC1_R64"), "0") != 0;
+    if (h3_int8_hipblas_linear(input, weight, input_scales, weight_scales,
+                               output, args, stream, fc1_swiglu)) {
+        return 1;
+    }
     int use_t128 = !fc1_swiglu && !force_r64;
     int use_fc1_r128x64 = fc1_swiglu && !force_fc1_r64 && !force_r64;
     h3_linear_args host_args = *args;
