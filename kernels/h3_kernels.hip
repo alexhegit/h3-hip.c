@@ -2328,21 +2328,24 @@ h3_sdpa_f32_wave_d64_q2_kernel(const float *query, const float *key,
     }
 }
 
-/* Four queries share each K/V load (d64 VAE). Default. Opt out: H3_SDPA_D64_Q2=1. */
+/* N queries share each K/V load (d64 VAE). Default N=4.
+ * H3_SDPA_D64_Q8=1 is slower on gfx1151 (REJECT as default).
+ * Opt out: H3_SDPA_D64_Q2=1 or H3_SDPA_D64_Q1=1. */
+template <int QN>
 __global__ void __launch_bounds__(32)
-h3_sdpa_f32_wave_d64_q4_kernel(const float *query, const float *key,
+h3_sdpa_f32_wave_d64_qn_kernel(const float *query, const float *key,
                                const float *value, float *output,
                                h3_sdpa_args args) {
-    uint32_t q_pos = blockIdx.x * 4u;
+    uint32_t q_pos = blockIdx.x * (uint32_t)QN;
     uint32_t head = blockIdx.y;
     uint32_t lane = threadIdx.x;
     uint32_t d0 = lane * 2u;
     uint32_t q_stride = args.heads * 64u;
     uint32_t q_base0 = (q_pos * args.heads + head) * 64u;
-    int live[4];
-    float q0[4], q1[4], acc0[4], acc1[4], mx[4], sm[4];
+    int live[QN];
+    float q0[QN], q1[QN], acc0[QN], acc1[QN], mx[QN], sm[QN];
 #pragma unroll
-    for (int qi = 0; qi < 4; qi++) {
+    for (int qi = 0; qi < QN; qi++) {
         live[qi] = (q_pos + (uint32_t)qi) < args.sequence;
         q0[qi] = 0.0f;
         q1[qi] = 0.0f;
@@ -2360,7 +2363,7 @@ h3_sdpa_f32_wave_d64_q4_kernel(const float *query, const float *key,
                                          : head * 64u;
     uint32_t k_pos = 0;
     for (; k_pos + 3u < args.sequence; k_pos += 4u) {
-        float v0s[4], v1s[4], sc[4][4];
+        float v0s[4], v1s[4], sc[QN][4];
 #pragma unroll
         for (int t = 0; t < 4; t++) {
             uint32_t base = k_base + (uint32_t)t * stride;
@@ -2369,12 +2372,12 @@ h3_sdpa_f32_wave_d64_q4_kernel(const float *query, const float *key,
             v0s[t] = vv.x;
             v1s[t] = vv.y;
 #pragma unroll
-            for (int qi = 0; qi < 4; qi++)
+            for (int qi = 0; qi < QN; qi++)
                 sc[qi][t] = (qi && !live[qi]) ? 0.0f :
                     h3_warp_reduce_sum(q0[qi] * kk.x + q1[qi] * kk.y);
         }
 #pragma unroll
-        for (int qi = 0; qi < 4; qi++) {
+        for (int qi = 0; qi < QN; qi++) {
             if (qi && !live[qi]) continue;
             float nw = fmaxf(mx[qi], fmaxf(fmaxf(sc[qi][0], sc[qi][1]),
                                            fmaxf(sc[qi][2], sc[qi][3])));
@@ -2396,7 +2399,7 @@ h3_sdpa_f32_wave_d64_q4_kernel(const float *query, const float *key,
         float2 kk = h3_load_f32x2(key + k_base + d0);
         float2 vv = h3_load_f32x2(value + k_base + d0);
 #pragma unroll
-        for (int qi = 0; qi < 4; qi++) {
+        for (int qi = 0; qi < QN; qi++) {
             if (qi && !live[qi]) continue;
             float score = h3_warp_reduce_sum(q0[qi] * kk.x + q1[qi] * kk.y);
             float nw = fmaxf(mx[qi], score);
@@ -2410,7 +2413,7 @@ h3_sdpa_f32_wave_d64_q4_kernel(const float *query, const float *key,
         k_base += stride;
     }
 #pragma unroll
-    for (int qi = 0; qi < 4; qi++) {
+    for (int qi = 0; qi < QN; qi++) {
         if (!live[qi]) continue;
         float inv = sm[qi] > 0.0f ? 1.0f / sm[qi] : 0.0f;
         h3_store_f32x2(output + q_base0 + (uint32_t)qi * q_stride + d0,
@@ -3432,14 +3435,20 @@ extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
               strcmp(getenv("H3_SDPA_D64_Q1"), "0") != 0)) {
             int force_q2 = getenv("H3_SDPA_D64_Q2") &&
                            strcmp(getenv("H3_SDPA_D64_Q2"), "0") != 0;
+            int force_q8 = getenv("H3_SDPA_D64_Q8") &&
+                           strcmp(getenv("H3_SDPA_D64_Q8"), "0") != 0;
             if (force_q2) {
                 grid = dim3((host_args.sequence + 1u) / 2u, host_args.heads, 1);
                 kernel = reinterpret_cast<const void *>(
                     h3_sdpa_f32_wave_d64_q2_kernel);
+            } else if (force_q8) {
+                grid = dim3((host_args.sequence + 7u) / 8u, host_args.heads, 1);
+                kernel = reinterpret_cast<const void *>(
+                    h3_sdpa_f32_wave_d64_qn_kernel<8>);
             } else {
                 grid = dim3((host_args.sequence + 3u) / 4u, host_args.heads, 1);
                 kernel = reinterpret_cast<const void *>(
-                    h3_sdpa_f32_wave_d64_q4_kernel);
+                    h3_sdpa_f32_wave_d64_qn_kernel<4>);
             }
         }
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,

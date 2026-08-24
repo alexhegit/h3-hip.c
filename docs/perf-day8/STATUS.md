@@ -8,7 +8,7 @@ Baseline fox s2: denoise GPU **11.71s** (lin **7.20** · sdpa **3.87**)
 Baseline fox-fast: denoise GPU **85.26s** (lin **52.3** · sdpa **28.2**)  
 Priority: INT8 via hipBLAS (not naive packing); then SDPA Q7  
 Loop: 45m one-shot (`AGENT_LOOP_WAKE_perf_day8`) until 19:00; **unilab / gfx1151 only**  
-Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-buffer/float4 LDS BK+4, mmap memcpy default, t128 skip-last-sync, launch_bounds(256,3), INT8 LDS_K BK+8, grouped k+=16, naive INT8 WMMA, SDPA Q7, Q6 pipe, Q6 K-unroll-2, Q6×2 L2, hipBLAS/hipBLASLt F32, hipBLASLt i8 fused scale
+Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-buffer/float4 LDS BK+4, mmap memcpy default, t128 skip-last-sync, launch_bounds(256,3), INT8 LDS_K BK+8, grouped k+=16, naive INT8 WMMA, SDPA Q7, Q6 pipe, Q6 K-unroll-2, Q6×2 L2, hipBLAS/hipBLASLt F32, hipBLASLt i8 fused scale, VAE d64 Q8 default
 
 ## Scoreboard (fox s2)
 
@@ -46,6 +46,7 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 - **KEEP** SDPA Q6 consecutive-4 vector loads (`uint2` K/V/Q/out). Opt out `H3_SDPA_Q6_SCALAR=1`. Micro 53.2→**43.5 ms**. Fox s2 same-binary: sdpa 3.80→**3.47**, denoise GPU 8.87→**8.54**. Fox-fast denoise GPU 65.46→**62.33** (sdpa 28.14→**25.48**). vs M5 16.69s: **3.73×**. Tests pass.
 - **KEEP** VAE d64 SDPA consecutive `float2` loads on Q2 (default). Fox s2 video VAE sdpa 6.39→**6.07**, VAE GPU 17.44→**16.99**. Tests pass.
 - **KEEP** VAE d64 Q4 (4 queries share K/V; opt out `H3_SDPA_D64_Q2=1`). Fox s2 video VAE sdpa 6.07→**4.74**, VAE GPU 16.99→**15.74**. Tests pass.
+- **REJECT** VAE d64 Q8 as default (fox s2 video VAE sdpa 4.97 vs Q4 4.74). Opt-in `H3_SDPA_D64_Q8=1`.
 
 ## Log
 
@@ -65,3 +66,5 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 | 17:53 | fox s2 Q6 vec vs scalar | sdpa 3.80→**3.47** / GPU 8.87→**8.54** — KEEP |
 | 18:03 | fox-fast Q6 vec | denoise GPU **62.33** / sdpa **25.48** |
 | 18:19 | VAE d64 float2 loads | video VAE sdpa 6.39→**6.07** — KEEP |
+| 18:31 | VAE d64 Q4 | video VAE sdpa 6.07→**4.74** — KEEP |
+| 18:46 | VAE d64 Q8 default | sdpa 4.97 vs Q4 4.74 — REJECT |
