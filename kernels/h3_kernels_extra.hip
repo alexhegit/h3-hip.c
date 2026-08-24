@@ -1331,14 +1331,16 @@ __global__ void h3_quantize_bf16_int8_rows_kernel(
             uint16_t vals[4] = {
                 (uint16_t)(packed.x & 0xffffu), (uint16_t)(packed.x >> 16),
                 (uint16_t)(packed.y & 0xffffu), (uint16_t)(packed.y >> 16)};
+            uint32_t qpack = 0;
 #pragma unroll
             for (int i = 0; i < 4; i++) {
                 int quantized =
                     (int)rintf(h3_bf16_to_f32(vals[i]) * inverse);
                 if (quantized > 127) quantized = 127;
                 if (quantized < -127) quantized = -127;
-                output[base + column + (uint32_t)i] = (int8_t)quantized;
+                qpack |= (uint32_t)(uint8_t)(int8_t)quantized << (8 * i);
             }
+            *reinterpret_cast<uint32_t *>(output + base + column) = qpack;
         }
     } else {
         for (uint32_t column = tid; column < args.columns; column += threads) {
