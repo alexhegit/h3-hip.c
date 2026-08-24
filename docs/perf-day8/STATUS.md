@@ -36,6 +36,9 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 - **REJECT** hipBLAS F32 linear (VAE shapes slower than tiled r128: 23.6 vs 13.8 ms on 1797×8192×2048).
 - **REJECT** hipBLASLt fused outer-vec scale / i8→bf16 (0 algs on gfx1151).
 - **REJECT** Q6 K/V software pipeline (micro 56.3 vs 53.9).
+- **REJECT** Q6 K-unroll-2 (micro 53.3–54.1 vs 53.9; noise).
+- **REJECT** hipBLASLt F32 (78 ms vs tiled 13.8 ms on VAE shape).
+- **KEEP** vectorized BF16 add (uint2×4) and RMS-norm loads/stores. Tests pass; fox s2 other 0.632→0.627 (noise). No denoise claim.
 
 ## Log
 
@@ -48,3 +51,5 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 | 08:24 | fox s2 t128 A/B | denoise GPU 11.61 / lin 7.15 — KEEP hipBLAS |
 | 08:34 | fox-fast hipBLAS | denoise GPU **65.46** / lin **32.72** / sdpa 28.14 |
 | 08:40 | SDPA Q7 / F32 hipBLAS / Q6 pipe / Lt fuse | all REJECT |
+| 08:45 | Q6 K-unroll-2 / hipBLASLt F32 | REJECT |
+| 08:50 | vec add+rms | tests ok; fox s2 GPU 8.95 (noise vs 8.99) |

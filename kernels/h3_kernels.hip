@@ -65,11 +65,31 @@ __global__ void h3_cast_bf16_to_f32_kernel(const uint16_t *input, float *output,
 
 __global__ void h3_add_bf16_kernel(const uint16_t *left, const uint16_t *right,
                                    uint16_t *output, uint32_t count) {
-    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (gid < count) {
-        output[gid] = h3_f32_to_bf16(h3_bf16_to_f32(left[gid]) +
-                                     h3_bf16_to_f32(right[gid]));
+    uint32_t gid = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (gid + 3u < count) {
+        uint2 a = *reinterpret_cast<const uint2 *>(left + gid);
+        uint2 b = *reinterpret_cast<const uint2 *>(right + gid);
+        uint16_t av[4] = {(uint16_t)(a.x & 0xffffu), (uint16_t)(a.x >> 16),
+                          (uint16_t)(a.y & 0xffffu), (uint16_t)(a.y >> 16)};
+        uint16_t bv[4] = {(uint16_t)(b.x & 0xffffu), (uint16_t)(b.x >> 16),
+                          (uint16_t)(b.y & 0xffffu), (uint16_t)(b.y >> 16)};
+        uint32_t o0 =
+            (uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(av[0]) + h3_bf16_to_f32(bv[0])) |
+            ((uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(av[1]) +
+                                      h3_bf16_to_f32(bv[1]))
+             << 16);
+        uint32_t o1 =
+            (uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(av[2]) + h3_bf16_to_f32(bv[2])) |
+            ((uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(av[3]) +
+                                      h3_bf16_to_f32(bv[3]))
+             << 16);
+        uint2 out{o0, o1};
+        *reinterpret_cast<uint2 *>(output + gid) = out;
+        return;
     }
+    for (uint32_t i = 0; gid + i < count; i++)
+        output[gid + i] = h3_f32_to_bf16(h3_bf16_to_f32(left[gid + i]) +
+                                         h3_bf16_to_f32(right[gid + i]));
 }
 
 __global__ void h3_sub_bf16_kernel(const uint16_t *left, const uint16_t *right,
@@ -502,9 +522,23 @@ __global__ void h3_rms_norm_bf16_kernel(const uint16_t *input,
     __shared__ float reductions[256];
     const uint16_t *x = input + row * args.width;
     float local_sum = 0.0f;
-    for (uint32_t k = tid; k < args.width; k += threads) {
-        float value = h3_bf16_to_f32(x[k]);
-        local_sum = fmaf(value, value, local_sum);
+    if ((args.width & 3u) == 0u) {
+        for (uint32_t k = tid * 4u; k < args.width; k += threads * 4u) {
+            uint2 packed = *reinterpret_cast<const uint2 *>(x + k);
+            float f0 = h3_bf16_to_f32((uint16_t)(packed.x & 0xffffu));
+            float f1 = h3_bf16_to_f32((uint16_t)(packed.x >> 16));
+            float f2 = h3_bf16_to_f32((uint16_t)(packed.y & 0xffffu));
+            float f3 = h3_bf16_to_f32((uint16_t)(packed.y >> 16));
+            local_sum = fmaf(f0, f0, local_sum);
+            local_sum = fmaf(f1, f1, local_sum);
+            local_sum = fmaf(f2, f2, local_sum);
+            local_sum = fmaf(f3, f3, local_sum);
+        }
+    } else {
+        for (uint32_t k = tid; k < args.width; k += threads) {
+            float value = h3_bf16_to_f32(x[k]);
+            local_sum = fmaf(value, value, local_sum);
+        }
     }
     reductions[tid] = local_sum;
     __syncthreads();
@@ -513,10 +547,37 @@ __global__ void h3_rms_norm_bf16_kernel(const uint16_t *input,
         __syncthreads();
     }
     float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
-    for (uint32_t column = tid; column < args.width; column += threads) {
-        float normalized = h3_bf16_to_f32(x[column]) * inverse;
-        output[row * args.width + column] =
-            h3_f32_to_bf16(normalized * h3_bf16_to_f32(weight[column]));
+    if ((args.width & 3u) == 0u) {
+        uint16_t *row_out = output + row * args.width;
+        for (uint32_t column = tid * 4u; column < args.width;
+             column += threads * 4u) {
+            uint2 xv = *reinterpret_cast<const uint2 *>(x + column);
+            uint2 wv = *reinterpret_cast<const uint2 *>(weight + column);
+            uint16_t xs[4] = {(uint16_t)(xv.x & 0xffffu), (uint16_t)(xv.x >> 16),
+                              (uint16_t)(xv.y & 0xffffu), (uint16_t)(xv.y >> 16)};
+            uint16_t ws[4] = {(uint16_t)(wv.x & 0xffffu), (uint16_t)(wv.x >> 16),
+                              (uint16_t)(wv.y & 0xffffu), (uint16_t)(wv.y >> 16)};
+            uint32_t o0 =
+                (uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(xs[0]) * inverse *
+                                         h3_bf16_to_f32(ws[0])) |
+                ((uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(xs[1]) * inverse *
+                                          h3_bf16_to_f32(ws[1]))
+                 << 16);
+            uint32_t o1 =
+                (uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(xs[2]) * inverse *
+                                         h3_bf16_to_f32(ws[2])) |
+                ((uint32_t)h3_f32_to_bf16(h3_bf16_to_f32(xs[3]) * inverse *
+                                          h3_bf16_to_f32(ws[3]))
+                 << 16);
+            uint2 packed{o0, o1};
+            *reinterpret_cast<uint2 *>(row_out + column) = packed;
+        }
+    } else {
+        for (uint32_t column = tid; column < args.width; column += threads) {
+            float normalized = h3_bf16_to_f32(x[column]) * inverse;
+            output[row * args.width + column] =
+                h3_f32_to_bf16(normalized * h3_bf16_to_f32(weight[column]));
+        }
     }
 }
 
@@ -2548,7 +2609,7 @@ extern "C" int h3_launch_add_bf16(const uint16_t *left, const uint16_t *right,
                                   uint16_t *output, uint32_t count,
                                   hipStream_t stream) {
     void *args[] = {&left, &right, &output, &count};
-    return h3_launch_1d(count, stream,
+    return h3_launch_1d((count + 3u) / 4u, stream,
                         reinterpret_cast<const void *>(h3_add_bf16_kernel),
                         sizeof(args), args);
 }
