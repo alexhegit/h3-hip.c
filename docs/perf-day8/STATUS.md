@@ -8,7 +8,7 @@ Baseline fox s2: denoise GPU **11.71s** (lin **7.20** · sdpa **3.87**)
 Baseline fox-fast: denoise GPU **85.26s** (lin **52.3** · sdpa **28.2**)  
 Priority: INT8 via hipBLAS (not naive packing); then SDPA Q7  
 Loop: 45m one-shot (`AGENT_LOOP_WAKE_perf_day8`) until 19:00; **unilab / gfx1151 only**  
-Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-buffer/float4 LDS BK+4, mmap memcpy default, t128 skip-last-sync, launch_bounds(256,3), INT8 LDS_K BK+8, grouped k+=16, naive INT8 WMMA
+Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-buffer/float4 LDS BK+4, mmap memcpy default, t128 skip-last-sync, launch_bounds(256,3), INT8 LDS_K BK+8, grouped k+=16, naive INT8 WMMA, SDPA Q7, Q6 pipe, Q6 K-unroll-2, Q6×2 L2, hipBLAS/hipBLASLt F32, hipBLASLt i8 fused scale
 
 ## Scoreboard (fox s2)
 
@@ -39,6 +39,8 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 - **REJECT** Q6 K-unroll-2 (micro 53.3–54.1 vs 53.9; noise).
 - **REJECT** hipBLASLt F32 (78 ms vs tiled 13.8 ms on VAE shape).
 - **KEEP** vectorized BF16 add (uint2×4) and RMS-norm loads/stores. Tests pass; fox s2 other 0.632→0.627 (noise). No denoise claim.
+
+- **REJECT** Q6×2 (two K sweeps per block for L2 reuse): micro 55–57 ms vs Q6 53.9.
 
 ## Log
 
