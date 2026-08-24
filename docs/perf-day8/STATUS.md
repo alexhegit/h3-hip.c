@@ -45,6 +45,7 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 - **REJECT** Q6×2 (two K sweeps per block for L2 reuse): micro 55–57 ms vs Q6 53.9.
 - **KEEP** SDPA Q6 consecutive-4 vector loads (`uint2` K/V/Q/out). Opt out `H3_SDPA_Q6_SCALAR=1`. Micro 53.2→**43.5 ms**. Fox s2 same-binary: sdpa 3.80→**3.47**, denoise GPU 8.87→**8.54**. Fox-fast denoise GPU 65.46→**62.33** (sdpa 28.14→**25.48**). vs M5 16.69s: **3.73×**. Tests pass.
 - **KEEP** VAE d64 SDPA consecutive `float2` loads on Q2 (default). Fox s2 video VAE sdpa 6.39→**6.07**, VAE GPU 17.44→**16.99**. Tests pass.
+- **KEEP** VAE d64 Q4 (4 queries share K/V; opt out `H3_SDPA_D64_Q2=1`). Fox s2 video VAE sdpa 6.07→**4.74**, VAE GPU 16.99→**15.74**. Tests pass.
 
 ## Log
 
@@ -63,3 +64,4 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 | 17:47 | Q6 consecutive uint2 loads | micro 53.2→43.5; tests ok |
 | 17:53 | fox s2 Q6 vec vs scalar | sdpa 3.80→**3.47** / GPU 8.87→**8.54** — KEEP |
 | 18:03 | fox-fast Q6 vec | denoise GPU **62.33** / sdpa **25.48** |
+| 18:19 | VAE d64 float2 loads | video VAE sdpa 6.39→**6.07** — KEEP |

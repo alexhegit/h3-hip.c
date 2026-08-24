@@ -2328,6 +2328,96 @@ h3_sdpa_f32_wave_d64_q2_kernel(const float *query, const float *key,
     }
 }
 
+/* Four queries share each K/V load (d64 VAE). Default. Opt out: H3_SDPA_D64_Q2=1. */
+__global__ void __launch_bounds__(32)
+h3_sdpa_f32_wave_d64_q4_kernel(const float *query, const float *key,
+                               const float *value, float *output,
+                               h3_sdpa_args args) {
+    uint32_t q_pos = blockIdx.x * 4u;
+    uint32_t head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    uint32_t d0 = lane * 2u;
+    uint32_t q_stride = args.heads * 64u;
+    uint32_t q_base0 = (q_pos * args.heads + head) * 64u;
+    int live[4];
+    float q0[4], q1[4], acc0[4], acc1[4], mx[4], sm[4];
+#pragma unroll
+    for (int qi = 0; qi < 4; qi++) {
+        live[qi] = (q_pos + (uint32_t)qi) < args.sequence;
+        q0[qi] = 0.0f;
+        q1[qi] = 0.0f;
+        acc0[qi] = 0.0f;
+        acc1[qi] = 0.0f;
+        mx[qi] = -1e30f;
+        sm[qi] = 0.0f;
+        if (!live[qi]) continue;
+        float2 qq = h3_load_f32x2(query + q_base0 + (uint32_t)qi * q_stride + d0);
+        q0[qi] = qq.x * args.scale;
+        q1[qi] = qq.y * args.scale;
+    }
+    uint32_t stride = args.kv_head_major ? 64u : q_stride;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 64u
+                                         : head * 64u;
+    uint32_t k_pos = 0;
+    for (; k_pos + 3u < args.sequence; k_pos += 4u) {
+        float v0s[4], v1s[4], sc[4][4];
+#pragma unroll
+        for (int t = 0; t < 4; t++) {
+            uint32_t base = k_base + (uint32_t)t * stride;
+            float2 kk = h3_load_f32x2(key + base + d0);
+            float2 vv = h3_load_f32x2(value + base + d0);
+            v0s[t] = vv.x;
+            v1s[t] = vv.y;
+#pragma unroll
+            for (int qi = 0; qi < 4; qi++)
+                sc[qi][t] = (qi && !live[qi]) ? 0.0f :
+                    h3_warp_reduce_sum(q0[qi] * kk.x + q1[qi] * kk.y);
+        }
+#pragma unroll
+        for (int qi = 0; qi < 4; qi++) {
+            if (qi && !live[qi]) continue;
+            float nw = fmaxf(mx[qi], fmaxf(fmaxf(sc[qi][0], sc[qi][1]),
+                                           fmaxf(sc[qi][2], sc[qi][3])));
+            float alpha = h3_fast_exp(mx[qi] - nw);
+            float p0 = h3_fast_exp(sc[qi][0] - nw);
+            float p1 = h3_fast_exp(sc[qi][1] - nw);
+            float p2 = h3_fast_exp(sc[qi][2] - nw);
+            float p3 = h3_fast_exp(sc[qi][3] - nw);
+            acc0[qi] = fmaf(p0, v0s[0], fmaf(p1, v0s[1],
+                         fmaf(p2, v0s[2], fmaf(p3, v0s[3], acc0[qi] * alpha))));
+            acc1[qi] = fmaf(p0, v1s[0], fmaf(p1, v1s[1],
+                         fmaf(p2, v1s[2], fmaf(p3, v1s[3], acc1[qi] * alpha))));
+            sm[qi] = fmaf(sm[qi], alpha, p0 + p1 + p2 + p3);
+            mx[qi] = nw;
+        }
+        k_base += 4u * stride;
+    }
+    for (; k_pos < args.sequence; k_pos++) {
+        float2 kk = h3_load_f32x2(key + k_base + d0);
+        float2 vv = h3_load_f32x2(value + k_base + d0);
+#pragma unroll
+        for (int qi = 0; qi < 4; qi++) {
+            if (qi && !live[qi]) continue;
+            float score = h3_warp_reduce_sum(q0[qi] * kk.x + q1[qi] * kk.y);
+            float nw = fmaxf(mx[qi], score);
+            float alpha = h3_fast_exp(mx[qi] - nw);
+            float p = h3_fast_exp(score - nw);
+            acc0[qi] = fmaf(p, vv.x, acc0[qi] * alpha);
+            acc1[qi] = fmaf(p, vv.y, acc1[qi] * alpha);
+            sm[qi] = fmaf(sm[qi], alpha, p);
+            mx[qi] = nw;
+        }
+        k_base += stride;
+    }
+#pragma unroll
+    for (int qi = 0; qi < 4; qi++) {
+        if (!live[qi]) continue;
+        float inv = sm[qi] > 0.0f ? 1.0f / sm[qi] : 0.0f;
+        h3_store_f32x2(output + q_base0 + (uint32_t)qi * q_stride + d0,
+                       acc0[qi] * inv, acc1[qi] * inv);
+    }
+}
+
 __global__ void __launch_bounds__(32)
 h3_sdpa_bf16_wave_kernel(const uint16_t *query, const uint16_t *key,
                          const uint16_t *value, uint16_t *output,
@@ -3340,9 +3430,17 @@ extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
         if (host_args.head_dim == 64 &&
             !(getenv("H3_SDPA_D64_Q1") &&
               strcmp(getenv("H3_SDPA_D64_Q1"), "0") != 0)) {
-            grid = dim3((host_args.sequence + 1u) / 2u, host_args.heads, 1);
-            kernel = reinterpret_cast<const void *>(
-                h3_sdpa_f32_wave_d64_q2_kernel);
+            int force_q2 = getenv("H3_SDPA_D64_Q2") &&
+                           strcmp(getenv("H3_SDPA_D64_Q2"), "0") != 0;
+            if (force_q2) {
+                grid = dim3((host_args.sequence + 1u) / 2u, host_args.heads, 1);
+                kernel = reinterpret_cast<const void *>(
+                    h3_sdpa_f32_wave_d64_q2_kernel);
+            } else {
+                grid = dim3((host_args.sequence + 3u) / 4u, host_args.heads, 1);
+                kernel = reinterpret_cast<const void *>(
+                    h3_sdpa_f32_wave_d64_q4_kernel);
+            }
         }
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
                                sizeof(kernel_args), stream) == hipSuccess;
