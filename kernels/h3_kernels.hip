@@ -1123,6 +1123,14 @@ __device__ inline void h3_store_bf16x4(uint16_t *ptr, float x0, float x1,
     *reinterpret_cast<uint2 *>(ptr) = uint2{o0, o1};
 }
 
+__device__ inline float2 h3_load_f32x2(const float *ptr) {
+    return *reinterpret_cast<const float2 *>(ptr);
+}
+
+__device__ inline void h3_store_f32x2(float *ptr, float x, float y) {
+    *reinterpret_cast<float2 *>(ptr) = float2{x, y};
+}
+
 /* AudioVAE encoder uses 8 heads x 256; VAE/text stay <= 128. One warp covers
  * 32-wide chunks, so 8 chunks reach head_dim 256. */
 __global__ void __launch_bounds__(32)
@@ -2231,12 +2239,15 @@ h3_sdpa_f32_wave_d64_q2_kernel(const float *query, const float *key,
     int q1_live = (q_pos + 1u) < args.sequence;
     uint32_t q_base0 = (q_pos * args.heads + head) * 64u;
     uint32_t q_base1 = q_base0 + args.heads * 64u;
-    float a0 = query[q_base0 + lane] * args.scale;
-    float a1 = query[q_base0 + 32u + lane] * args.scale;
+    uint32_t d0 = lane * 2u;
+    float2 aq = h3_load_f32x2(query + q_base0 + d0);
+    float a0 = aq.x * args.scale;
+    float a1 = aq.y * args.scale;
     float b0 = 0.0f, b1 = 0.0f;
     if (q1_live) {
-        b0 = query[q_base1 + lane] * args.scale;
-        b1 = query[q_base1 + 32u + lane] * args.scale;
+        float2 bq = h3_load_f32x2(query + q_base1 + d0);
+        b0 = bq.x * args.scale;
+        b1 = bq.y * args.scale;
     }
     float acc_a0 = 0.0f, acc_a1 = 0.0f, acc_b0 = 0.0f, acc_b1 = 0.0f;
     float max_a = -1e30f, max_b = -1e30f, sum_a = 0.0f, sum_b = 0.0f;
@@ -2249,12 +2260,12 @@ h3_sdpa_f32_wave_d64_q2_kernel(const float *query, const float *key,
 #pragma unroll
         for (int t = 0; t < 4; t++) {
             uint32_t base = k_base + (uint32_t)t * stride;
-            float k0 = key[base + lane];
-            float k1v = key[base + 32u + lane];
-            v0s[t] = value[base + lane];
-            v1s[t] = value[base + 32u + lane];
-            sa[t] = h3_warp_reduce_sum(a0 * k0 + a1 * k1v);
-            sb[t] = q1_live ? h3_warp_reduce_sum(b0 * k0 + b1 * k1v) : 0.0f;
+            float2 kk = h3_load_f32x2(key + base + d0);
+            float2 vv = h3_load_f32x2(value + base + d0);
+            v0s[t] = vv.x;
+            v1s[t] = vv.y;
+            sa[t] = h3_warp_reduce_sum(a0 * kk.x + a1 * kk.y);
+            sb[t] = q1_live ? h3_warp_reduce_sum(b0 * kk.x + b1 * kk.y) : 0.0f;
         }
         float new_a = fmaxf(max_a, fmaxf(fmaxf(sa[0], sa[1]),
                                          fmaxf(sa[2], sa[3])));
@@ -2287,37 +2298,33 @@ h3_sdpa_f32_wave_d64_q2_kernel(const float *query, const float *key,
         k_base += 4u * stride;
     }
     for (; k_pos < args.sequence; k_pos++) {
-        float k0 = key[k_base + lane];
-        float k1v = key[k_base + 32u + lane];
-        float v0 = value[k_base + lane];
-        float v1 = value[k_base + 32u + lane];
-        float score_a = h3_warp_reduce_sum(a0 * k0 + a1 * k1v);
+        float2 kk = h3_load_f32x2(key + k_base + d0);
+        float2 vv = h3_load_f32x2(value + k_base + d0);
+        float score_a = h3_warp_reduce_sum(a0 * kk.x + a1 * kk.y);
         float new_a = fmaxf(max_a, score_a);
         float alpha_a = h3_fast_exp(max_a - new_a);
         float pa = h3_fast_exp(score_a - new_a);
-        acc_a0 = fmaf(pa, v0, acc_a0 * alpha_a);
-        acc_a1 = fmaf(pa, v1, acc_a1 * alpha_a);
+        acc_a0 = fmaf(pa, vv.x, acc_a0 * alpha_a);
+        acc_a1 = fmaf(pa, vv.y, acc_a1 * alpha_a);
         sum_a = fmaf(sum_a, alpha_a, pa);
         max_a = new_a;
         if (q1_live) {
-            float score_b = h3_warp_reduce_sum(b0 * k0 + b1 * k1v);
+            float score_b = h3_warp_reduce_sum(b0 * kk.x + b1 * kk.y);
             float new_b = fmaxf(max_b, score_b);
             float alpha_b = h3_fast_exp(max_b - new_b);
             float pb = h3_fast_exp(score_b - new_b);
-            acc_b0 = fmaf(pb, v0, acc_b0 * alpha_b);
-            acc_b1 = fmaf(pb, v1, acc_b1 * alpha_b);
+            acc_b0 = fmaf(pb, vv.x, acc_b0 * alpha_b);
+            acc_b1 = fmaf(pb, vv.y, acc_b1 * alpha_b);
             sum_b = fmaf(sum_b, alpha_b, pb);
             max_b = new_b;
         }
         k_base += stride;
     }
     float inv_a = sum_a > 0.0f ? 1.0f / sum_a : 0.0f;
-    output[q_base0 + lane] = acc_a0 * inv_a;
-    output[q_base0 + 32u + lane] = acc_a1 * inv_a;
+    h3_store_f32x2(output + q_base0 + d0, acc_a0 * inv_a, acc_a1 * inv_a);
     if (q1_live) {
         float inv_b = sum_b > 0.0f ? 1.0f / sum_b : 0.0f;
-        output[q_base1 + lane] = acc_b0 * inv_b;
-        output[q_base1 + 32u + lane] = acc_b1 * inv_b;
+        h3_store_f32x2(output + q_base1 + d0, acc_b0 * inv_b, acc_b1 * inv_b);
     }
 }
 
