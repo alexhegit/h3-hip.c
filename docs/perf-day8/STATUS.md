@@ -15,7 +15,8 @@ Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-
 | Version | denoise GPU | denoise linear | denoise sdpa |
 |---------|------------:|---------------:|-------------:|
 | night-5 `852dbd0` | 11.71 | 7.20 | 3.87 |
-| hipBLAS INT8 (same-binary t128 A/B) | **8.99** | **4.50** | 3.85 |
+| hipBLAS INT8 (same-binary t128 A/B) | 8.99 | **4.50** | 3.85 |
+| Q6 vec loads (same-binary scalar A/B) | **8.54** | 4.45 | **3.47** |
 | t128 opt-out (`H3_INT8_T128=1`) | 11.61 | 7.15 | 3.81 |
 
 Microbench M=1920 K=14336 N=5376: hipBLAS **11.0 ms / 26.9 TFLOP/s** vs t128 **18.8 ms / 15.7 TFLOP/s**.
@@ -25,9 +26,10 @@ Microbench M=1920 K=14336 N=5376: hipBLAS **11.0 ms / 26.9 TFLOP/s** vs t128 **1
 | Version | denoise GPU | denoise linear | denoise sdpa |
 |---------|------------:|---------------:|-------------:|
 | night-5 `852dbd0` | 85.26 | 52.3 | 28.2 |
-| hipBLAS INT8 | **65.46** | **32.72** | 28.14 |
+| hipBLAS INT8 | 65.46 | **32.72** | 28.14 |
+| Q6 vec loads | **62.33** | 32.24 | **25.48** |
 
-M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.92×** that (was 5.7×).
+M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.73×** that (was 5.7×).
 
 ## Decisions
 
@@ -41,6 +43,7 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 - **KEEP** vectorized BF16 add (uint2×4) and RMS-norm loads/stores. Tests pass; fox s2 other 0.632→0.627 (noise). No denoise claim.
 
 - **REJECT** Q6×2 (two K sweeps per block for L2 reuse): micro 55–57 ms vs Q6 53.9.
+- **KEEP** SDPA Q6 consecutive-4 vector loads (`uint2` K/V/Q/out). Opt out `H3_SDPA_Q6_SCALAR=1`. Micro 53.2→**43.5 ms**. Fox s2 same-binary: sdpa 3.80→**3.47**, denoise GPU 8.87→**8.54**. Fox-fast denoise GPU 65.46→**62.33** (sdpa 28.14→**25.48**). vs M5 16.69s: **3.73×**. Tests pass.
 
 ## Log
 
@@ -55,3 +58,7 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 | 08:40 | SDPA Q7 / F32 hipBLAS / Q6 pipe / Lt fuse | all REJECT |
 | 08:45 | Q6 K-unroll-2 / hipBLASLt F32 | REJECT |
 | 08:50 | vec add+rms | tests ok; fox s2 GPU 8.95 (noise vs 8.99) |
+| 08:55 | Q6×2 L2 reuse | 55–57 ms — REJECT |
+| 17:47 | Q6 consecutive uint2 loads | micro 53.2→43.5; tests ok |
+| 17:53 | fox s2 Q6 vec vs scalar | sdpa 3.80→**3.47** / GPU 8.87→**8.54** — KEEP |
+| 18:03 | fox-fast Q6 vec | denoise GPU **62.33** / sdpa **25.48** |

@@ -1104,6 +1104,25 @@ __device__ inline float h3_fast_exp(float x) {
     return exp2f(x * 1.4426950408889634f);
 }
 
+/* 4 consecutive bf16 values (8 bytes). Lane L owns dims 4L..4L+3 so one
+ * uint2 load covers the whole d=128 row (32*8 = 256 bytes). */
+__device__ inline void h3_load_bf16x4(const uint16_t *ptr, float out[4]) {
+    uint2 packed = *reinterpret_cast<const uint2 *>(ptr);
+    out[0] = h3_bf16_to_f32((uint16_t)packed.x);
+    out[1] = h3_bf16_to_f32((uint16_t)(packed.x >> 16));
+    out[2] = h3_bf16_to_f32((uint16_t)packed.y);
+    out[3] = h3_bf16_to_f32((uint16_t)(packed.y >> 16));
+}
+
+__device__ inline void h3_store_bf16x4(uint16_t *ptr, float x0, float x1,
+                                       float x2, float x3) {
+    uint32_t o0 = (uint32_t)h3_f32_to_bf16(x0) |
+                  ((uint32_t)h3_f32_to_bf16(x1) << 16);
+    uint32_t o1 = (uint32_t)h3_f32_to_bf16(x2) |
+                  ((uint32_t)h3_f32_to_bf16(x3) << 16);
+    *reinterpret_cast<uint2 *>(ptr) = uint2{o0, o1};
+}
+
 /* AudioVAE encoder uses 8 heads x 256; VAE/text stay <= 128. One warp covers
  * 32-wide chunks, so 8 chunks reach head_dim 256. */
 __global__ void __launch_bounds__(32)
@@ -1828,6 +1847,77 @@ h3_sdpa_bf16_wave_d128_q6_kernel(const uint16_t *query, const uint16_t *key,
             output[h3_sdpa_output_index(args, q_pos + (uint32_t)qi, head,
                                         32u * (uint32_t)d + lane)] =
                 h3_f32_to_bf16(acc[qi][d] * inv);
+    }
+}
+
+/* Q6 with consecutive-4 dims per lane so K/V/Q/out are uint2 vector loads.
+ * Default. Opt out: H3_SDPA_Q6_SCALAR=1 (strided 32/64/96 layout).
+ * Tail=1 keeps per-query live masks; Tail=0 is for sequence % 6 == 0. */
+template <int Tail>
+__global__ void __launch_bounds__(32)
+h3_sdpa_bf16_wave_d128_q6_vec_kernel(const uint16_t *query, const uint16_t *key,
+                                     const uint16_t *value, uint16_t *output,
+                                     h3_sdpa_args args) {
+    uint32_t q_pos = blockIdx.x * 6u;
+    uint32_t head = blockIdx.y;
+    uint32_t lane = threadIdx.x;
+    uint32_t d0 = lane * 4u;
+    int live[6];
+#pragma unroll
+    for (int i = 0; i < 6; i++)
+        live[i] = !Tail || (q_pos + (uint32_t)i) < args.sequence;
+    uint32_t q_base0 = (q_pos * args.heads + head) * 128u;
+    uint32_t q_stride = args.heads * 128u;
+    float q[6][4];
+#pragma unroll
+    for (int qi = 0; qi < 6; qi++) {
+#pragma unroll
+        for (int d = 0; d < 4; d++) q[qi][d] = 0.0f;
+        if (Tail && !live[qi]) continue;
+        h3_load_bf16x4(query + q_base0 + (uint32_t)qi * q_stride + d0, q[qi]);
+#pragma unroll
+        for (int d = 0; d < 4; d++) q[qi][d] *= args.scale;
+    }
+    float acc[6][4];
+    float mx[6], sm[6];
+#pragma unroll
+    for (int qi = 0; qi < 6; qi++) {
+        mx[qi] = -1e30f;
+        sm[qi] = 0.0f;
+#pragma unroll
+        for (int d = 0; d < 4; d++) acc[qi][d] = 0.0f;
+    }
+    uint32_t stride = args.kv_head_major ? 128u : args.heads * 128u;
+    uint32_t k_base = args.kv_head_major ? head * args.sequence * 128u
+                                         : head * 128u;
+    for (uint32_t k_pos = 0; k_pos < args.sequence; k_pos++) {
+        float kv[4], vv[4];
+        h3_load_bf16x4(key + k_base + d0, kv);
+        h3_load_bf16x4(value + k_base + d0, vv);
+#pragma unroll
+        for (int qi = 0; qi < 6; qi++) {
+            if (Tail && qi && !live[qi]) continue;
+            float score = h3_warp_reduce_sum(q[qi][0] * kv[0] + q[qi][1] * kv[1] +
+                                             q[qi][2] * kv[2] + q[qi][3] * kv[3]);
+            float nw = fmaxf(mx[qi], score);
+            float alpha = h3_fast_exp(mx[qi] - nw);
+            float p = h3_fast_exp(score - nw);
+#pragma unroll
+            for (int d = 0; d < 4; d++)
+                acc[qi][d] = fmaf(p, vv[d], acc[qi][d] * alpha);
+            sm[qi] = fmaf(sm[qi], alpha, p);
+            mx[qi] = nw;
+        }
+        k_base += stride;
+    }
+#pragma unroll
+    for (int qi = 0; qi < 6; qi++) {
+        if (Tail && !live[qi]) continue;
+        float inv = sm[qi] > 0.0f ? 1.0f / sm[qi] : 0.0f;
+        uint32_t out_i = h3_sdpa_output_index(args, q_pos + (uint32_t)qi, head,
+                                              d0);
+        h3_store_bf16x4(output + out_i, acc[qi][0] * inv, acc[qi][1] * inv,
+                        acc[qi][2] * inv, acc[qi][3] * inv);
     }
 }
 
@@ -3177,8 +3267,21 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                     h3_sdpa_bf16_wave_d128_q5_kernel);
             } else {
                 grid = dim3((host_args.sequence + 5u) / 6u, host_args.heads, 1);
-                kernel = reinterpret_cast<const void *>(
-                    h3_sdpa_bf16_wave_d128_q6_kernel);
+                static int q6_scalar = -1;
+                if (q6_scalar < 0) {
+                    const char *e = getenv("H3_SDPA_Q6_SCALAR");
+                    q6_scalar = (e && strcmp(e, "0") != 0) ? 1 : 0;
+                }
+                if (q6_scalar) {
+                    kernel = reinterpret_cast<const void *>(
+                        h3_sdpa_bf16_wave_d128_q6_kernel);
+                } else if ((host_args.sequence % 6u) == 0u) {
+                    kernel = reinterpret_cast<const void *>(
+                        h3_sdpa_bf16_wave_d128_q6_vec_kernel<0>);
+                } else {
+                    kernel = reinterpret_cast<const void *>(
+                        h3_sdpa_bf16_wave_d128_q6_vec_kernel<1>);
+                }
             }
         }
         return hipLaunchKernel(kernel, grid, dim3(32), kernel_args,
