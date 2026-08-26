@@ -1,5 +1,9 @@
 # AMD HIP Port Plan
 
+**Historical.** Written before the gfx1151 port existed. It is not the current
+performance roadmap; see [`PERFORMANCE.md`](PERFORMANCE.md) and
+[`perf/HISTORY.md`](perf/HISTORY.md).
+
 This document records the agreed strategy for porting **h3-metal** to AMD GPUs on
 Linux while preserving the project's two core advantages:
 

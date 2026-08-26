@@ -40,7 +40,8 @@ E2E 与 DiT load 受文件系统缓存影响很大（标 †），判断优化�
 ## 上游 fox-fast（20 steps / 45 layers / reuse 2）
 
 与 [antirez/h3.c](https://github.com/antirez/h3.c) 教程 §2 同一组 knobs。
-完整记录：[`FOX_FAST.md`](FOX_FAST.md)。HIP 跑于 2026-08-22，Q3 工作树。
+完整记录：[`../perf-runs/FOX_FAST.md`](../perf-runs/FOX_FAST.md)（day-5 跑）。
+当前对照：[`../perf-runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md)。HIP 跑于 2026-08-22，Q3 工作树。
 
 | | M5 Max Metal | gfx1151 HIP |
 |--|-------------:|------------:|

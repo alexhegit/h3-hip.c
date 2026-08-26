@@ -35,8 +35,9 @@ fox-fast E2E ≈ 213 s (22 Aug) → 95 s (v0.9.0).
 | day-2 | [`perf-day2/STATUS.md`](../perf-day2/STATUS.md) | 17.3 s | pread8, packed stores; best E2E 105.9 s |
 | night-3 | [`perf-night3/STATUS.md`](../perf-night3/STATUS.md) | 17.2 s | Delayed quant flush; VAE d64 Q2+4-key; VAE GPU 18.5 s |
 | day-4 | [`perf-day4/STATUS.md`](../perf-day4/STATUS.md) | 13.8 s | F32 r128; INT8 t128; d128 Q2 (sdpa 8.1→5.3) |
-| day-5 Q3 | [`perf-day5/`](../perf-day5/STATUS.md) | **13.1 s** | d128 Q3. Frozen snapshot: [`COMPARISON.md`](../perf-day5/COMPARISON.md) |
-| 22 Aug | [`perf-day5/FOX_FAST.md`](../perf-day5/FOX_FAST.md) | (fox-fast 95.6 s GPU) | First fox-fast: E2E 213 s, denoise wall 105 s |
+| day-5 Q3 | [`perf-day5/STATUS.md`](../perf-day5/STATUS.md) | **13.1 s** | d128 Q3. Frozen: [`COMPARISON.md`](../perf-day5/COMPARISON.md) |
+| 22 Aug eve | [`perf-eve/STATUS.md`](../perf-eve/STATUS.md) | 12.7 s | fc1 128×64 |
+| 22 Aug | [`perf-runs/FOX_FAST.md`](../perf-runs/FOX_FAST.md) | (fox-fast 95.6 s GPU) | First fox-fast: E2E 213 s, denoise wall 105 s |
 | night-4 | [`perf-night4/STATUS.md`](../perf-night4/STATUS.md) | 12.2 s | INT8 k+=8, Q4 |
 | day-6 | [`perf-day6/STATUS.md`](../perf-day6/STATUS.md) | 11.8 s | Q5, INT8 k+=16 |
 | night-5 | [`perf-night5/STATUS.md`](../perf-night5/STATUS.md) | 11.7 s | Q6; naive INT8 WMMA rejected |

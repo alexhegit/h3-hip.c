@@ -11,7 +11,10 @@ presets; the only full-run figures are Ref2VA image+audio / video+audio at
 74.58 / 76.99 s, which is a different pipeline.
 
 This file matches the tutorial CLIs on gfx1151 at git `5d25f4a` (plus the two
-runs below). `--show` is omitted: the README says generation without it is
+runs below). The first HIP fox-fast (2026-08-22, denoise wall 105 s) is
+[`FOX_FAST.md`](FOX_FAST.md), not this table.
+
+`--show` is omitted: the README says generation without it is
 unchanged, and the preview VAE would add ~10 GiB and extra decode.
 
 HIP numbers: denoise **wall** is the fair match to the README; `gpu-op` is
