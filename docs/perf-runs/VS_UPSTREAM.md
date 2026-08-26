@@ -1,5 +1,7 @@
 # Apples-to-apples vs antirez/h3.c (v0.9.0)
 
+Internal. User-facing scoreboard: [`../PERFORMANCE.md`](../PERFORMANCE.md).
+
 Upstream ([antirez/h3.c](https://github.com/antirez/h3.c) README, retrieved
 2026-08-26) does **not** ship a performance harness. `make test` / `make parity`
 are host and Metal/MLX correctness checks. All published speed numbers are

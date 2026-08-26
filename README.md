@@ -9,6 +9,10 @@ pure HIP so the same CLI and model stack run on ROCm.
 **CUDA sibling (DGX Spark):** [alexhegit/h3-spark.c](https://github.com/alexhegit/h3-spark.c)
 **Official weights:** [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3)
 
+On gfx1151 (v0.9.0): fox-fast **~95 s** end-to-end (512², 22 frames, 20 steps);
+short fox-s2 smoke **83–87 s**. Release scoreboard:
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
 ## Showcase (AMD gfx1151)
 
 Clip below was generated on an AMD Strix Halo iGPU (`gfx1151`) with this HIP
@@ -43,10 +47,9 @@ MODEL=/path/to/MiniMax-H3
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
 | Runtime INT8 MLP | ✅ |
 | `--frames-dir` / `--ssd-streaming` / `--token-reduction` | ✅ |
-| Performance vs Metal / HIP `--profile` phases | 🔧 profiling in progress |
+| gfx1151 fox-fast / fox-s2 timings | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
 
-Port plan: [`docs/AMD_HIP_PORT_PLAN.md`](docs/AMD_HIP_PORT_PLAN.md) · Known gaps:
-[`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
+Known gaps: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
 ## Requirements
 

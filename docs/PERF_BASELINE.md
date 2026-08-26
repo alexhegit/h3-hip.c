@@ -1,12 +1,15 @@
-# HIP performance baseline (gfx1151)
+# HIP performance baseline (gfx1151) — internal
+
+**Users:** [`PERFORMANCE.md`](PERFORMANCE.md). **Session logs:** [`perf/README.md`](perf/README.md).
 
 Machine: AMD Ryzen AI MAX+ 395 / Radeon 8060S (`gfx1151`), ROCm local build.
 Preset: T2VA fox, `512×512`, `frames=22`, `reuse=1`.
 
+**Latest dated fox ledger:** [`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md).
+
 **Latest tagged baseline:** [`perf-runs/V0.9.0.md`](perf-runs/V0.9.0.md)
-(2026-08-26, git `e0d8558` + baseline commit). Fox s2 E2E **82.9–87.3 s**;
-fox-fast E2E **94.8 s**. vs M5 Max: [`perf-runs/VS_UPSTREAM.md`](perf-runs/VS_UPSTREAM.md).
-Dated ledger: [`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md).
+(internal). Public scoreboard: [`PERFORMANCE.md`](PERFORMANCE.md).
+vs M5 Max notes: [`perf-runs/VS_UPSTREAM.md`](perf-runs/VS_UPSTREAM.md).
 
 ## Profile tooling
 
