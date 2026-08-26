@@ -180,9 +180,12 @@ static int layer_weights_load(load_context *load, int layer,
     return 1;
 }
 
+/* Every one of these is filled by `read_file_bf16` on a prefetch lane and then
+ * only read by kernels, so they take the weight allocation: 46.9 GiB per run
+ * that no longer has to be page-locked out of the 31 GiB host pool. */
 static h3_gpu_tensor *allocate_bf16(load_context *load, size_t elements) {
     h3_gpu_tensor *tensor = defer(
-        load, h3_gpu_tensor_new_bf16(load->gpu, elements));
+        load, h3_gpu_tensor_new_bf16_device(load->gpu, elements));
     if (!tensor) {
         fail(load->error, load->error_size,
              "cannot allocate prefetched Qwen weight: %s",

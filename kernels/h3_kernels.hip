@@ -2,6 +2,7 @@
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
+#include <rocwmma/rocwmma.hpp>
 
 #include <math.h>
 #include <stdlib.h>
@@ -23,6 +24,12 @@ __device__ __host__ inline float h3_bf16_to_f32(uint16_t value) {
 __device__ __host__ inline uint16_t h3_f32_to_bf16(float value) {
     __hip_bfloat16 bf16 = __float2bfloat16(value);
     return *reinterpret_cast<uint16_t *>(&bf16);
+}
+
+/* Two bf16 in one dword so an LDS tile can be filled with b32 stores. */
+__device__ inline uint32_t h3_pack_bf16x2(float low, float high) {
+    return (uint32_t)h3_f32_to_bf16(low) |
+           ((uint32_t)h3_f32_to_bf16(high) << 16);
 }
 
 __device__ inline float h3_erf_approx(float value) {
@@ -798,6 +805,132 @@ __global__ void h3_gate_adaln_bf16_kernel(const uint16_t *residual,
     }
 }
 
+__device__ inline float h3_warp_reduce_sum(float value) {
+#pragma unroll
+    for (int mask = 16; mask > 0; mask >>= 1)
+        value += __shfl_xor(value, mask);
+    return value;
+}
+
+__device__ inline float h3_fast_exp(float x) {
+    return exp2f(x * 1.4426950408889634f);
+}
+
+/* 4 consecutive bf16 values (8 bytes). Lane L owns dims 4L..4L+3 so one
+ * uint2 load covers the whole d=128 row (32*8 = 256 bytes). */
+__device__ inline void h3_load_bf16x4(const uint16_t *ptr, float out[4]) {
+    uint2 packed = *reinterpret_cast<const uint2 *>(ptr);
+    out[0] = h3_bf16_to_f32((uint16_t)packed.x);
+    out[1] = h3_bf16_to_f32((uint16_t)(packed.x >> 16));
+    out[2] = h3_bf16_to_f32((uint16_t)packed.y);
+    out[3] = h3_bf16_to_f32((uint16_t)(packed.y >> 16));
+}
+
+__device__ inline void h3_store_bf16x4(uint16_t *ptr, float x0, float x1,
+                                       float x2, float x3) {
+    uint32_t o0 = (uint32_t)h3_f32_to_bf16(x0) |
+                  ((uint32_t)h3_f32_to_bf16(x1) << 16);
+    uint32_t o1 = (uint32_t)h3_f32_to_bf16(x2) |
+                  ((uint32_t)h3_f32_to_bf16(x3) << 16);
+    *reinterpret_cast<uint2 *>(ptr) = uint2{o0, o1};
+}
+
+#define H3_QKV_ROPE_MAX_DIM 256
+#define H3_QKV_ROPE_WAVES 8u
+
+/* Vectorized head_dim=128 path: one wave per (row, head) with four consecutive
+ * dims per lane, so every qkv / weight / rope / output access is a uint2. The
+ * RMS sums are a wave reduction and the RoPE partner dim lives rope_half/4
+ * lanes away, so there is no LDS and no barrier. Requires rope_half % 4 == 0
+ * (true for 48 and 64) so each lane's four dims fall in one rope region. */
+__global__ void __launch_bounds__(H3_QKV_ROPE_WAVES * 32u)
+h3_qkv_rope_bf16_d128_kernel(const uint16_t *qkv, const uint16_t *q_weight,
+                             const uint16_t *k_weight,
+                             const uint16_t *rope_cos, const uint16_t *rope_sin,
+                             uint16_t *query, uint16_t *key, uint16_t *value,
+                             h3_qkv_args args) {
+    const uint32_t wave = threadIdx.x >> 5;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t slot = blockIdx.x * H3_QKV_ROPE_WAVES + wave;
+    if (slot >= args.sequence * args.heads) return;
+    const uint32_t row = slot / args.heads;
+    const uint32_t head = slot - row * args.heads;
+    const uint32_t d0 = lane * 4u;
+    const uint32_t inner = args.heads * 128u;
+    uint32_t q_base = row * inner * 3u;
+    q_base += args.grouped ? head * 384u : head * 128u;
+    const uint32_t k_base = q_base + (args.grouped ? 128u : inner);
+    const uint32_t v_base = q_base + (args.grouped ? 256u : inner * 2u);
+
+    float qv[4], kv[4], wq[4], wk[4];
+    h3_load_bf16x4(qkv + q_base + d0, qv);
+    h3_load_bf16x4(qkv + k_base + d0, kv);
+    h3_load_bf16x4(q_weight + d0, wq);
+    h3_load_bf16x4(k_weight + d0, wk);
+    float qs = 0.0f, ks = 0.0f;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+        qs = fmaf(qv[j], qv[j], qs);
+        ks = fmaf(kv[j], kv[j], ks);
+    }
+    float q_inverse = rsqrtf(h3_warp_reduce_sum(qs) / 128.0f + args.epsilon);
+    float k_inverse = rsqrtf(h3_warp_reduce_sum(ks) / 128.0f + args.epsilon);
+    float qw[4], kw[4];
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+        qw[j] = qv[j] * q_inverse * wq[j];
+        kw[j] = kv[j] * k_inverse * wk[j];
+    }
+
+    /* Shuffle outside the rope branch: a source lane must be active, which it
+     * would not be inside the divergent region below. */
+    const uint32_t shift = args.rope_half >> 2;
+    int src = (int)lane;
+    if (lane < shift) src = (int)(lane + shift);
+    else if (lane < shift * 2u) src = (int)(lane - shift);
+    float qp[4], kp[4];
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+        qp[j] = __shfl(qw[j], src);
+        kp[j] = __shfl(kw[j], src);
+    }
+
+    float qo[4], ko[4];
+    if (lane < shift * 2u) {
+        /* Lower half rotates with -sin, upper half with +sin. */
+        float sign = lane < shift ? -1.0f : 1.0f;
+        uint32_t rope_index = lane < shift ? d0 : d0 - args.rope_half;
+        float c[4], s[4];
+        h3_load_bf16x4(rope_cos + row * args.rope_half + rope_index, c);
+        h3_load_bf16x4(rope_sin + row * args.rope_half + rope_index, s);
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            qo[j] = fmaf(sign * qp[j], s[j], qw[j] * c[j]);
+            ko[j] = fmaf(sign * kp[j], s[j], kw[j] * c[j]);
+        }
+    } else {
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+            qo[j] = qw[j];
+            ko[j] = kw[j];
+        }
+    }
+
+    uint32_t out_index = (row * args.heads + head) * 128u + d0;
+    uint32_t kv_index = args.kv_head_major
+                            ? (head * args.sequence + row) * 128u + d0
+                            : out_index;
+    h3_store_bf16x4(query + out_index, qo[0], qo[1], qo[2], qo[3]);
+    h3_store_bf16x4(key + kv_index, ko[0], ko[1], ko[2], ko[3]);
+    *reinterpret_cast<uint2 *>(value + kv_index) =
+        *reinterpret_cast<const uint2 *>(qkv + v_base + d0);
+}
+
+/* One block per (row, head), one thread per dimension. The q/k row is read
+ * once into LDS and the RMS sums come from a block reduction; the RoPE partner
+ * dimension is then an LDS read. Doing the sums per thread instead would read
+ * each row head_dim times, which is what made this ~9x slower than the 165 MB
+ * of traffic it actually needs. */
 __global__ void h3_qkv_rope_bf16_kernel(const uint16_t *qkv,
                                         const uint16_t *q_weight,
                                         const uint16_t *k_weight,
@@ -805,59 +938,75 @@ __global__ void h3_qkv_rope_bf16_kernel(const uint16_t *qkv,
                                         const uint16_t *rope_sin,
                                         uint16_t *query, uint16_t *key,
                                         uint16_t *value, h3_qkv_args args) {
-    uint32_t dimension = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ float sq[H3_QKV_ROPE_MAX_DIM];
+    __shared__ float sk[H3_QKV_ROPE_MAX_DIM];
+    __shared__ float rq[H3_QKV_ROPE_MAX_DIM];
+    __shared__ float rk[H3_QKV_ROPE_MAX_DIM];
+    uint32_t dimension = threadIdx.x;
     uint32_t head = blockIdx.y;
     uint32_t row = blockIdx.z;
-    if (dimension >= args.head_dim || head >= args.heads ||
-        row >= args.sequence) return;
-    uint32_t inner = args.heads * args.head_dim;
+    if (head >= args.heads || row >= args.sequence) return;
+    /* Launcher contract: blockDim.x == head_dim <= H3_QKV_ROPE_MAX_DIM, so no
+     * thread may exit early ahead of the barriers below. */
+    uint32_t n = args.head_dim;
+    uint32_t inner = args.heads * n;
     uint32_t row_base = row * inner * 3;
-    uint32_t q_base = row_base + head * args.head_dim;
+    uint32_t q_base = row_base + head * n;
     uint32_t k_base = q_base + inner;
     uint32_t v_base = q_base + inner * 2;
     if (args.grouped) {
-        q_base = row_base + head * args.head_dim * 3;
-        k_base = q_base + args.head_dim;
-        v_base = k_base + args.head_dim;
+        q_base = row_base + head * n * 3;
+        k_base = q_base + n;
+        v_base = k_base + n;
     }
-    float q_sum = 0.0f;
-    float k_sum = 0.0f;
-    for (uint32_t d = 0; d < args.head_dim; d++) {
-        float q = h3_bf16_to_f32(qkv[q_base + d]);
-        float k = h3_bf16_to_f32(qkv[k_base + d]);
-        q_sum = fmaf(q, q, q_sum);
-        k_sum = fmaf(k, k, k_sum);
+
+    float qv = h3_bf16_to_f32(qkv[q_base + dimension]);
+    float kv = h3_bf16_to_f32(qkv[k_base + dimension]);
+    sq[dimension] = qv;
+    sk[dimension] = kv;
+    rq[dimension] = qv * qv;
+    rk[dimension] = kv * kv;
+    /* Pad the reduction to a power of two; pow2 < 2n, so dimension+n covers
+     * the whole padded tail. */
+    uint32_t pow2 = 1u;
+    while (pow2 < n) pow2 <<= 1;
+    if (dimension + n < pow2) {
+        rq[dimension + n] = 0.0f;
+        rk[dimension + n] = 0.0f;
     }
-    float q_inverse = rsqrtf(q_sum / float(args.head_dim) + args.epsilon);
-    float k_inverse = rsqrtf(k_sum / float(args.head_dim) + args.epsilon);
-    float q0 = h3_bf16_to_f32(qkv[q_base + dimension]) * q_inverse *
-               h3_bf16_to_f32(q_weight[dimension]);
-    float k0 = h3_bf16_to_f32(qkv[k_base + dimension]) * k_inverse *
-               h3_bf16_to_f32(k_weight[dimension]);
+    __syncthreads();
+    for (uint32_t stride = pow2 >> 1; stride; stride >>= 1) {
+        if (dimension < stride) {
+            rq[dimension] += rq[dimension + stride];
+            rk[dimension] += rk[dimension + stride];
+        }
+        __syncthreads();
+    }
+    float q_inverse = rsqrtf(rq[0] / float(n) + args.epsilon);
+    float k_inverse = rsqrtf(rk[0] / float(n) + args.epsilon);
+
+    float q0 = qv * q_inverse * h3_bf16_to_f32(q_weight[dimension]);
+    float k0 = kv * k_inverse * h3_bf16_to_f32(k_weight[dimension]);
     if (dimension < args.rope_half) {
         uint32_t pair = dimension + args.rope_half;
-        float q1 = h3_bf16_to_f32(qkv[q_base + pair]) * q_inverse *
-                   h3_bf16_to_f32(q_weight[pair]);
-        float k1 = h3_bf16_to_f32(qkv[k_base + pair]) * k_inverse *
-                   h3_bf16_to_f32(k_weight[pair]);
+        float q1 = sq[pair] * q_inverse * h3_bf16_to_f32(q_weight[pair]);
+        float k1 = sk[pair] * k_inverse * h3_bf16_to_f32(k_weight[pair]);
         float c = h3_bf16_to_f32(rope_cos[row * args.rope_half + dimension]);
         float s = h3_bf16_to_f32(rope_sin[row * args.rope_half + dimension]);
         q0 = q0 * c - q1 * s;
         k0 = k0 * c - k1 * s;
     } else if (dimension < args.rope_half * 2) {
         uint32_t pair = dimension - args.rope_half;
-        float q1 = h3_bf16_to_f32(qkv[q_base + pair]) * q_inverse *
-                   h3_bf16_to_f32(q_weight[pair]);
-        float k1 = h3_bf16_to_f32(qkv[k_base + pair]) * k_inverse *
-                   h3_bf16_to_f32(k_weight[pair]);
+        float q1 = sq[pair] * q_inverse * h3_bf16_to_f32(q_weight[pair]);
+        float k1 = sk[pair] * k_inverse * h3_bf16_to_f32(k_weight[pair]);
         float c = h3_bf16_to_f32(rope_cos[row * args.rope_half + pair]);
         float s = h3_bf16_to_f32(rope_sin[row * args.rope_half + pair]);
         q0 = q0 * c + q1 * s;
         k0 = k0 * c + k1 * s;
     }
-    uint32_t output_index = (row * args.heads + head) * args.head_dim + dimension;
+    uint32_t output_index = (row * args.heads + head) * n + dimension;
     uint32_t kv_index = args.kv_head_major ?
-        (head * args.sequence + row) * args.head_dim + dimension : output_index;
+        (head * args.sequence + row) * n + dimension : output_index;
     query[output_index] = h3_f32_to_bf16(q0);
     key[kv_index] = h3_f32_to_bf16(k0);
     value[kv_index] = qkv[v_base + dimension];
@@ -1091,36 +1240,6 @@ static uint32_t h3_sdpa_threads(uint32_t sequence) {
     uint32_t threads = 1;
     while (threads * 2u <= 128u && threads < sequence) threads *= 2u;
     return threads ? threads : 1u;
-}
-
-__device__ inline float h3_warp_reduce_sum(float value) {
-#pragma unroll
-    for (int mask = 16; mask > 0; mask >>= 1)
-        value += __shfl_xor(value, mask);
-    return value;
-}
-
-__device__ inline float h3_fast_exp(float x) {
-    return exp2f(x * 1.4426950408889634f);
-}
-
-/* 4 consecutive bf16 values (8 bytes). Lane L owns dims 4L..4L+3 so one
- * uint2 load covers the whole d=128 row (32*8 = 256 bytes). */
-__device__ inline void h3_load_bf16x4(const uint16_t *ptr, float out[4]) {
-    uint2 packed = *reinterpret_cast<const uint2 *>(ptr);
-    out[0] = h3_bf16_to_f32((uint16_t)packed.x);
-    out[1] = h3_bf16_to_f32((uint16_t)(packed.x >> 16));
-    out[2] = h3_bf16_to_f32((uint16_t)packed.y);
-    out[3] = h3_bf16_to_f32((uint16_t)(packed.y >> 16));
-}
-
-__device__ inline void h3_store_bf16x4(uint16_t *ptr, float x0, float x1,
-                                       float x2, float x3) {
-    uint32_t o0 = (uint32_t)h3_f32_to_bf16(x0) |
-                  ((uint32_t)h3_f32_to_bf16(x1) << 16);
-    uint32_t o1 = (uint32_t)h3_f32_to_bf16(x2) |
-                  ((uint32_t)h3_f32_to_bf16(x3) << 16);
-    *reinterpret_cast<uint2 *>(ptr) = uint2{o0, o1};
 }
 
 __device__ inline float2 h3_load_f32x2(const float *ptr) {
@@ -1926,6 +2045,389 @@ h3_sdpa_bf16_wave_d128_q6_vec_kernel(const uint16_t *query, const uint16_t *key,
                                               d0);
         h3_store_bf16x4(output + out_i, acc[qi][0] * inv, acc[qi][1] * inv,
                         acc[qi][2] * inv, acc[qi][3] * inv);
+    }
+}
+
+/* Tiled WMMA flash attention for head_dim=128 (wave32 RDNA3/3.5).
+ *
+ * Both Q@K^T and P@V run on the matrix units via v_wmma_f32_16x16x16_bf16,
+ * which removes the per-(query,key) cross-lane dot-product reduction that
+ * limits the wave Q6 kernel, and a 32-key K/V tile shared by all waves in the
+ * block cuts global traffic by the query-block size instead of by 6.
+ *
+ * Fragment layouts probed on gfx1151 (rocWMMA 2.2, wave32):
+ *   matrix_a row_major  lane l -> row l&15,  element i -> k 8*(l>>4)+i
+ *   matrix_b col_major  lane l -> col l&15,  element i -> k 8*(l>>4)+i
+ *   accumulator f32     lane l -> col l&15,  element i -> row 2*i+(l>>4)
+ * The accumulator row mapping is what lets the online-softmax rescale stay in
+ * registers: element i of every O fragment belongs to row 2*i+(l>>4), so one
+ * alpha per element index covers all eight 16-dim output slices.
+ *
+ * Rows are reduced across the 16 lanes sharing a row; XOR masks 1/2/4/8 never
+ * flip lane bit 4, so the two row groups stay independent. */
+#define H3_SDPA_WMMA_QROWS 16u
+/* 8 halves of padding so the 16-row fragment loads skew across LDS banks. */
+#define H3_SDPA_WMMA_LD 136u
+
+/* WAVES sets the query block (WAVES*16 rows), which is the K/V reuse factor;
+ * BK sets the key tile staged in LDS per iteration. */
+template <uint32_t WAVES, uint32_t BK>
+__global__ void __launch_bounds__(WAVES * 32u)
+h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
+                              const uint16_t *value, uint16_t *output,
+                              h3_sdpa_args args) {
+    constexpr uint32_t D = 128u;
+    constexpr uint32_t LD = H3_SDPA_WMMA_LD;
+    constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
+    constexpr uint32_t THREADS = WAVES * 32u;
+    constexpr uint32_t NT = BK / 16u;
+    typedef rocwmma::bfloat16_t bf16;
+
+    __shared__ uint16_t sk[BK * LD];
+    __shared__ uint16_t sv[BK * LD];
+    __shared__ uint16_t sp[WAVES][QROWS * BK];
+
+    const uint32_t tid = threadIdx.x;
+    const uint32_t wave = tid >> 5;
+    const uint32_t lane = tid & 31u;
+    const uint32_t col = lane & 15u;
+    const uint32_t rowg = lane >> 4;
+    const uint32_t head = blockIdx.y;
+    const uint32_t sequence = args.sequence;
+
+    /* Clamp the query block so a short tail re-computes overlapping rows: that
+     * keeps the query fragments loadable straight from global. The recomputed
+     * rows must not be stored twice, though -- two waves computing one row
+     * disagree in the last bits, and which store lands last is a race -- so
+     * each wave stores only the rows at or after its unclamped start, which
+     * makes the union exact and disjoint. Requires sequence >= QROWS, enforced
+     * by the dispatch. */
+    uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
+    uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
+
+    rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16, rocwmma::row_major>
+        fq[8];
+    const uint16_t *qp = query + (size_t)(qbase * args.heads + head) * D;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        rocwmma::load_matrix_sync(
+            fq[i], reinterpret_cast<const bf16 *>(qp + (uint32_t)i * 16u),
+            args.heads * D);
+    }
+
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) rocwmma::fill_fragment(fo[j], 0.0f);
+    float row_max[8], row_sum[8];
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        row_max[i] = -1e30f;
+        row_sum[i] = 0.0f;
+    }
+
+    const uint32_t kv_stride = args.kv_head_major ? D : args.heads * D;
+    const size_t kv_base = args.kv_head_major
+                               ? (size_t)head * sequence * D
+                               : (size_t)head * D;
+    const uint16_t *kp = key + kv_base;
+    const uint16_t *vp = value + kv_base;
+
+    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
+        __syncthreads();
+        /* Coalesced uint2 staging: consecutive threads take consecutive
+         * 8-byte chunks; rows past the sequence end are zero filled. */
+        for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
+            uint32_t r = idx >> 7;
+            uint32_t d = idx & 127u;
+            uint32_t g = k0 + r;
+            uint2 kk = uint2{0u, 0u};
+            uint2 vv = uint2{0u, 0u};
+            if (g < sequence) {
+                size_t off = (size_t)g * kv_stride + d;
+                kk = *reinterpret_cast<const uint2 *>(kp + off);
+                vv = *reinterpret_cast<const uint2 *>(vp + off);
+            }
+            *reinterpret_cast<uint2 *>(sk + r * LD + d) = kk;
+            *reinterpret_cast<uint2 *>(sv + r * LD + d) = vv;
+        }
+        __syncthreads();
+
+        /* S = Q @ K^T. K is row-major [key][dim] in LDS, so reading it as
+         * col_major with the same leading dimension yields K^T directly. */
+        rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fs[NT];
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            rocwmma::fill_fragment(fs[t], 0.0f);
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                  rocwmma::col_major> fk;
+                rocwmma::load_matrix_sync(
+                    fk, reinterpret_cast<const bf16 *>(
+                            sk + t * 16u * LD + (uint32_t)i * 16u),
+                    LD);
+                rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
+            }
+        }
+
+        float alpha[8];
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+            float s[NT];
+            float m = -1e30f;
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                s[t] = k0 + t * 16u + col < sequence
+                           ? fs[t].x[i] * args.scale
+                           : -1e30f;
+                m = fmaxf(m, s[t]);
+            }
+#pragma unroll
+            for (int off = 1; off < 16; off <<= 1)
+                m = fmaxf(m, __shfl_xor(m, off));
+            float new_max = fmaxf(row_max[i], m);
+            alpha[i] = h3_fast_exp(row_max[i] - new_max);
+            uint32_t prow = 2u * (uint32_t)i + rowg;
+            float ps = 0.0f;
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                float p = h3_fast_exp(s[t] - new_max);
+                ps += p;
+                sp[wave][prow * BK + t * 16u + col] = h3_f32_to_bf16(p);
+            }
+#pragma unroll
+            for (int off = 1; off < 16; off <<= 1) ps += __shfl_xor(ps, off);
+            row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
+            row_max[i] = new_max;
+        }
+#pragma unroll
+        for (int j = 0; j < 8; j++)
+#pragma unroll
+            for (int i = 0; i < 8; i++) fo[j].x[i] *= alpha[i];
+
+        /* O += P @ V. sp is written and read by the same wave, so the
+         * compiler's LDS dependency tracking covers it without a barrier. */
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                              rocwmma::row_major> fp;
+            rocwmma::load_matrix_sync(
+                fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), BK);
+#pragma unroll
+            for (int j = 0; j < 8; j++) {
+                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                  rocwmma::row_major> fv;
+                rocwmma::load_matrix_sync(
+                    fv, reinterpret_cast<const bf16 *>(
+                            sv + t * 16u * LD + (uint32_t)j * 16u),
+                    LD);
+                rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+            }
+        }
+    }
+
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
+        uint32_t q_pos = qbase + 2u * (uint32_t)i + rowg;
+        if (q_pos < q_row0) continue;
+#pragma unroll
+        for (int j = 0; j < 8; j++) {
+            uint32_t d = (uint32_t)j * 16u + col;
+            output[h3_sdpa_output_index(args, q_pos, head, d)] =
+                h3_f32_to_bf16(fo[j].x[i] * inv);
+        }
+    }
+}
+
+/* Same tiled-WMMA flash attention for the f32 head_dim=64 path used by the
+ * video VAE decoder. The wave kernel it replaces spends a 5-shuffle
+ * h3_warp_reduce_sum on every (query, key) score, which held it to 1.28
+ * TFLOP/s; here the scores come out of the matrix units instead.
+ *
+ * Q/K/V arrive as f32, so all three are rounded to bf16 on the way into LDS
+ * (the accumulator and the output stay f32). Q has to go through LDS as well,
+ * since load_matrix_sync cannot read f32 global memory as bf16 fragments.
+ *
+ * 64 dims of padding-free bf16 would put every 16-row fragment load in the same
+ * LDS bank group, so rows are padded to 72. */
+#define H3_SDPA_WMMA_D64_LD 72u
+
+template <uint32_t WAVES, uint32_t BK>
+__global__ void __launch_bounds__(WAVES * 32u)
+h3_sdpa_f32_wmma_d64_kernel(const float *query, const float *key,
+                            const float *value, float *output,
+                            h3_sdpa_args args) {
+    constexpr uint32_t D = 64u;
+    constexpr uint32_t ND = D / 16u; /* dim slices */
+    constexpr uint32_t LD = H3_SDPA_WMMA_D64_LD;
+    constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
+    constexpr uint32_t THREADS = WAVES * 32u;
+    constexpr uint32_t NT = BK / 16u;
+    typedef rocwmma::bfloat16_t bf16;
+
+    __shared__ __align__(16) uint16_t sk[BK * LD];
+    __shared__ __align__(16) uint16_t sv[BK * LD];
+    __shared__ __align__(16) uint16_t sq[WAVES][QROWS * LD];
+    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
+
+    const uint32_t tid = threadIdx.x;
+    const uint32_t wave = tid >> 5;
+    const uint32_t lane = tid & 31u;
+    const uint32_t col = lane & 15u;
+    const uint32_t rowg = lane >> 4;
+    const uint32_t head = blockIdx.y;
+    const uint32_t sequence = args.sequence;
+
+    /* A partial query block is masked, not clamped back onto the previous one:
+     * letting two waves recompute the same rows made them disagree in the last
+     * bits, and which store landed last was a race. Rows past the end read as
+     * zero and are never stored. */
+    uint32_t qbase = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
+
+    /* Stage this wave's 16 query rows, then build the dim fragments from LDS. */
+    const float *qp = query + (size_t)head * D;
+    for (uint32_t idx = lane * 4u; idx < QROWS * D; idx += 32u * 4u) {
+        uint32_t r = idx / D, d = idx % D;
+        uint32_t g = qbase + r;
+        float4 q = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (g < sequence) {
+            q = *reinterpret_cast<const float4 *>(
+                qp + (size_t)g * args.heads * D + d);
+        }
+        uint32_t *dst = reinterpret_cast<uint32_t *>(sq[wave] + r * LD + d);
+        dst[0] = h3_pack_bf16x2(q.x, q.y);
+        dst[1] = h3_pack_bf16x2(q.z, q.w);
+    }
+    __builtin_amdgcn_s_waitcnt(0);
+    __builtin_amdgcn_wave_barrier();
+    rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16, rocwmma::row_major>
+        fq[ND];
+#pragma unroll
+    for (uint32_t i = 0; i < ND; i++)
+        rocwmma::load_matrix_sync(
+            fq[i], reinterpret_cast<const bf16 *>(sq[wave] + i * 16u), LD);
+
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[ND];
+#pragma unroll
+    for (uint32_t j = 0; j < ND; j++) rocwmma::fill_fragment(fo[j], 0.0f);
+    float row_max[8], row_sum[8];
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        row_max[i] = -1e30f;
+        row_sum[i] = 0.0f;
+    }
+
+    const uint32_t kv_stride = args.kv_head_major ? D : args.heads * D;
+    const size_t kv_base = args.kv_head_major ? (size_t)head * sequence * D
+                                              : (size_t)head * D;
+    const float *kp = key + kv_base;
+    const float *vp = value + kv_base;
+
+    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
+        __syncthreads();
+        for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
+            uint32_t r = idx / D, d = idx % D;
+            uint32_t g = k0 + r;
+            float4 kk = make_float4(0.f, 0.f, 0.f, 0.f);
+            float4 vv = kk;
+            if (g < sequence) {
+                size_t off = (size_t)g * kv_stride + d;
+                kk = *reinterpret_cast<const float4 *>(kp + off);
+                vv = *reinterpret_cast<const float4 *>(vp + off);
+            }
+            uint32_t *dk = reinterpret_cast<uint32_t *>(sk + r * LD + d);
+            dk[0] = h3_pack_bf16x2(kk.x, kk.y);
+            dk[1] = h3_pack_bf16x2(kk.z, kk.w);
+            uint32_t *dv = reinterpret_cast<uint32_t *>(sv + r * LD + d);
+            dv[0] = h3_pack_bf16x2(vv.x, vv.y);
+            dv[1] = h3_pack_bf16x2(vv.z, vv.w);
+        }
+        __syncthreads();
+
+        rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fs[NT];
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            rocwmma::fill_fragment(fs[t], 0.0f);
+#pragma unroll
+            for (uint32_t i = 0; i < ND; i++) {
+                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                  rocwmma::col_major> fk;
+                rocwmma::load_matrix_sync(
+                    fk, reinterpret_cast<const bf16 *>(sk + t * 16u * LD +
+                                                       i * 16u),
+                    LD);
+                rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
+            }
+        }
+
+        float alpha[8];
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+            float s[NT];
+            float m = -1e30f;
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                s[t] = k0 + t * 16u + col < sequence
+                           ? fs[t].x[i] * args.scale
+                           : -1e30f;
+                m = fmaxf(m, s[t]);
+            }
+#pragma unroll
+            for (int off = 1; off < 16; off <<= 1)
+                m = fmaxf(m, __shfl_xor(m, off));
+            float new_max = fmaxf(row_max[i], m);
+            alpha[i] = h3_fast_exp(row_max[i] - new_max);
+            uint32_t prow = 2u * (uint32_t)i + rowg;
+            float ps = 0.0f;
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                float p = h3_fast_exp(s[t] - new_max);
+                ps += p;
+                sp[wave][prow * BK + t * 16u + col] = h3_f32_to_bf16(p);
+            }
+#pragma unroll
+            for (int off = 1; off < 16; off <<= 1) ps += __shfl_xor(ps, off);
+            row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
+            row_max[i] = new_max;
+        }
+#pragma unroll
+        for (uint32_t j = 0; j < ND; j++)
+#pragma unroll
+            for (int i = 0; i < 8; i++) fo[j].x[i] *= alpha[i];
+
+        __builtin_amdgcn_s_waitcnt(0);
+        __builtin_amdgcn_wave_barrier();
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                              rocwmma::row_major> fp;
+            rocwmma::load_matrix_sync(
+                fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), BK);
+#pragma unroll
+            for (uint32_t j = 0; j < ND; j++) {
+                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                  rocwmma::row_major> fv;
+                rocwmma::load_matrix_sync(
+                    fv, reinterpret_cast<const bf16 *>(sv + t * 16u * LD +
+                                                       j * 16u),
+                    LD);
+                rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+            }
+        }
+    }
+
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
+        uint32_t q_pos = qbase + 2u * (uint32_t)i + rowg;
+        if (q_pos >= sequence) continue;
+#pragma unroll
+        for (uint32_t j = 0; j < ND; j++) {
+            uint32_t d = j * 16u + col;
+            output[h3_sdpa_output_index(args, q_pos, head, d)] =
+                fo[j].x[i] * inv;
+        }
     }
 }
 
@@ -3192,9 +3694,25 @@ extern "C" int h3_launch_qkv_rope_bf16(const uint16_t *qkv,
     h3_qkv_args host_args = *args;
     void *kernel_args[] = {&qkv, &q_weight, &k_weight, &rope_cos, &rope_sin,
                            &query, &key, &value, &host_args};
+    if (host_args.head_dim > H3_QKV_ROPE_MAX_DIM) return 0;
+    /* Opt out of the vectorized wave path: H3_QKV_ROPE_SCALAR=1. */
+    static int scalar = -1;
+    if (scalar < 0) {
+        const char *e = getenv("H3_QKV_ROPE_SCALAR");
+        scalar = (e && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    if (!scalar && host_args.head_dim == 128 && (host_args.rope_half % 4u) == 0u &&
+        host_args.rope_half * 2u <= 128u) {
+        uint32_t slots = host_args.sequence * host_args.heads;
+        dim3 grid((slots + H3_QKV_ROPE_WAVES - 1u) / H3_QKV_ROPE_WAVES, 1, 1);
+        return hipLaunchKernel(
+                   reinterpret_cast<const void *>(
+                       h3_qkv_rope_bf16_d128_kernel),
+                   grid, dim3(H3_QKV_ROPE_WAVES * 32u), kernel_args,
+                   sizeof(kernel_args), stream) == hipSuccess;
+    }
     dim3 block(host_args.head_dim, 1, 1);
     dim3 grid(1, host_args.heads, host_args.sequence);
-    if (host_args.head_dim > 256) return 0;
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_qkv_rope_bf16_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
@@ -3305,6 +3823,13 @@ extern "C" int h3_launch_transpose_shd_hsd_f32(const float *input,
                sizeof(kernel_args), stream) == hipSuccess;
 }
 
+static uint32_t h3_env_u32(const char *name, uint32_t fallback) {
+    const char *value = getenv(name);
+    if (!value || !*value) return fallback;
+    unsigned long parsed = strtoul(value, NULL, 10);
+    return parsed ? (uint32_t)parsed : fallback;
+}
+
 extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, uint16_t *output,
                                    const h3_sdpa_args *args,
@@ -3331,6 +3856,58 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                            h3_sdpa_bf16_flash_d128_kernel),
                        grid, block, kernel_args, sizeof(kernel_args),
                        stream) == hipSuccess;
+        }
+        /* Default d128 path: tiled WMMA flash (matrix units + LDS K/V reuse).
+         * Opt out: H3_SDPA_WMMA=0, or force any wave Q-variant below. */
+        static int wmma = -1;
+        if (wmma < 0) {
+            const char *e = getenv("H3_SDPA_WMMA");
+            static const char *const forced[] = {
+                "H3_SDPA_D128_Q1", "H3_SDPA_D128_Q2", "H3_SDPA_D128_Q3",
+                "H3_SDPA_D128_Q4", "H3_SDPA_D128_Q5", "H3_SDPA_Q6_SCALAR"};
+            wmma = !(e && strcmp(e, "0") == 0);
+            for (size_t i = 0; wmma && i < sizeof(forced) / sizeof(*forced);
+                 i++) {
+                const char *f = getenv(forced[i]);
+                if (f && strcmp(f, "0") != 0) wmma = 0;
+            }
+        }
+        if (wmma && host_args.head_dim == 128 &&
+            host_args.sequence >= H3_SDPA_WMMA_QROWS) {
+            /* Tile shape knobs for A/B: H3_SDPA_WMMA_WAVES (query block =
+             * waves*16) and H3_SDPA_WMMA_BK (key tile). */
+            static uint32_t waves = 0u, bk = 0u;
+            if (!waves) {
+                /* 8 waves (128-row query block) x 32-key tile measured best
+                 * on gfx1151 at the DiT shape; see docs/perf-day9. */
+                waves = h3_env_u32("H3_SDPA_WMMA_WAVES", 8u);
+                bk = h3_env_u32("H3_SDPA_WMMA_BK", 32u);
+            }
+            const void *kernel = NULL;
+#define H3_SDPA_WMMA_PICK(w, b)                                              \
+    if (waves == (w) && bk == (b))                                           \
+        kernel = reinterpret_cast<const void *>(                             \
+            h3_sdpa_bf16_wmma_d128_kernel<w, b>);
+            H3_SDPA_WMMA_PICK(2u, 32u)
+            H3_SDPA_WMMA_PICK(4u, 16u)
+            H3_SDPA_WMMA_PICK(4u, 32u)
+            H3_SDPA_WMMA_PICK(4u, 64u)
+            H3_SDPA_WMMA_PICK(8u, 16u)
+            H3_SDPA_WMMA_PICK(8u, 32u)
+            H3_SDPA_WMMA_PICK(8u, 64u)
+            H3_SDPA_WMMA_PICK(16u, 16u)
+            H3_SDPA_WMMA_PICK(16u, 32u)
+#undef H3_SDPA_WMMA_PICK
+            if (!kernel) {
+                waves = 8u;
+                bk = 32u;
+                kernel = reinterpret_cast<const void *>(
+                    h3_sdpa_bf16_wmma_d128_kernel<8u, 32u>);
+            }
+            uint32_t bq = waves * H3_SDPA_WMMA_QROWS;
+            dim3 grid((host_args.sequence + bq - 1u) / bq, host_args.heads, 1);
+            return hipLaunchKernel(kernel, grid, dim3(waves * 32u), kernel_args,
+                                   sizeof(kernel_args), stream) == hipSuccess;
         }
         /* Grid (sequence, heads): consecutive blocks share one KV head so
          * head-major K/V stays hot in L2 (gfx1151). */
@@ -3400,6 +3977,15 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 
+static int h3_sdpa_f32_wmma_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_SDPA_F32_WMMA");
+        cached = (!e || strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
                                   const float *value, float *output,
                                   const h3_sdpa_args *args,
@@ -3423,6 +4009,45 @@ extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
                            h3_sdpa_f32_flash_d128_kernel),
                        grid, block, kernel_args, sizeof(kernel_args),
                        stream) == hipSuccess;
+        }
+        /* Tiled WMMA for the long d64 sequences the video VAE decoder runs.
+         * Short sequences stay on the exact wave kernel: they gain nothing from
+         * a 128-row query block, and keeping them bit-identical means the bf16
+         * operand rounding can only ever touch the decoder. */
+        if (host_args.head_dim == 64 && h3_sdpa_f32_wmma_on() &&
+            host_args.sequence >= 256u) {
+            static uint32_t waves = 0u, bk = 0u;
+            if (!waves) {
+                /* 16 waves (256-row query block) x 32-key tile measured best
+                 * at the video VAE shape; see docs/perf-day9. */
+                waves = h3_env_u32("H3_SDPA_F32_WMMA_WAVES", 16u);
+                bk = h3_env_u32("H3_SDPA_F32_WMMA_BK", 32u);
+            }
+            const void *kernel = NULL;
+#define H3_SDPA_F32_WMMA_PICK(w, b)                                          \
+    if (waves == (w) && bk == (b))                                           \
+        kernel = reinterpret_cast<const void *>(                             \
+            h3_sdpa_f32_wmma_d64_kernel<w, b>);
+            H3_SDPA_F32_WMMA_PICK(4u, 32u)
+            H3_SDPA_F32_WMMA_PICK(4u, 64u)
+            H3_SDPA_F32_WMMA_PICK(4u, 128u)
+            H3_SDPA_F32_WMMA_PICK(8u, 32u)
+            H3_SDPA_F32_WMMA_PICK(8u, 64u)
+            H3_SDPA_F32_WMMA_PICK(16u, 32u)
+#undef H3_SDPA_F32_WMMA_PICK
+            if (!kernel) {
+                waves = 16u;
+                bk = 32u;
+                kernel = reinterpret_cast<const void *>(
+                    h3_sdpa_f32_wmma_d64_kernel<16u, 32u>);
+            }
+            uint32_t bq = waves * H3_SDPA_WMMA_QROWS;
+            dim3 grid((host_args.sequence + bq - 1u) / bq, host_args.heads, 1);
+            if (hipLaunchKernel(kernel, grid, dim3(waves * 32u), kernel_args,
+                                sizeof(kernel_args), stream) != hipSuccess) {
+                return 0;
+            }
+            return 1;
         }
         dim3 grid(host_args.sequence, host_args.heads, 1);
         const void *kernel = host_args.head_dim == 128 ?

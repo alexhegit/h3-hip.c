@@ -42,6 +42,19 @@ int h3_gpu_has_int8_mlp(const h3_gpu *gpu);
 h3_gpu_tensor *h3_gpu_tensor_new_f32(h3_gpu *gpu, size_t elements);
 h3_gpu_tensor *h3_gpu_tensor_new_bf16(h3_gpu *gpu, size_t elements);
 h3_gpu_tensor *h3_gpu_tensor_new_i8(h3_gpu *gpu, size_t elements);
+/* Buffers that only the GPU touches: weights read by kernels, and the quantized
+ * weights and precomputed tables that kernels produce and then re-read. On a
+ * carveout APU these come out of device memory instead of page-locked host
+ * memory, which is far cheaper to allocate and leaves host RAM for page cache.
+ * Contents stay reachable through the tensor accessors, which bounce through a
+ * staging buffer, so nothing breaks if host code does need a look; it is just
+ * an explicit copy rather than a direct dereference.
+ *
+ * The BF16 form is for buffers filled from a file and skips the zero-clear that
+ * the other two keep, so its whole extent must be written before it is read. */
+h3_gpu_tensor *h3_gpu_tensor_new_bf16_device(h3_gpu *gpu, size_t elements);
+h3_gpu_tensor *h3_gpu_tensor_new_i8_device(h3_gpu *gpu, size_t elements);
+h3_gpu_tensor *h3_gpu_tensor_new_f32_device(h3_gpu *gpu, size_t elements);
 h3_gpu_tensor *h3_gpu_tensor_from_f32(h3_gpu *gpu, const float *values,
                                       size_t elements);
 h3_gpu_tensor *h3_gpu_tensor_from_bf16(h3_gpu *gpu, const uint16_t *values,

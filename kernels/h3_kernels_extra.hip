@@ -3,10 +3,48 @@
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
 #include <hipblas/hipblas.h>
+#include <rocwmma/rocwmma.hpp>
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int h3_f32_wmma_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_F32_WMMA");
+        cached = (!e || strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+static int h3_int8_split_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_INT8_SPLIT");
+        cached = (e && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+static void h3_int8_split_begin(hipEvent_t *start, hipEvent_t *stop,
+                                hipStream_t stream) {
+    if (!*start) {
+        (void)hipEventCreate(start);
+        (void)hipEventCreate(stop);
+    }
+    (void)hipEventRecord(*start, stream);
+}
+
+static void h3_int8_split_end(hipEvent_t start, hipEvent_t stop,
+                              hipStream_t stream, const char *tag) {
+    (void)hipEventRecord(stop, stream);
+    (void)hipEventSynchronize(stop);
+    float ms = 0.0f;
+    (void)hipEventElapsedTime(&ms, start, stop);
+    fprintf(stderr, "int8-split %s %.3f ms\n", tag, ms);
+}
 
 __device__ __host__ inline float h3_bf16_to_f32(uint16_t value) {
 #if defined(__HIP_DEVICE_COMPILE__)
@@ -22,6 +60,12 @@ __device__ __host__ inline float h3_bf16_to_f32(uint16_t value) {
 __device__ __host__ inline uint16_t h3_f32_to_bf16(float value) {
     __hip_bfloat16 bf16 = __float2bfloat16(value);
     return *reinterpret_cast<uint16_t *>(&bf16);
+}
+
+/* Two bf16 in one dword so an LDS tile can be filled with b32 stores. */
+__device__ inline uint32_t h3_pack_bf16x2(float low, float high) {
+    return (uint32_t)h3_f32_to_bf16(low) |
+           ((uint32_t)h3_f32_to_bf16(high) << 16);
 }
 
 __global__ void h3_rms_inverse_bf16_kernel(const uint16_t *input, float *inverse,
@@ -620,6 +664,174 @@ h3_linear_f32_r128_kernel(const float *input, const float *weight,
     }
 }
 
+/* F32 linear on the bf16 matrix cores. Operands are rounded to bf16 on the way
+ * into LDS; the accumulator and the output stay f32, so the only precision loss
+ * is the input rounding (~1.1e-4 relative to the largest output on the VAE
+ * shapes). The FP32 FMA ceiling on gfx1151 is 7.4 TFLOP/s and r128 already
+ * reaches 58% of it, whereas bf16 WMMA peaks at 57, so this is the only way
+ * left to make the video-VAE decoder GEMMs meaningfully faster.
+ *
+ * Tile: 256x128 output, BK=32, one 64x64 quadrant per wave, K tiles prefetched
+ * into registers so the global loads overlap the mma chain. Opt out with
+ * H3_F32_WMMA=0. */
+
+template <int BM, int BN, int BK, int WM, int WN, int PAD>
+__global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32)
+h3_linear_f32_wmma_kernel(const float *input, const float *weight,
+                          const float *bias, float *output,
+                          h3_linear_args args) {
+    using bf16 = rocwmma::bfloat16_t;
+    constexpr int LD = BK + PAD;
+    constexpr int WAVES_N = BN / WN;
+    constexpr int THREADS = (BM / WM) * WAVES_N * 32;
+    constexpr int FM = WM / 16, FN = WN / 16;
+    constexpr int KQ = BK / 4;
+    constexpr int AI = BM * KQ / THREADS;
+    constexpr int BI = BN * KQ / THREADS;
+    constexpr int ROW_STEP = THREADS / KQ;
+
+    __shared__ uint16_t As[BM * LD];
+    __shared__ uint16_t Bs[BN * LD];
+
+    uint32_t tid = threadIdx.x;
+    uint32_t wave = tid >> 5;
+    uint32_t wm = wave / (uint32_t)WAVES_N, wn = wave % (uint32_t)WAVES_N;
+    uint32_t block_row = blockIdx.y * (uint32_t)BM;
+    uint32_t block_col = blockIdx.x * (uint32_t)BN;
+    uint32_t rows = args.rows, cols = args.output_dim, K = args.input_dim;
+
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> acc[FM][FN];
+#pragma unroll
+    for (int i = 0; i < FM; i++)
+#pragma unroll
+        for (int j = 0; j < FN; j++) rocwmma::fill_fragment(acc[i][j], 0.0f);
+
+    const int row0 = (int)tid / KQ, kq0 = ((int)tid % KQ) * 4;
+    const bf16 *pA = reinterpret_cast<const bf16 *>(As);
+    const bf16 *pB = reinterpret_cast<const bf16 *>(Bs);
+
+    float4 a_next[AI], b_next[BI];
+    auto fetch = [&](uint32_t k0) {
+#pragma unroll
+        for (int it = 0; it < AI; it++) {
+            uint32_t r = block_row + (uint32_t)(row0 + it * ROW_STEP);
+            a_next[it] = r < rows ? *reinterpret_cast<const float4 *>(
+                                        input + (size_t)r * K + k0 + kq0)
+                                  : make_float4(0.f, 0.f, 0.f, 0.f);
+        }
+#pragma unroll
+        for (int it = 0; it < BI; it++) {
+            uint32_t r = block_col + (uint32_t)(row0 + it * ROW_STEP);
+            b_next[it] = r < cols ? *reinterpret_cast<const float4 *>(
+                                        weight + (size_t)r * K + k0 + kq0)
+                                  : make_float4(0.f, 0.f, 0.f, 0.f);
+        }
+    };
+    auto stash = [&]() {
+#pragma unroll
+        for (int it = 0; it < AI; it++) {
+            uint32_t *d = reinterpret_cast<uint32_t *>(
+                As + (row0 + it * ROW_STEP) * LD + kq0);
+            d[0] = h3_pack_bf16x2(a_next[it].x, a_next[it].y);
+            d[1] = h3_pack_bf16x2(a_next[it].z, a_next[it].w);
+        }
+#pragma unroll
+        for (int it = 0; it < BI; it++) {
+            uint32_t *d = reinterpret_cast<uint32_t *>(
+                Bs + (row0 + it * ROW_STEP) * LD + kq0);
+            d[0] = h3_pack_bf16x2(b_next[it].x, b_next[it].y);
+            d[1] = h3_pack_bf16x2(b_next[it].z, b_next[it].w);
+        }
+    };
+    auto compute = [&]() {
+#pragma unroll
+        for (int ks = 0; ks < BK / 16; ks++) {
+            rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                              rocwmma::row_major> fa[FM];
+            rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                              rocwmma::col_major> fb[FN];
+#pragma unroll
+            for (int i = 0; i < FM; i++)
+                rocwmma::load_matrix_sync(
+                    fa[i], pA + ((int)(wm * WM) + i * 16) * LD + ks * 16, LD);
+#pragma unroll
+            for (int j = 0; j < FN; j++)
+                rocwmma::load_matrix_sync(
+                    fb[j], pB + ((int)(wn * WN) + j * 16) * LD + ks * 16, LD);
+#pragma unroll
+            for (int i = 0; i < FM; i++)
+#pragma unroll
+                for (int j = 0; j < FN; j++)
+                    rocwmma::mma_sync(acc[i][j], fa[i], fb[j], acc[i][j]);
+        }
+    };
+
+    uint32_t ktiles = K / (uint32_t)BK;
+    fetch(0u);
+    stash();
+    for (uint32_t kt = 1; kt < ktiles; kt++) {
+        fetch(kt * (uint32_t)BK);
+        __syncthreads();
+        compute();
+        __syncthreads();
+        stash();
+    }
+    __syncthreads();
+    compute();
+
+    /* Accumulator element i of every fragment belongs to row 2*i + (lane>>4),
+     * lane&15 picks the column. */
+    uint32_t lane = tid & 31u;
+    uint32_t frag_col = lane & 15u, row_half = lane >> 4;
+#pragma unroll
+    for (int j = 0; j < FN; j++) {
+        uint32_t col = block_col + wn * (uint32_t)WN + (uint32_t)j * 16u +
+                       frag_col;
+        if (col >= cols) continue;
+        float b = args.has_bias ? bias[col] : 0.0f;
+#pragma unroll
+        for (int i = 0; i < FM; i++) {
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                uint32_t row = block_row + wm * (uint32_t)WM +
+                               (uint32_t)i * 16u + 2u * (uint32_t)e + row_half;
+                if (row < rows)
+                    output[(size_t)row * cols + col] = acc[i][j].x[e] + b;
+            }
+        }
+    }
+}
+
+/* Tile shapes differ mostly in register pressure: a 64x64 per-wave tile needs
+ * 16 accumulator fragments (128 VGPRs) and spills, while 32x64 needs 8. Pick
+ * with H3_F32_WMMA_CFG; see docs/perf-day9/STATUS.md for the sweep. */
+static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
+                                      uint32_t *threads) {
+    const char *cfg = getenv("H3_F32_WMMA_CFG");
+    unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10) : 3u;
+#define H3_WMMA_CASE(BM, BN, WM, WN)                                           \
+    do {                                                                       \
+        *bm = BM;                                                              \
+        *bn = BN;                                                              \
+        *threads = (BM / WM) * (BN / WN) * 32u;                                 \
+        return reinterpret_cast<const void *>(                                 \
+            h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8>);                  \
+    } while (0)
+    switch (choice) {
+    case 1: H3_WMMA_CASE(256, 128, 64, 64);
+    case 2: H3_WMMA_CASE(256, 256, 64, 64);
+    case 4: H3_WMMA_CASE(128, 128, 32, 64);
+    case 5: H3_WMMA_CASE(128, 256, 64, 64);
+    case 6: H3_WMMA_CASE(256, 128, 64, 32);
+    case 7: H3_WMMA_CASE(256, 256, 32, 64);
+    case 8: H3_WMMA_CASE(512, 128, 32, 64);
+    case 9: H3_WMMA_CASE(128, 128, 32, 32);
+    case 3:
+    default: H3_WMMA_CASE(256, 128, 32, 64);
+    }
+#undef H3_WMMA_CASE
+}
+
 __global__ void h3_conv1d_f32_kernel(const float *input, const float *weight,
                                      const float *bias, float *output,
                                      h3_conv1d_args args) {
@@ -645,6 +857,90 @@ __global__ void h3_conv1d_f32_kernel(const float *input, const float *weight,
         }
     }
     output[output_batch + time * args.output_channels + out] = sum;
+}
+
+/* Time-blocked conv1d. The scalar kernel above gives each thread one output
+ * element, so every weight is re-fetched once per time step -- at the audio
+ * VAE's shapes that is gigabytes of weight traffic for a few hundred MFLOP.
+ * Here a block owns BC output channels over BC*BY*TT time steps and stages the
+ * weight slice in LDS, so each weight crosses the bus once per BY*TT outputs.
+ *
+ * Threads are (channel, time) with the channel fastest, and each thread's TT
+ * time steps are strided by BY, so for any fixed step the block writes one
+ * contiguous run of the time-major output. Input is left in global: the whole
+ * activation is under a megabyte, so it stays L2-resident, and a wave that
+ * spans one time step reads it as a broadcast.
+ *
+ * The (in, k) accumulation order is transposed from the scalar kernel's to
+ * match the weight's memory layout, so results differ at f32 rounding. */
+template <uint32_t BC, uint32_t BY, uint32_t TT, uint32_t WSLICE>
+__global__ __launch_bounds__(BC *BY) void h3_conv1d_f32_tiled_kernel(
+    const float *__restrict__ input, const float *__restrict__ weight,
+    const float *__restrict__ bias, float *__restrict__ output,
+    h3_conv1d_args args) {
+    __shared__ float sw[BC * WSLICE];
+    const uint32_t channel = blockIdx.x * BC + threadIdx.x;
+    const uint32_t time_base = args.time_offset + blockIdx.y * (BY * TT);
+    const uint32_t batch = blockIdx.z;
+    const uint32_t taps = args.kernel;
+    /* WSLICE has to hold a whole number of taps so the LDS slice can be
+     * indexed as (in - in0) * taps + k. */
+    const uint32_t in_slice = WSLICE / taps;
+    const uint32_t lane = threadIdx.y * BC + threadIdx.x;
+    const float bias_value =
+        (args.has_bias && channel < args.output_channels) ? bias[channel]
+                                                          : 0.0f;
+    float acc[TT];
+    for (uint32_t t = 0; t < TT; t++) acc[t] = bias_value;
+    const size_t input_batch =
+        (size_t)batch * args.input_length * args.input_channels;
+    const size_t weight_row = (size_t)args.input_channels * taps;
+    for (uint32_t in0 = 0; in0 < args.input_channels; in0 += in_slice) {
+        uint32_t ins = args.input_channels - in0;
+        if (ins > in_slice) ins = in_slice;
+        uint32_t span = ins * taps;
+        __syncthreads();
+        /* One wave per output channel walking a contiguous weight run. */
+        for (uint32_t c = threadIdx.y; c < BC; c += BY) {
+            uint32_t row = blockIdx.x * BC + c;
+            const float *src =
+                weight + (size_t)row * weight_row + (size_t)in0 * taps;
+            int valid = row < args.output_channels;
+            for (uint32_t j = threadIdx.x; j < span; j += BC) {
+                sw[c * WSLICE + j] = valid ? src[j] : 0.0f;
+            }
+        }
+        __syncthreads();
+        for (uint32_t in = 0; in < ins; in++) {
+            for (uint32_t k = 0; k < taps; k++) {
+                float w = sw[threadIdx.x * WSLICE + in * taps + k];
+                int32_t tap = (int32_t)(k * args.dilation) -
+                              (int32_t)args.padding;
+                for (uint32_t t = 0; t < TT; t++) {
+                    uint32_t time = time_base + t * BY + threadIdx.y;
+                    if (time >= args.output_length) continue;
+                    int32_t source = (int32_t)time * (int32_t)args.stride + tap;
+                    if (source < 0 || source >= (int32_t)args.input_length) {
+                        continue;
+                    }
+                    acc[t] = fmaf(input[input_batch +
+                                        (size_t)source * args.input_channels +
+                                        in0 + in],
+                                  w, acc[t]);
+                }
+            }
+        }
+    }
+    if (channel >= args.output_channels) return;
+    const size_t output_batch =
+        (size_t)batch * args.output_length * args.output_channels;
+    for (uint32_t t = 0; t < TT; t++) {
+        uint32_t time = time_base + t * BY + threadIdx.y;
+        if (time >= args.output_length) continue;
+        output[output_batch + (size_t)time * args.output_channels + channel] =
+            acc[t];
+    }
+    (void)lane;
 }
 
 __global__ void h3_conv_transpose1d_f32_kernel(const float *input,
@@ -732,6 +1028,16 @@ __global__ void h3_conv3d_f32_kernel(const float *input, const float *weight,
 enum { H3_HIP_MAX_GRID_YZ = 65535u };
 enum { H3_HIP_CONV3D_SPATIAL_CHUNK = 16384u };
 enum { H3_HIP_CONV1D_TIME_CHUNK = 8192u };
+enum { H3_CONV1D_TT = 8u, H3_CONV1D_WSLICE = 64u };
+
+static int h3_conv1d_tiled_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_CONV1D_TILED");
+        cached = (!e || strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
 
 static int h3_hip_launch(const void *kernel, dim3 grid, dim3 block,
                          void **kernel_args, hipStream_t stream) {
@@ -746,6 +1052,41 @@ extern "C" int h3_launch_conv1d_f32(const float *input, const float *weight,
     h3_conv1d_args host_args = *args;
     if (!host_args.batch || !host_args.output_length ||
         !host_args.output_channels) {
+        return 1;
+    }
+    if (h3_conv1d_tiled_on() && host_args.kernel <= H3_CONV1D_WSLICE) {
+        uint32_t bc = 64u, by = 4u;
+        if (host_args.output_channels <= 8u) { bc = 8u; by = 32u; }
+        else if (host_args.output_channels <= 16u) { bc = 16u; by = 16u; }
+        else if (host_args.output_channels <= 32u) { bc = 32u; by = 8u; }
+        const void *kernel = NULL;
+#define H3_CONV1D_TILED_PICK(c, y)                                           \
+    if (bc == (c))                                                           \
+        kernel = reinterpret_cast<const void *>(                             \
+            h3_conv1d_f32_tiled_kernel<c, y, H3_CONV1D_TT,                   \
+                                       H3_CONV1D_WSLICE>);
+        H3_CONV1D_TILED_PICK(8u, 32u)
+        H3_CONV1D_TILED_PICK(16u, 16u)
+        H3_CONV1D_TILED_PICK(32u, 8u)
+        H3_CONV1D_TILED_PICK(64u, 4u)
+#undef H3_CONV1D_TILED_PICK
+        uint32_t per_block = by * H3_CONV1D_TT;
+        uint32_t chunk = H3_HIP_MAX_GRID_YZ * per_block;
+        for (uint32_t offset = 0; offset < host_args.output_length; ) {
+            uint32_t span = host_args.output_length - offset;
+            if (span > chunk) span = chunk;
+            h3_conv1d_args chunk_args = host_args;
+            chunk_args.time_offset = offset;
+            void *kernel_args[] = {&input, &weight, &bias, &output,
+                                   &chunk_args};
+            dim3 grid((chunk_args.output_channels + bc - 1u) / bc,
+                      (span + per_block - 1u) / per_block, chunk_args.batch);
+            if (!h3_hip_launch(kernel, grid, dim3(bc, by, 1), kernel_args,
+                               stream)) {
+                return 0;
+            }
+            offset += span;
+        }
         return 1;
     }
     dim3 block(16, 1, 1);
@@ -845,6 +1186,22 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
         int force_r64 = getenv("H3_F32_R64") &&
                         strcmp(getenv("H3_F32_R64"), "0") != 0;
         int use_r128 = !force_r64 && host_args.input_dim % 32u == 0;
+        /* Only the decoder-sized GEMMs go to the matrix cores. Anything
+         * narrower than one 256x128 tile has nothing to gain, and the small
+         * f32 projections that survive here feed the DiT conditioning, where a
+         * bf16 perturbation changes the sampled trajectory rather than just
+         * the last digits. */
+        int wmma_worth_it = host_args.rows >= 256u &&
+                            host_args.input_dim >= 512u &&
+                            host_args.output_dim >= 512u;
+        if (use_r128 && wmma_worth_it && h3_f32_wmma_on()) {
+            uint32_t bm = 0, bn = 0, threads = 0;
+            const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads);
+            dim3 grid((host_args.output_dim + bn - 1u) / bn,
+                      (host_args.rows + bm - 1u) / bm, 1);
+            return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, 0,
+                                   stream) == hipSuccess;
+        }
         if (use_r128) {
             dim3 grid((host_args.output_dim + 127u) / 128u,
                       (host_args.rows + 127u) / 128u, 1);
@@ -1353,6 +1710,73 @@ __global__ void h3_quantize_bf16_int8_rows_kernel(
     }
 }
 
+/* Stage the BF16 row in LDS so the max pass and the quantize pass share one
+ * global load. Opt-in only: H3_INT8_QUANT_LDS=1 (slightly slower). */
+__global__ void h3_quantize_bf16_int8_rows_lds_kernel(
+    const uint16_t *input, int8_t *output, float *scales,
+    h3_int8_quant_args args) {
+    extern __shared__ uint16_t smem[];
+    __shared__ float warp_max[16];
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    uint32_t base = row * args.columns;
+    if (row >= args.rows) {
+        for (uint32_t column = tid; column < args.columns; column += threads)
+            output[base + column] = 0;
+        if (tid == 0) scales[row] = 1.0f;
+        return;
+    }
+    float local_max = 0.0f;
+    for (uint32_t column = tid * 4u; column < args.columns;
+         column += threads * 4u) {
+        uint2 packed = *reinterpret_cast<const uint2 *>(input + base + column);
+        *reinterpret_cast<uint2 *>(smem + column) = packed;
+        uint16_t a0 = (uint16_t)(packed.x & 0xffffu);
+        uint16_t a1 = (uint16_t)(packed.x >> 16);
+        uint16_t a2 = (uint16_t)(packed.y & 0xffffu);
+        uint16_t a3 = (uint16_t)(packed.y >> 16);
+        local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a0)));
+        local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a1)));
+        local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a2)));
+        local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a3)));
+    }
+    __syncthreads();
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        local_max = fmaxf(local_max, __shfl_xor(local_max, offset));
+    if ((tid & 31u) == 0u) warp_max[tid >> 5] = local_max;
+    __syncthreads();
+    if (tid < 16u) {
+        float value = (tid < (threads >> 5)) ? warp_max[tid] : 0.0f;
+#pragma unroll
+        for (int offset = 8; offset > 0; offset >>= 1)
+            value = fmaxf(value, __shfl_xor(value, offset));
+        if (tid == 0) warp_max[0] = value;
+    }
+    __syncthreads();
+    float clipped_max = warp_max[0] * args.clip;
+    float scale = clipped_max > 0.0f ? clipped_max / 127.0f : 1.0f / 127.0f;
+    float inverse = clipped_max > 0.0f ? 127.0f / clipped_max : 127.0f;
+    if (tid == 0) scales[row] = scale;
+    for (uint32_t column = tid * 4u; column < args.columns;
+         column += threads * 4u) {
+        uint2 packed = *reinterpret_cast<const uint2 *>(smem + column);
+        uint16_t vals[4] = {
+            (uint16_t)(packed.x & 0xffffu), (uint16_t)(packed.x >> 16),
+            (uint16_t)(packed.y & 0xffffu), (uint16_t)(packed.y >> 16)};
+        uint32_t qpack = 0;
+#pragma unroll
+        for (int i = 0; i < 4; i++) {
+            int quantized = (int)rintf(h3_bf16_to_f32(vals[i]) * inverse);
+            if (quantized > 127) quantized = 127;
+            if (quantized < -127) quantized = -127;
+            qpack |= (uint32_t)(uint8_t)(int8_t)quantized << (8 * i);
+        }
+        *reinterpret_cast<uint32_t *>(output + base + column) = qpack;
+    }
+}
+
 extern "C" int h3_launch_quantize_bf16_int8_rows(
     const uint16_t *input, int8_t *output, float *scales,
     const h3_int8_quant_args *args, uint32_t dispatch_rows,
@@ -1365,10 +1789,28 @@ extern "C" int h3_launch_quantize_bf16_int8_rows(
                                                                      : 256u;
     dim3 block(block_threads, 1, 1);
     dim3 grid(dispatch_rows, 1, 1);
-    return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_quantize_bf16_int8_rows_kernel),
-               grid, block, kernel_args, sizeof(kernel_args), stream) ==
-           hipSuccess;
+    static int use_lds = -1;
+    if (use_lds < 0) {
+        const char *e = getenv("H3_INT8_QUANT_LDS");
+        /* Opt-in only: LDS staging was slightly slower on the full linear. */
+        use_lds = (e && strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    size_t smem = (size_t)host_args.columns * sizeof(uint16_t);
+    int lds = use_lds && (host_args.columns % 4u) == 0u && smem > 0 &&
+              smem <= 49152u;
+    const void *kernel = lds ?
+        reinterpret_cast<const void *>(h3_quantize_bf16_int8_rows_lds_kernel) :
+        reinterpret_cast<const void *>(h3_quantize_bf16_int8_rows_kernel);
+    size_t dyn = lds ? smem : sizeof(kernel_args);
+    static hipEvent_t split_start = NULL, split_stop = NULL;
+    int split = h3_int8_split_on();
+    if (split) h3_int8_split_begin(&split_start, &split_stop, stream);
+    int ok = hipLaunchKernel(kernel, grid, block, kernel_args, dyn, stream) ==
+             hipSuccess;
+    if (split && ok)
+        h3_int8_split_end(split_start, split_stop, stream,
+                          lds ? "quantize-lds" : "quantize");
+    return ok;
 }
 
 __global__ void h3_quantize_bf16_int8_head_major_rows_kernel(
@@ -2115,6 +2557,71 @@ h3_fc1_swiglu_int8_r128x64_kernel(const int8_t *input, const int8_t *weight,
 static hipblasHandle_t h3_hipblas = NULL;
 static int32_t *h3_int8_i32_scratch = NULL;
 static size_t h3_int8_i32_scratch_bytes = 0;
+static float *h3_int8_f32_scratch = NULL;
+static size_t h3_int8_f32_scratch_bytes = 0;
+
+static int h3_int8_ensure_hipblas(hipStream_t stream) {
+    if (!h3_hipblas && hipblasCreate(&h3_hipblas) != HIPBLAS_STATUS_SUCCESS)
+        return 0;
+    return hipblasSetStream(h3_hipblas, stream) == HIPBLAS_STATUS_SUCCESS;
+}
+
+static int h3_int8_ensure_i32_scratch(size_t bytes) {
+    if (bytes <= h3_int8_i32_scratch_bytes) return 1;
+    int32_t *next = NULL;
+    if (hipMalloc(&next, bytes) != hipSuccess) return 0;
+    if (h3_int8_i32_scratch) (void)hipFree(h3_int8_i32_scratch);
+    h3_int8_i32_scratch = next;
+    h3_int8_i32_scratch_bytes = bytes;
+    return 1;
+}
+
+static int h3_int8_ensure_f32_scratch(size_t bytes) {
+    if (bytes <= h3_int8_f32_scratch_bytes) return 1;
+    float *next = NULL;
+    if (hipMalloc(&next, bytes) != hipSuccess) return 0;
+    if (h3_int8_f32_scratch) (void)hipFree(h3_int8_f32_scratch);
+    h3_int8_f32_scratch = next;
+    h3_int8_f32_scratch_bytes = bytes;
+    return 1;
+}
+
+static int8_t *h3_int8_pack_scratch = NULL;
+static size_t h3_int8_pack_scratch_bytes = 0;
+
+static int h3_int8_ensure_i8_scratch(size_t bytes) {
+    if (bytes <= h3_int8_pack_scratch_bytes) return 1;
+    int8_t *next = NULL;
+    if (hipMalloc(&next, bytes) != hipSuccess) return 0;
+    if (h3_int8_pack_scratch) (void)hipFree(h3_int8_pack_scratch);
+    h3_int8_pack_scratch = next;
+    h3_int8_pack_scratch_bytes = bytes;
+    return 1;
+}
+
+/* [rows, groups, G] -> [groups, rows, G] so each GEMM batch has lda = G. */
+__global__ void h3_i8_pack_groups_kernel(const int8_t *in, int8_t *out,
+                                         uint32_t rows, uint32_t groups,
+                                         uint32_t group_size) {
+    uint32_t g = blockIdx.z;
+    uint32_t row = blockIdx.y;
+    uint32_t k = (blockIdx.x * blockDim.x + threadIdx.x) * 16u;
+    if (g >= groups || row >= rows || k >= group_size) return;
+    const int8_t *src = in + ((size_t)row * groups + g) * group_size + k;
+    int8_t *dst = out + ((size_t)g * rows + row) * group_size + k;
+    *reinterpret_cast<uint4 *>(dst) = *reinterpret_cast<const uint4 *>(src);
+}
+
+static int h3_i8_pack_groups(const int8_t *in, int8_t *out, uint32_t rows,
+                             uint32_t groups, uint32_t group_size,
+                             hipStream_t stream) {
+    if (group_size % 16u) return 0;
+    dim3 block(256, 1, 1);
+    dim3 grid(((group_size / 16u) + 255u) / 256u, rows, groups);
+    void *args[] = {&in, &out, &rows, &groups, &group_size};
+    return hipLaunchKernel(reinterpret_cast<const void *>(h3_i8_pack_groups_kernel),
+                           grid, block, args, 0, stream) == hipSuccess;
+}
 
 /* 4-wide i32 load + packed bf16 store. D[m,n] = acc[m,n] * sa[m] * sb[n]. */
 __global__ void __launch_bounds__(256)
@@ -2183,6 +2690,106 @@ h3_i32_swiglu_to_bf16_kernel(const int32_t *acc, const float *sa,
     }
 }
 
+/* Running grouped epilogue: out += acc * sa[row, g] * sb[col]. last writes bf16. */
+__global__ void __launch_bounds__(256)
+h3_i32_grouped_scale_epilogue_kernel(
+    const int32_t *acc, const float *sa, const float *sb, float *partial,
+    uint16_t *out, uint32_t rows, uint32_t cols, uint32_t groups,
+    uint32_t group, int first, int last) {
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= cols) return;
+    float srow = sa[(size_t)row * groups + group];
+    const int32_t *in = acc + (size_t)row * cols + col;
+    float *psum = partial ? partial + (size_t)row * cols + col : NULL;
+    uint16_t *dst = out + (size_t)row * cols + col;
+    if (col + 3u < cols) {
+        int4 v = *reinterpret_cast<const int4 *>(in);
+        float t0 = (float)v.x * srow * sb[col];
+        float t1 = (float)v.y * srow * sb[col + 1u];
+        float t2 = (float)v.z * srow * sb[col + 2u];
+        float t3 = (float)v.w * srow * sb[col + 3u];
+        if (!first) {
+            float4 p = *reinterpret_cast<const float4 *>(psum);
+            t0 += p.x;
+            t1 += p.y;
+            t2 += p.z;
+            t3 += p.w;
+        }
+        if (last) {
+            uint16_t o0 = h3_f32_to_bf16(t0);
+            uint16_t o1 = h3_f32_to_bf16(t1);
+            uint16_t o2 = h3_f32_to_bf16(t2);
+            uint16_t o3 = h3_f32_to_bf16(t3);
+            uint2 packed;
+            packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+            packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+            *reinterpret_cast<uint2 *>(dst) = packed;
+        } else {
+            float4 o;
+            o.x = t0;
+            o.y = t1;
+            o.z = t2;
+            o.w = t3;
+            *reinterpret_cast<float4 *>(psum) = o;
+        }
+    } else {
+        for (uint32_t j = 0; col + j < cols; j++) {
+            float t = (float)in[j] * srow * sb[col + j];
+            if (!first) t += psum[j];
+            if (last) dst[j] = h3_f32_to_bf16(t);
+            else psum[j] = t;
+        }
+    }
+}
+
+/* Reduce batched i32 planes[g][row, col] * sa[row, g] * sb[col] -> bf16. */
+__global__ void __launch_bounds__(256)
+h3_i32_grouped_reduce_to_bf16_kernel(const int32_t *acc, const float *sa,
+                                     const float *sb, uint16_t *out,
+                                     uint32_t rows, uint32_t cols,
+                                     uint32_t groups) {
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= cols) return;
+    size_t plane = (size_t)rows * cols;
+    uint16_t *dst = out + (size_t)row * cols + col;
+    if (col + 3u < cols) {
+        float t0 = 0.0f, t1 = 0.0f, t2 = 0.0f, t3 = 0.0f;
+        float b0 = sb[col], b1 = sb[col + 1u], b2 = sb[col + 2u],
+              b3 = sb[col + 3u];
+        for (uint32_t g = 0; g < groups; g++) {
+            float srow = sa[(size_t)row * groups + g];
+            const int32_t *in =
+                acc + (size_t)g * plane + (size_t)row * cols + col;
+            int4 v = *reinterpret_cast<const int4 *>(in);
+            t0 = fmaf((float)v.x, srow * b0, t0);
+            t1 = fmaf((float)v.y, srow * b1, t1);
+            t2 = fmaf((float)v.z, srow * b2, t2);
+            t3 = fmaf((float)v.w, srow * b3, t3);
+        }
+        uint16_t o0 = h3_f32_to_bf16(t0);
+        uint16_t o1 = h3_f32_to_bf16(t1);
+        uint16_t o2 = h3_f32_to_bf16(t2);
+        uint16_t o3 = h3_f32_to_bf16(t3);
+        uint2 packed;
+        packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+        packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < cols; j++) {
+            float total = 0.0f;
+            float b = sb[col + j];
+            for (uint32_t g = 0; g < groups; g++) {
+                float srow = sa[(size_t)row * groups + g];
+                int32_t v = acc[(size_t)g * plane + (size_t)row * cols + col + j];
+                total = fmaf((float)v, srow * b, total);
+            }
+            dst[j] = h3_f32_to_bf16(total);
+        }
+    }
+}
+
 static int h3_int8_hipblas_opt_in(int fc1_swiglu) {
     static int plain = -1;
     static int fc1 = -1;
@@ -2212,28 +2819,24 @@ static int h3_int8_hipblas_linear(const int8_t *input, const int8_t *weight,
     uint32_t gemm_n = fc1_swiglu ? hidden * 2u : hidden;
     if (args->input_dim % 4u || args->input_dim < 32u || gemm_n < 16u)
         return 0;
-    if (!h3_hipblas && hipblasCreate(&h3_hipblas) != HIPBLAS_STATUS_SUCCESS)
-        return 0;
-    if (hipblasSetStream(h3_hipblas, stream) != HIPBLAS_STATUS_SUCCESS)
-        return 0;
+    if (!h3_int8_ensure_hipblas(stream)) return 0;
     size_t bytes = (size_t)args->rows * gemm_n * sizeof(int32_t);
-    if (bytes > h3_int8_i32_scratch_bytes) {
-        int32_t *next = NULL;
-        if (hipMalloc(&next, bytes) != hipSuccess) return 0;
-        if (h3_int8_i32_scratch) (void)hipFree(h3_int8_i32_scratch);
-        h3_int8_i32_scratch = next;
-        h3_int8_i32_scratch_bytes = bytes;
-    }
+    if (!h3_int8_ensure_i32_scratch(bytes)) return 0;
     int32_t alpha = 1, beta = 0;
     int m = (int)gemm_n;
     int n = (int)args->rows;
     int k = (int)args->input_dim;
+    int split = h3_int8_split_on();
+    static hipEvent_t gemm_start = NULL, gemm_stop = NULL;
+    static hipEvent_t epi_start = NULL, epi_stop = NULL;
+    if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
     if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
                       weight, HIP_R_8I, k, input, HIP_R_8I, k, &beta,
                       h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
                       HIPBLAS_GEMM_DEFAULT) != HIPBLAS_STATUS_SUCCESS) {
         return 0;
     }
+    if (split) h3_int8_split_end(gemm_start, gemm_stop, stream, "gemm");
     uint32_t rows = args->rows;
     uint32_t cols = hidden;
     dim3 block(256, 1, 1);
@@ -2243,7 +2846,154 @@ static int h3_int8_hipblas_linear(const int8_t *input, const int8_t *weight,
     const void *ep = fc1_swiglu ?
         reinterpret_cast<const void *>(h3_i32_swiglu_to_bf16_kernel) :
         reinterpret_cast<const void *>(h3_i32_scale_to_bf16_kernel);
-    return hipLaunchKernel(ep, grid, block, ep_host, 0, stream) == hipSuccess;
+    if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+    int ok = hipLaunchKernel(ep, grid, block, ep_host, 0, stream) == hipSuccess;
+    if (split && ok) h3_int8_split_end(epi_start, epi_stop, stream, "epilogue");
+    return ok;
+}
+
+static int h3_int8_grouped_hipblas_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *off = getenv("H3_INT8_HIPBLAS");
+        const char *g_off = getenv("H3_INT8_GROUPED_HIPBLAS");
+        cached = 1;
+        if (off && strcmp(off, "0") == 0) cached = 0;
+        if (g_off && strcmp(g_off, "0") == 0) cached = 0;
+    }
+    return cached;
+}
+
+static int h3_int8_hipblas_grouped_linear(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_int8_grouped_args *args, hipStream_t stream) {
+    if (!h3_int8_grouped_hipblas_on()) return 0;
+    uint32_t rows = args->rows;
+    uint32_t k_full = args->input_dim;
+    uint32_t cols = args->output_dim;
+    uint32_t group_size = args->group_size;
+    if (!rows || !k_full || !cols || !group_size) return 0;
+    if (k_full % group_size || group_size % 4u || group_size < 32u || cols < 16u)
+        return 0;
+    uint32_t groups = k_full / group_size;
+    if (!h3_int8_ensure_hipblas(stream)) return 0;
+
+    int32_t alpha = 1, beta = 0;
+    int m = (int)cols;
+    int n = (int)rows;
+    int k = (int)group_size;
+    int lda = (int)k_full;
+    dim3 block(256, 1, 1);
+    dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
+    int split = h3_int8_split_on();
+    static hipEvent_t gemm_start = NULL, gemm_stop = NULL;
+    static hipEvent_t epi_start = NULL, epi_stop = NULL;
+
+    const char *force_loop = getenv("H3_INT8_GROUPED_LOOP");
+    int want_loop = force_loop && strcmp(force_loop, "0") != 0;
+    const char *no_pack = getenv("H3_INT8_GROUPED_PACK");
+    int want_pack = !no_pack || strcmp(no_pack, "0") != 0;
+    size_t plane_bytes = (size_t)rows * cols * sizeof(int32_t);
+    size_t batched_bytes = plane_bytes * (size_t)groups;
+    const size_t batched_cap = (size_t)768 * 1024 * 1024;
+    int use_batched = !want_loop && groups > 1u && batched_bytes <= batched_cap;
+
+    if (use_batched && want_pack && group_size % 16u == 0u) {
+        size_t pack_in = (size_t)groups * rows * group_size;
+        size_t pack_w = (size_t)groups * cols * group_size;
+        if (h3_int8_ensure_i8_scratch(pack_in + pack_w) &&
+            h3_int8_ensure_i32_scratch(batched_bytes)) {
+            int8_t *packed_in = h3_int8_pack_scratch;
+            int8_t *packed_w = h3_int8_pack_scratch + pack_in;
+            if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+            int packed = h3_i8_pack_groups(input, packed_in, rows, groups,
+                                           group_size, stream) &&
+                         h3_i8_pack_groups(weight, packed_w, cols, groups,
+                                           group_size, stream);
+            hipblasStatus_t st = HIPBLAS_STATUS_INTERNAL_ERROR;
+            if (packed) {
+                st = hipblasGemmStridedBatchedEx(
+                    h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
+                    packed_w, HIP_R_8I, k, (hipblasStride)((size_t)cols * group_size),
+                    packed_in, HIP_R_8I, k, (hipblasStride)((size_t)rows * group_size),
+                    &beta, h3_int8_i32_scratch, HIP_R_32I, m,
+                    (hipblasStride)((size_t)m * (size_t)n), (int)groups,
+                    HIPBLAS_COMPUTE_32I, HIPBLAS_GEMM_DEFAULT);
+            }
+            if (split)
+                h3_int8_split_end(gemm_start, gemm_stop, stream,
+                                  "grouped-gemm-packed");
+            if (st == HIPBLAS_STATUS_SUCCESS) {
+                void *red[] = {&h3_int8_i32_scratch, &input_scales,
+                               &weight_scales, &output, &rows, &cols, &groups};
+                if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+                int ok = hipLaunchKernel(
+                    reinterpret_cast<const void *>(
+                        h3_i32_grouped_reduce_to_bf16_kernel),
+                    grid, block, red, 0, stream) == hipSuccess;
+                if (split && ok)
+                    h3_int8_split_end(epi_start, epi_stop, stream,
+                                      "grouped-reduce");
+                return ok;
+            }
+        }
+    }
+
+    if (use_batched && h3_int8_ensure_i32_scratch(batched_bytes)) {
+        if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+        hipblasStatus_t st = hipblasGemmStridedBatchedEx(
+            h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha, weight,
+            HIP_R_8I, lda, (hipblasStride)group_size, input, HIP_R_8I, lda,
+            (hipblasStride)group_size, &beta, h3_int8_i32_scratch, HIP_R_32I, m,
+            (hipblasStride)((size_t)m * (size_t)n), (int)groups,
+            HIPBLAS_COMPUTE_32I, HIPBLAS_GEMM_DEFAULT);
+        if (split) h3_int8_split_end(gemm_start, gemm_stop, stream,
+                                     "grouped-gemm-batched");
+        if (st == HIPBLAS_STATUS_SUCCESS) {
+            void *red[] = {&h3_int8_i32_scratch, &input_scales, &weight_scales,
+                           &output, &rows, &cols, &groups};
+            if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+            int ok = hipLaunchKernel(
+                reinterpret_cast<const void *>(h3_i32_grouped_reduce_to_bf16_kernel),
+                grid, block, red, 0, stream) == hipSuccess;
+            if (split && ok)
+                h3_int8_split_end(epi_start, epi_stop, stream, "grouped-reduce");
+            return ok;
+        }
+    }
+
+    if (!h3_int8_ensure_i32_scratch(plane_bytes)) return 0;
+    int need_partial = groups > 1u;
+    if (need_partial &&
+        !h3_int8_ensure_f32_scratch((size_t)rows * cols * sizeof(float)))
+        return 0;
+    for (uint32_t g = 0; g < groups; g++) {
+        if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+        hipblasStatus_t st = hipblasGemmEx(
+            h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
+            weight + (size_t)g * group_size, HIP_R_8I, lda,
+            input + (size_t)g * group_size, HIP_R_8I, lda, &beta,
+            h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
+            HIPBLAS_GEMM_DEFAULT);
+        if (split) h3_int8_split_end(gemm_start, gemm_stop, stream,
+                                     "grouped-gemm");
+        if (st != HIPBLAS_STATUS_SUCCESS) return 0;
+        uint32_t group = g;
+        int first = (g == 0u);
+        int last = (g + 1u == groups);
+        void *ep[] = {&h3_int8_i32_scratch, &input_scales, &weight_scales,
+                      &h3_int8_f32_scratch, &output, &rows, &cols, &groups,
+                      &group, &first, &last};
+        if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+        int ok = hipLaunchKernel(
+            reinterpret_cast<const void *>(h3_i32_grouped_scale_epilogue_kernel),
+            grid, block, ep, 0, stream) == hipSuccess;
+        if (split && ok)
+            h3_int8_split_end(epi_start, epi_stop, stream, "grouped-epilogue");
+        if (!ok) return 0;
+    }
+    return 1;
 }
 
 static int h3_launch_linear_int8_r64_dispatch(
@@ -2571,6 +3321,10 @@ extern "C" int h3_launch_linear_int8_grouped_nax_r64(
         !args->group_size || args->group_size % 32u ||
         args->input_dim % args->group_size) {
         return 0;
+    }
+    if (h3_int8_hipblas_grouped_linear(input, weight, input_scales,
+                                       weight_scales, output, args, stream)) {
+        return 1;
     }
     int force_bk32 = getenv("H3_INT8_BK32") &&
                      strcmp(getenv("H3_INT8_BK32"), "0") != 0;

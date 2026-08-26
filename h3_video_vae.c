@@ -90,6 +90,8 @@ typedef struct {
     int output_frames;
 } vae_context;
 
+typedef struct vae_loader vae_loader;
+
 struct h3_video_vae_decoder {
     vae_context vae;
     tile_axis y_axis;
@@ -98,6 +100,7 @@ struct h3_video_vae_decoder {
     int latent_w;
     float latent_mean[LATENT_CHANNELS];
     float latent_std[LATENT_CHANNELS];
+    vae_loader *loader;
 };
 
 static void fail(char *error, size_t error_size, const char *format, ...) {
@@ -589,10 +592,124 @@ static int load_resident_weights(vae_context *vae,
     return load_output_weights(vae, error, error_size);
 }
 
+/* Weight I/O and GPU execution are both about five seconds for this decoder,
+ * and neither needs the other's result until the block it belongs to runs.
+ * A loader thread publishes blocks as they arrive so the command stream can
+ * start on block 0 while the tail of the 9 GiB read is still in flight. */
+struct vae_loader {
+    vae_context *vae;
+    h3_video_vae_progress progress;
+    void *progress_opaque;
+    pthread_mutex_t lock;
+    pthread_cond_t ready;
+    int blocks_loaded;   /* blocks fully published, -1 while input pending */
+    int output_loaded;
+    int failed;
+    char error[256];
+    pthread_t thread;
+    int started;
+};
+
+static void vae_loader_publish(vae_loader *loader, int blocks, int output) {
+    pthread_mutex_lock(&loader->lock);
+    loader->blocks_loaded = blocks;
+    loader->output_loaded = output;
+    pthread_cond_broadcast(&loader->ready);
+    pthread_mutex_unlock(&loader->lock);
+}
+
+static void vae_loader_fail(vae_loader *loader) {
+    pthread_mutex_lock(&loader->lock);
+    loader->failed = 1;
+    pthread_cond_broadcast(&loader->ready);
+    pthread_mutex_unlock(&loader->lock);
+}
+
+static void *vae_loader_worker(void *arg) {
+    vae_loader *loader = (vae_loader *)arg;
+    if (!load_input_weights(loader->vae, loader->error,
+                            sizeof(loader->error))) {
+        vae_loader_fail(loader);
+        return NULL;
+    }
+    vae_loader_publish(loader, 0, 0);
+    for (int index = 0; index < LAYERS; index++) {
+        if (!load_block(loader->vae, index, loader->error,
+                        sizeof(loader->error))) {
+            vae_loader_fail(loader);
+            return NULL;
+        }
+        vae_loader_publish(loader, index + 1, 0);
+        if (loader->progress)
+            loader->progress(index + 1, LAYERS, loader->progress_opaque);
+    }
+    if (!load_output_weights(loader->vae, loader->error,
+                             sizeof(loader->error))) {
+        vae_loader_fail(loader);
+        return NULL;
+    }
+    vae_loader_publish(loader, LAYERS, 1);
+    return NULL;
+}
+
+/* Waits for `blocks` transformer blocks, and the output weights when asked. */
+static int vae_loader_wait(vae_loader *loader, int blocks, int output,
+                           char *error, size_t error_size) {
+    if (!loader->started) return 1;
+    pthread_mutex_lock(&loader->lock);
+    while (!loader->failed &&
+           (loader->blocks_loaded < blocks ||
+            (output && !loader->output_loaded))) {
+        pthread_cond_wait(&loader->ready, &loader->lock);
+    }
+    int failed = loader->failed;
+    pthread_mutex_unlock(&loader->lock);
+    if (failed) {
+        fail(error, error_size, "%s", loader->error);
+        return 0;
+    }
+    return 1;
+}
+
+static int vae_loader_start(vae_loader *loader, vae_context *vae,
+                            h3_video_vae_progress progress,
+                            void *progress_opaque, char *error,
+                            size_t error_size) {
+    memset(loader, 0, sizeof(*loader));
+    loader->vae = vae;
+    loader->progress = progress;
+    loader->progress_opaque = progress_opaque;
+    loader->blocks_loaded = -1;
+    pthread_mutex_init(&loader->lock, NULL);
+    pthread_cond_init(&loader->ready, NULL);
+    if (getenv("H3_VAE_LOAD_BLOCKING")) {
+        return load_resident_weights(vae, progress, progress_opaque, error,
+                                     error_size);
+    }
+    if (pthread_create(&loader->thread, NULL, vae_loader_worker, loader) != 0) {
+        return load_resident_weights(vae, progress, progress_opaque, error,
+                                     error_size);
+    }
+    loader->started = 1;
+    /* The input projection and activation sizing run before any block, so the
+     * caller needs those weights present before it continues. */
+    return vae_loader_wait(loader, 0, 0, error, error_size);
+}
+
+static void vae_loader_join(vae_loader *loader) {
+    if (!loader->vae) return;
+    if (loader->started) {
+        pthread_join(loader->thread, NULL);
+        loader->started = 0;
+    }
+    pthread_mutex_destroy(&loader->lock);
+    pthread_cond_destroy(&loader->ready);
+}
+
 /* Tiled decoding keeps every VAE weight resident for the duration of the phase.
  * This uses about 9 GiB after the DiT has been retired, avoids rereading 9 GiB
  * per spatial tile, and permits one command-buffer chain per tile. */
-static int run_resident_tile(vae_context *vae, char *error,
+static int run_resident_tile(vae_context *vae, vae_loader *loader, char *error,
                              size_t error_size) {
     float zeros[HIDDEN];
     memset(zeros, 0, sizeof(zeros));
@@ -621,11 +738,21 @@ static int run_resident_tile(vae_context *vae, char *error,
     OP(h3_gpu_copy_f32(vae->gpu, vae->hidden,
         (size_t)(vae->patches + REGISTERS) * HIDDEN, zero, 0, HIDDEN),
        "pack tiled video VAE suffix");
-    for (int index = 0; index < LAYERS; index++)
+    for (int index = 0; index < LAYERS; index++) {
+        if (loader &&
+            !vae_loader_wait(loader, index + 1, 0, error, error_size)) {
+            h3_gpu_tensor_free(zero);
+            return 0;
+        }
         if (!run_block(vae, index, error, error_size)) {
             h3_gpu_tensor_free(zero);
             return 0;
         }
+    }
+    if (loader && !vae_loader_wait(loader, LAYERS, 1, error, error_size)) {
+        h3_gpu_tensor_free(zero);
+        return 0;
+    }
     OP(h3_gpu_layer_norm_f32(vae->gpu, vae->norm, vae->hidden,
         vae->norm_out_w, vae->norm_out_b, vae->sequence, HIDDEN, 1e-5f),
        "tiled video VAE output LayerNorm");
@@ -928,7 +1055,8 @@ static int decoder_decode_chunk(h3_video_vae_decoder *decoder,
             ok = prepare_input(&decoder->vae, input,
                                decoder->latent_mean, decoder->latent_std,
                                error, error_size) &&
-                 run_resident_tile(&decoder->vae, error, error_size);
+                 run_resident_tile(&decoder->vae, decoder->loader, error,
+                                   error_size);
             free(input);
             if (!ok) break;
             h3_video_frames tile;
@@ -999,9 +1127,14 @@ h3_video_vae_decoder *h3_video_vae_decoder_load(
             vae->gpu = h3_gpu_create(shader_source_path, error, error_size);
         if (vae->gpu)
             h3_gpu_profile_set_label(vae->gpu, "resident video VAE decoder");
-        ok = vae->weights && vae->gpu &&
-             load_resident_weights(vae, progress, progress_opaque,
-                                   error, error_size) &&
+        if (vae->weights && vae->gpu) {
+            decoder->loader = calloc(1, sizeof(*decoder->loader));
+            if (!decoder->loader)
+                fail(error, error_size, "out of memory starting video VAE load");
+        }
+        ok = vae->weights && vae->gpu && decoder->loader &&
+             vae_loader_start(decoder->loader, vae, progress, progress_opaque,
+                              error, error_size) &&
              prepare_rope(vae, error, error_size) &&
              allocate_activations(vae, error, error_size);
     }
@@ -1100,6 +1233,11 @@ int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
 
 void h3_video_vae_decoder_free(h3_video_vae_decoder *decoder) {
     if (!decoder) return;
+    if (decoder->loader) {
+        vae_loader_join(decoder->loader);
+        free(decoder->loader);
+        decoder->loader = NULL;
+    }
     cleanup(&decoder->vae);
     tile_axis_free(&decoder->y_axis);
     tile_axis_free(&decoder->x_axis);
@@ -1144,9 +1282,11 @@ static int decode_chunked(const char *weight_directory,
         vae.gpu = h3_gpu_create(shader_source_path, error, error_size);
     if (vae.gpu)
         h3_gpu_profile_set_label(vae.gpu, "video VAE decoder");
+    vae_loader loader;
+    memset(&loader, 0, sizeof(loader));
     ok = vae.weights && vae.gpu &&
-         load_resident_weights(&vae, progress, progress_opaque,
-                               error, error_size) &&
+         vae_loader_start(&loader, &vae, progress, progress_opaque,
+                          error, error_size) &&
          prepare_rope(&vae, error, error_size) &&
          allocate_activations(&vae, error, error_size);
     int tile_count = y_axis.count * x_axis.count;
@@ -1185,7 +1325,7 @@ static int decode_chunked(const char *weight_directory,
                 free_tensor(&vae.latent);
                 ok = prepare_input(&vae, input, latent_mean, latent_std,
                                    error, error_size) &&
-                     run_resident_tile(&vae, error, error_size);
+                     run_resident_tile(&vae, &loader, error, error_size);
                 free(input);
                 if (!ok) break;
                 h3_video_frames tile;
@@ -1232,6 +1372,7 @@ static int decode_chunked(const char *weight_directory,
     }
     free(final_rgb);
     free(temporal_overlap);
+    vae_loader_join(&loader);
     cleanup(&vae);
     tile_axis_free(&y_axis); tile_axis_free(&x_axis);
     return ok;

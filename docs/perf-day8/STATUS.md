@@ -8,7 +8,7 @@ Baseline fox s2: denoise GPU **11.71s** (lin **7.20** · sdpa **3.87**)
 Baseline fox-fast: denoise GPU **85.26s** (lin **52.3** · sdpa **28.2**)  
 Priority: INT8 via hipBLAS (not naive packing); then SDPA Q7  
 Loop: 45m one-shot (`AGENT_LOOP_WAKE_perf_day8`) until 19:00; **unilab / gfx1151 only**  
-Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-buffer/float4 LDS BK+4, mmap memcpy default, t128 skip-last-sync, launch_bounds(256,3), INT8 LDS_K BK+8, grouped k+=16, naive INT8 WMMA, SDPA Q7, Q6 pipe, Q6 K-unroll-2, Q6×2 L2, hipBLAS/hipBLASLt F32, hipBLASLt i8 fused scale, VAE d64 Q8 default
+Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-buffer/float4 LDS BK+4, mmap memcpy default, t128 skip-last-sync, launch_bounds(256,3), INT8 LDS_K BK+8, grouped k+=16, naive INT8 WMMA, SDPA Q7, Q6 pipe, Q6 K-unroll-2, Q6×2 L2, hipBLAS/hipBLASLt F32, hipBLASLt i8 fused scale, VAE d64 Q8 default, INT8 LDS quantize default, grouped hipBLAS unpacked lda=K, grouped hipBLAS per-group loop
 
 ## Scoreboard (fox s2)
 
@@ -16,7 +16,8 @@ Do not retry: fc1 t128, fused SwiGLU dual-B, flash, F32 256×64/BK16/LDS double-
 |---------|------------:|---------------:|-------------:|
 | night-5 `852dbd0` | 11.71 | 7.20 | 3.87 |
 | hipBLAS INT8 (same-binary t128 A/B) | 8.99 | **4.50** | 3.85 |
-| Q6 vec loads (same-binary scalar A/B) | **8.54** | 4.45 | **3.47** |
+| Q6 vec loads (same-binary scalar A/B) | 8.54 | 4.45 | **3.47** |
+| grouped hipBLAS packed (same-binary r64 A/B) | **7.49** | **3.39** | 3.48 |
 | t128 opt-out (`H3_INT8_T128=1`) | 11.61 | 7.15 | 3.81 |
 
 Microbench M=1920 K=14336 N=5376: hipBLAS **11.0 ms / 26.9 TFLOP/s** vs t128 **18.8 ms / 15.7 TFLOP/s**.
@@ -27,9 +28,10 @@ Microbench M=1920 K=14336 N=5376: hipBLAS **11.0 ms / 26.9 TFLOP/s** vs t128 **1
 |---------|------------:|---------------:|-------------:|
 | night-5 `852dbd0` | 85.26 | 52.3 | 28.2 |
 | hipBLAS INT8 | 65.46 | **32.72** | 28.14 |
-| Q6 vec loads | **62.33** | 32.24 | **25.48** |
+| Q6 vec loads | 62.33 | 32.24 | **25.48** |
+| grouped hipBLAS packed | **55.51** | **25.41** | 25.43 |
 
-M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.73×** that (was 5.7×).
+M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.33×** that (was 5.7×).
 
 ## Decisions
 
@@ -47,6 +49,9 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 - **KEEP** VAE d64 SDPA consecutive `float2` loads on Q2 (default). Fox s2 video VAE sdpa 6.39→**6.07**, VAE GPU 17.44→**16.99**. Tests pass.
 - **KEEP** VAE d64 Q4 (4 queries share K/V; opt out `H3_SDPA_D64_Q2=1`). Fox s2 video VAE sdpa 6.07→**4.74**, VAE GPU 16.99→**15.74**. Tests pass.
 - **REJECT** VAE d64 Q8 as default (fox s2 video VAE sdpa 4.97 vs Q4 4.74). Opt-in `H3_SDPA_D64_Q8=1`.
+- **REJECT** LDS-staged row quantize as default (`H3_INT8_QUANT_LDS=1`). Split: quantize is ~0.4 ms vs gemm ~10.5 ms; LDS made full linear 10.6→10.9 ms.
+- **KEEP** grouped FC2 hipBLAS with pack-to-lda=G then `hipblasGemmStridedBatchedEx` + group-scale reduce. Opt out `H3_INT8_GROUPED_HIPBLAS=0` (custom r64). Micro M=1920 K=14336 N=5376 g=1024: 22.2→**10.9 ms**. Fox s2 same-binary: linear 4.45→**3.39**, denoise GPU 8.56→**7.49**. Fox-fast denoise GPU 62.33→**55.51** (linear 32.24→**25.41**). vs M5 16.69s: **3.33×**. Tests pass.
+- **REJECT** grouped hipBLAS without packing (lda=K_full, ~21.8–22.1 ms) and per-group gemm loop (~32.4 ms).
 
 ## Log
 
@@ -68,3 +73,9 @@ M5 Max published denoise wall (same knobs): **16.69s**. HIP denoise GPU now **3.
 | 18:19 | VAE d64 float2 loads | video VAE sdpa 6.39→**6.07** — KEEP |
 | 18:31 | VAE d64 Q4 | video VAE sdpa 6.07→**4.74** — KEEP |
 | 18:46 | VAE d64 Q8 default | sdpa 4.97 vs Q4 4.74 — REJECT |
+| 19:30 | split INT8 linear | quantize ~0.4 · gemm ~10.5 · epi ~0.24 |
+| 19:40 | LDS row quantize | 10.9 vs 10.6 ms — REJECT default |
+| 20:05 | grouped hipBLAS unpacked/loop | 21.8 / 32.4 vs r64 22.2 — REJECT |
+| 20:12 | grouped hipBLAS pack lda=G | micro 22.2→**10.9**; tests ok |
+| 20:16 | fox s2 packed vs r64 | lin 4.45→**3.39** / GPU 8.56→**7.49** — KEEP |
+| 20:20 | fox-fast packed | denoise GPU **55.51** / lin **25.41** |

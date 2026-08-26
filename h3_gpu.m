@@ -586,6 +586,21 @@ h3_gpu_tensor *h3_gpu_tensor_new_i8(h3_gpu *gpu, size_t elements) {
     return h3_gpu_tensor_new(gpu, NULL, elements, sizeof(int8_t), H3_GPU_I8);
 }
 
+/* Apple silicon has one physical pool with no carveout, so a GPU-only buffer has
+ * nothing to gain from a separate allocation: shared storage is already both
+ * CPU- and GPU-addressable at full speed. */
+h3_gpu_tensor *h3_gpu_tensor_new_bf16_device(h3_gpu *gpu, size_t elements) {
+    return h3_gpu_tensor_new_bf16(gpu, elements);
+}
+
+h3_gpu_tensor *h3_gpu_tensor_new_i8_device(h3_gpu *gpu, size_t elements) {
+    return h3_gpu_tensor_new_i8(gpu, elements);
+}
+
+h3_gpu_tensor *h3_gpu_tensor_new_f32_device(h3_gpu *gpu, size_t elements) {
+    return h3_gpu_tensor_new_f32(gpu, elements);
+}
+
 h3_gpu_tensor *h3_gpu_tensor_from_f32(h3_gpu *gpu, const float *values,
                                       size_t elements) {
     return h3_gpu_tensor_new(gpu, values, elements, sizeof(float), H3_GPU_F32);
