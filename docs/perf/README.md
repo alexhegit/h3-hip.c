@@ -11,6 +11,7 @@ spreadsheets on the GitHub release.
 
 | Path | Role |
 |------|------|
+| [`HISTORY.md`](HISTORY.md) | Chronology 18–26 Aug (start here) |
 | [`../PERFORMANCE.md`](../PERFORMANCE.md) | User-facing release scoreboard |
 | [`PERF_BASELINE.md`](../PERF_BASELINE.md) | Internal pointer + early HIP baselines |
 | [`runs/`](../perf-runs/) | Dated ledgers, tagged baselines, raw `--profile` extracts |

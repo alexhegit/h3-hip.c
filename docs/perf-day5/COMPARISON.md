@@ -1,5 +1,10 @@
 # fox 性能演进对比
 
+**Frozen at day-5 Q3 (2026-08-22).** Later WMMA, hipBLAS, and device-resident
+weights are in [`../perf/HISTORY.md`](../perf/HISTORY.md) and
+[`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md). Do not treat the “当前 Q3”
+row as HEAD.
+
 预设：`fox steps=2 layers=35`，512×512、22 帧，MiniMax-H3 on gfx1151。
 
 E2E 与 DiT load 受文件系统缓存影响很大（标 †），判断优化效果请看 `--profile` 的

@@ -1,8 +1,8 @@
 # Stage summary — 2026-08-26
 
-Consolidated state at the `v0.9.0` tag. `STATUS.md` in this directory holds the
-working notes and the full KEEP/REJECT record; this file is the summary a reader
-should start from.
+Consolidated state around `v0.9.0`. `STATUS.md` in this directory is the
+KEEP/REJECT log. The whole 18–26 Aug arc is [`../perf/HISTORY.md`](../perf/HISTORY.md).
+Start there if you want chronology; this file is the I/O-era snapshot.
 
 Benchmark throughout ("fox s2"):
 
@@ -18,10 +18,12 @@ change since the tiled-SDPA tail fix.
 
 ## Where the run stands
 
-End to end **82.9–87.3 s** on two `/usr/bin/time` repeats at tag time
-([`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md)); an earlier same-tree
-sample hit 73.8 s without `time`. From a 104 s I/O-work starting point and
-from Run B at 117 s.
+**Tagged E2E (26 Aug, `/usr/bin/time`):** fox-s2 **82.9–87.3 s**, denoise GPU
+**6.3–6.5 s** — [`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md).
+
+**I/O analysis table below** is a same-tree fox-s2 from 25 Aug (**73.8 s**
+process wall, no `time`). Use it for bytes-read and stage splits, not as the
+release number. From a ~104 s I/O-work starting point and from Run B at 117 s.
 
 | phase | wall | GPU op | read | read floor @2.2 GiB/s | disk utilization |
 |---|---:|---:|---:|---:|---:|
@@ -124,8 +126,10 @@ from its output.
 
 ## Backlog, ranked by measured headroom
 
-Perfect overlap plus a saturated drive would put E2E at roughly **56s** (48.68s
-of disk plus the 7.28s denoise tail that overlaps nothing). Current 73.8s.
+Perfect overlap plus a saturated drive would put E2E at roughly **56 s** (48.7 s
+of disk plus a ~7 s denoise tail). Informal 25 Aug wall was 73.8 s; tagged
+fox-s2 is 83–87 s. Headroom estimates below use the informal profile's stage
+splits (same code, quieter I/O that day).
 
 1. **Raise DiT-load disk utilization from 69%** — up to **~9s**. Pipeline depth
    and thread configuration, not architecture. Largest single item.
