@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniMax-H3 on AMD HIP — h3-hip.c</title>
+<meta name="description" content="A HIP port of antirez/h3.c running MiniMax-H3 text-to-video-and-audio on a single AMD Strix Halo iGPU. 3.0x end-to-end on fox-s2, bit-identical output.">
+<style>
+  :root {
+    --bg: #0b0c0e;
+    --panel: #14161a;
+    --panel-2: #1b1e24;
+    --line: #2a2e36;
+    --ink: #e8eaed;
+    --ink-dim: #a2a9b4;
+    --ink-faint: #6f7783;
+    --red: #ed1c24;
+    --magenta: #ff4b8b;
+    --amber: #ffb020;
+    --green: #6ee7a0;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }
+  a:hover { border-bottom-color: var(--red); }
+  code, .mono { font-family: var(--mono); font-size: 0.9em; }
+  code { background: var(--panel-2); padding: 0.12em 0.4em; border-radius: 4px; color: #ffd9a0; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
+
+  /* hero */
+  header {
+    border-bottom: 1px solid var(--line);
+    background:
+      radial-gradient(900px 420px at 78% -12%, rgba(237,28,36,0.20), transparent 62%),
+      radial-gradient(700px 360px at 12% 0%, rgba(255,75,139,0.13), transparent 60%);
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--red); padding-top: 64px;
+  }
+  h1 { font-size: clamp(30px, 5.0vw, 52px); line-height: 1.1; margin: 16px 0 0; font-weight: 700; letter-spacing: -0.02em; }
+  h1 .sub { display: block; font-size: clamp(17px, 2.2vw, 23px); font-weight: 400; color: var(--ink-dim); margin-top: 14px; letter-spacing: 0; }
+  .lede { color: var(--ink-dim); max-width: 68ch; margin: 22px 0 0; font-size: 17px; }
+  .hero-links { display: flex; flex-wrap: wrap; gap: 10px; margin: 26px 0 0; }
+  .btn {
+    border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px;
+    font-size: 14px; color: var(--ink-dim); background: var(--panel);
+  }
+  .btn:hover { border-color: var(--red); color: var(--ink); }
+  .btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn.primary:hover { background: #ff3a41; color: #fff; }
+
+  /* hero video */
+  .hero-media { margin: 40px 0 0; padding-bottom: 60px; }
+  .hero-media video {
+    width: 100%; display: block; border-radius: 10px;
+    border: 1px solid var(--line); background: #000;
+  }
+  .cap { color: var(--ink-faint); font-size: 13px; margin-top: 10px; }
+
+  /* sections */
+  section { padding: 70px 0; border-bottom: 1px solid var(--line); }
+  .sec-num {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  .sec-num b { color: var(--red); font-weight: 600; }
+  h2 { font-size: clamp(23px, 3.1vw, 33px); margin: 12px 0 0; letter-spacing: -0.01em; }
+  h3 { font-size: 19px; margin: 42px 0 10px; }
+  p { max-width: 72ch; color: var(--ink-dim); }
+  p strong, li strong { color: var(--ink); font-weight: 600; }
+  ul { color: var(--ink-dim); max-width: 72ch; }
+  li { margin: 8px 0; }
+
+  /* stat cards */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 34px 0 0; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  .stat .k { font-size: 33px; font-weight: 700; letter-spacing: -0.02em; }
+  .stat .k.red { color: var(--magenta); }
+  .stat .t { font-size: 13px; color: var(--ink-dim); margin-top: 6px; }
+  .stat .d { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 8px; }
+
+  /* ladder */
+  .ladder { margin: 30px 0 0; }
+  .row { display: grid; grid-template-columns: 1fr 96px; gap: 16px; align-items: center; padding: 11px 0; border-top: 1px solid var(--line); }
+  .row:last-child { border-bottom: 1px solid var(--line); }
+  .row .label { font-size: 14.5px; color: var(--ink-dim); }
+  .row .label b { color: var(--ink); }
+  .bar { height: 26px; border-radius: 4px; margin-top: 7px; background: linear-gradient(90deg, var(--red), var(--magenta)); position: relative; }
+  .bar span { position: absolute; right: 9px; top: 3px; font-family: var(--mono); font-size: 12.5px; color: #fff; }
+  .bar.wide span { color: #fff; }
+  .row .mult { font-family: var(--mono); font-size: 17px; text-align: right; color: var(--ink); }
+  .row.final .mult { color: var(--magenta); font-weight: 700; }
+  .row.final .label b { color: #fff; }
+
+  /* tables */
+  table { width: 100%; border-collapse: collapse; margin: 26px 0 0; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+  th { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; }
+  td { color: var(--ink-dim); }
+  td.num { text-align: right; font-family: var(--mono); color: var(--ink); }
+  tr.hi td { color: var(--ink); }
+
+  /* gallery */
+  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 32px 0 0; }
+  .clip video { width: 100%; display: block; border-radius: 9px; border: 1px solid var(--line); background: #000; }
+  .clip .name { font-size: 14.5px; margin-top: 11px; color: var(--ink); }
+  .clip .knobs { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 4px; }
+  .tag { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--ink-faint); margin-left: 6px; vertical-align: 1px; }
+
+  /* pillars */
+  .pillar { background: var(--panel); border: 1px solid var(--line); border-left: 2px solid var(--red); border-radius: 0 10px 10px 0; padding: 22px 24px; margin: 22px 0 0; }
+  .pillar h3 { margin: 0 0 8px; font-size: 18px; }
+  .pillar p { margin: 0; font-size: 15px; }
+  .pillar .win { font-family: var(--mono); font-size: 12.5px; color: var(--green); margin-top: 12px; }
+
+  /* callout */
+  .callout { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 20px 24px; margin: 30px 0 0; }
+  .callout p { margin: 0; font-size: 15px; }
+  .callout .h { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--amber); margin-bottom: 8px; }
+
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 18px; overflow-x: auto; font-family: var(--mono); font-size: 13px; color: #d6dae0; margin: 22px 0 0; line-height: 1.6; }
+  pre .c { color: var(--ink-faint); }
+
+  footer { padding: 54px 0 74px; color: var(--ink-faint); font-size: 14px; }
+  footer a { color: var(--ink-dim); }
+  .foot-links { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 22px; }
+  @media (max-width: 620px) {
+    .row { grid-template-columns: 1fr 70px; }
+    .eyebrow { padding-top: 44px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="eyebrow">Day-nine optimization · single APU</div>
+    <h1>MiniMax-H3 on AMD HIP
+      <span class="sub">A pure-HIP port that gets 3.0&times; end to end on one Strix Halo iGPU — with byte-identical output.</span>
+    </h1>
+    <p class="lede">
+      <a href="https://github.com/alexhegit/h3-hip.c">h3-hip.c</a> reimplements the GPU backend of
+      <a href="https://github.com/antirez/h3.c">antirez/h3.c</a> in HIP, so the same MiniMax-H3 CLI and model
+      stack run on ROCm. Nine days of kernel and weight-I/O work took a first-light port from 257&nbsp;s to
+      83&ndash;87&nbsp;s on the fox-s2 preset. No distillation, no fine-tune, no quality trade: the fox-s2 MP4
+      still hashes to the same md5 it did before the fast kernels landed.
+    </p>
+    <div class="hero-links">
+      <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
+      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
+      <a class="btn" href="#results">Results</a>
+      <a class="btn" href="#how">How</a>
+      <a class="btn" href="#honest">What this is not</a>
+    </div>
+    <div class="hero-media">
+      <video src="assets/h3-hip-ident.mp4" poster="assets/h3-hip-ident.jpg" controls muted loop playsinline preload="metadata"></video>
+      <div class="cap">Project ident, generated by this build on gfx1151 — 864&times;480, 56 frames, <span class="mono">--steps 20 --layers 50 --reuse 1</span>. Titles were added with ffmpeg; H3 does not render readable text.</div>
+    </div>
+  </div>
+</header>
+
+<section id="model">
+  <div class="wrap">
+    <div class="sec-num"><b>01</b> — The model</div>
+    <h2>One transformer that answers in video, with sound</h2>
+    <p>
+      <a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">MiniMax-H3</a> takes text, images, video and audio
+      as one unified context and returns a clip with native stereo audio synthesized in the same forward pass
+      as the pixels. Upstream <a href="https://github.com/antirez/h3.c">h3.c</a> is a native, dependency-light
+      implementation of that stack for Apple Metal. This project keeps the host, model and CLI code and replaces
+      the GPU layer with HIP.
+    </p>
+    <p>
+      The target is deliberately modest hardware: an <strong>AMD Ryzen AI MAX+ 395</strong> with a
+      <strong>Radeon 8060S</strong> integrated GPU (<span class="mono">gfx1151</span>). 128&nbsp;GB of unified
+      memory, of which the BIOS carves <strong>96&nbsp;GiB as VRAM</strong>, leaving the host about
+      <strong>31&nbsp;GiB</strong>. That split turns out to shape the entire optimization story: one T2VA run
+      streams roughly <strong>107&nbsp;GiB</strong> of weights, so the page cache never holds the working set.
+    </p>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <div class="sec-num"><b>02</b> — Results</div>
+    <h2>Where the speedup came from</h2>
+    <p>
+      Every number below is this port measured against <em>itself</em> — first working HIP profile on
+      18&nbsp;Aug versus the v0.9.0 tag on 26&nbsp;Aug, same machine, same checkpoint, same CLI. Wall time on
+      this box moves with page-cache state, so end-to-end is quoted as a band and
+      <strong>denoise GPU time</strong> (HIP events) is the figure to trust.
+    </p>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="k red">3.0&times;</div>
+        <div class="t">fox-s2 end to end</div>
+        <div class="d">257 s → 83–87 s</div>
+      </div>
+      <div class="stat">
+        <div class="k red">6.3&times;</div>
+        <div class="t">fox-s2 denoise GPU</div>
+        <div class="d">40.3 s → 6.3–6.5 s</div>
+      </div>
+      <div class="stat">
+        <div class="k red">3.4&times;</div>
+        <div class="t">fox-fast denoise GPU</div>
+        <div class="d">95.6 s → 28.4 s</div>
+      </div>
+      <div class="stat">
+        <div class="k">~10&times;</div>
+        <div class="t">video VAE decode GPU</div>
+        <div class="d">53.6 s → ~5.2 s</div>
+      </div>
+    </div>
+
+    <h3>Attribution ladder — fox-s2 denoise GPU</h3>
+    <p>
+      Each rung is a dated session that kept something. Bar length is measured GPU time in the denoise phase;
+      the number on the right is cumulative speedup against the first HIP profile.
+    </p>
+
+    <div class="ladder">
+      <div class="row">
+        <div>
+          <div class="label"><b>First HIP profile</b> — port works, nothing tuned</div>
+          <div class="bar" style="width:100%"><span>40.3 s</span></div>
+        </div>
+        <div class="mult">1.00&times;</div>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label"><b>Wave SDPA grid, INT8 BK=128, 4-way pread</b></div>
+          <div class="bar" style="width:43.2%"><span>17.4 s</span></div>
+        </div>
+        <div class="mult">2.3&times;</div>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label"><b>d128 Q3, F32 r128, INT8 t128</b> — SDPA 8.1 → 5.3 s</div>
+          <div class="bar" style="width:32.5%"><span>13.1 s</span></div>
+        </div>
+        <div class="mult">3.1&times;</div>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label"><b>Q5 / Q6 tiles, INT8 k+=16</b></div>
+          <div class="bar" style="width:29.0%"><span>11.7 s</span></div>
+        </div>
+        <div class="mult">3.4&times;</div>
+      </div>
+      <div class="row">
+        <div>
+          <div class="label"><b>hipBLAS INT8, grouped packed FC2</b></div>
+          <div class="bar" style="width:18.6%"><span>7.49 s</span></div>
+        </div>
+        <div class="mult">5.4&times;</div>
+      </div>
+      <div class="row final">
+        <div>
+          <div class="label"><b>WMMA rearchitecture</b> — tiled d128 SDPA, f32 on the bf16 matrix cores</div>
+          <div class="bar" style="width:15.9%"><span>6.4 s</span></div>
+        </div>
+        <div class="mult">6.3&times;</div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <div class="h">The interesting part</div>
+      <p>
+        Hand-written INT8 tiles topped out at roughly <strong>4% of BF16 WMMA peak</strong>. That is why the last
+        rung is not another tuning pass but an architecture change: move the hot kernels onto the matrix cores.
+        After it, fox-s2 is <strong>no longer GPU-bound at all</strong> — and the remaining wall clock is NVMe.
+      </p>
+    </div>
+
+    <h3>Tagged baseline — v0.9.0</h3>
+    <table>
+      <thead>
+        <tr><th>Preset</th><th>Knobs</th><th class="num">E2E</th><th class="num">Denoise GPU</th></tr>
+      </thead>
+      <tbody>
+        <tr class="hi">
+          <td><strong>fox-s2</strong></td>
+          <td class="mono">512² · 22f · --steps 2 --layers 35 --reuse 1</td>
+          <td class="num">83–87 s</td><td class="num">6.3–6.5 s</td>
+        </tr>
+        <tr class="hi">
+          <td><strong>fox-fast</strong></td>
+          <td class="mono">512² · 22f · --steps 20 --layers 45 --reuse 2</td>
+          <td class="num">95 s</td><td class="num">28 s</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="cap">
+      fox-fast is the upstream tutorial preset and runs 11 DiT evaluations, not 20 —
+      <span class="mono">--reuse 2</span> skips steps. fox-s2 output md5
+      <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span>.
+    </p>
+
+    <h3>Clips from this build</h3>
+    <p>
+      All generated on the gfx1151 iGPU with the binary this page describes. H3 cannot render readable
+      captions, so any on-screen title was composited with ffmpeg afterwards; the three clips marked
+      <span class="tag">untitled</span> are raw model output.
+    </p>
+
+    <div class="gallery">
+      <div class="clip">
+        <video src="assets/t2va-fox.mp4" poster="assets/t2va-fox.jpg" controls muted loop playsinline preload="none"></video>
+        <div class="name">T2VA — fox in fresh snow</div>
+        <div class="knobs">512² · 22f · --steps 20 --layers 50 --reuse 1</div>
+      </div>
+      <div class="clip">
+        <video src="assets/linux35.mp4" poster="assets/linux35.jpg" controls muted loop playsinline preload="none"></video>
+        <div class="name">T2VA — Linux 35 tribute <span class="tag">untitled</span></div>
+        <div class="knobs">864×480 · 56f · --layers 50 --reuse 1 · seed 1991</div>
+      </div>
+      <div class="clip">
+        <video src="assets/h3-hip-ident-draft-raw.mp4" poster="assets/h3-hip-ident-draft-raw.jpg" controls muted loop playsinline preload="none"></video>
+        <div class="name">T2VA — ident draft <span class="tag">untitled</span></div>
+        <div class="knobs">512×288 · 56f · --layers 45 --reuse 2 · seed 1991</div>
+      </div>
+      <div class="clip">
+        <video src="assets/amd-developer-community-raw.mp4" poster="assets/amd-developer-community-raw.jpg" controls muted loop playsinline preload="none"></video>
+        <div class="name">Ref2VA — two reference stills <span class="tag">untitled</span></div>
+        <div class="knobs">864×480 · 56f · --ref-image ×2 · seed 2026</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <div class="sec-num"><b>03</b> — How</div>
+    <h2>Three pillars, and none of them is attention sparsity</h2>
+    <p>
+      Published video-diffusion acceleration usually attacks sequence length and step count, because on a
+      datacenter GPU the transformer is the cost. On an integrated GPU with a carved-up memory map, the profile
+      looks different: attention was expensive until the matrix cores were used properly, and after that the
+      bottleneck moved to the SSD.
+    </p>
+
+    <div class="pillar">
+      <h3>Pillar 1 — Put the hot kernels on the matrix cores</h3>
+      <p>
+        Tiled WMMA d128 SDPA; f32 linear and f32 d64 SDPA executed on the bf16 matrix cores; tiled f32 conv1d;
+        a vectorized fused QKV + RoPE. The tiled-SDPA tail needed one writer per output row so results stay
+        reproducible run to run.
+      </p>
+      <div class="win">d128 SDPA micro-benchmark 45 ms → 6.7 ms · fox-s2 denoise GPU 7.49 s → 6.4 s</div>
+    </div>
+
+    <div class="pillar">
+      <h3>Pillar 2 — INT8 DiT weights through hipBLAS</h3>
+      <p>
+        Runtime INT8 quantization of the DiT weights with BF16 activations, driven through hipBLAS rather than
+        hand-rolled <span class="mono">sdot4</span> tiles, plus vectorized loads and a grouped packed FC2.
+        Linear is still about 79% of fox-fast denoise GPU time, so this is where the remaining kernel headroom is.
+      </p>
+      <div class="win">fox-s2 denoise GPU 11.7 s → 7.49 s · fox-fast 62.3 s → 55.5 s at the time it landed</div>
+    </div>
+
+    <div class="pillar">
+      <h3>Pillar 3 — Stop page-locking a 31 GiB host pool</h3>
+      <p>
+        <span class="mono">free</span> reports 31 GiB because the BIOS gave 96 GiB to VRAM.
+        <span class="mono">hipHostMalloc</span> pins that small host pool;
+        <span class="mono">hipMalloc</span> allocates from the carveout at roughly 90 GiB/s. Weights are now
+        device-resident, uploaded through a recycled pinned staging buffer that retires after stream sync.
+        AdaLN projections prefetch four blocks ahead and the video VAE loads on its own thread, both overlapping
+        the disk.
+      </p>
+      <div class="win">AdaLN precompute 34.0 s → 10.6 s · video VAE weight load hidden behind GPU work</div>
+    </div>
+
+    <h3>Reproduce the baseline</h3>
+    <pre><span class="c"># fox-s2 — the short A/B smoke, and the md5 gate</span>
+./h3 --profile -d /path/to/MiniMax-H3 \
+  -p "A red fox walks through fresh snow." \
+  --width 512 --height 512 --frames 22 \
+  --steps 2 --layers 35 --reuse 1 \
+  -o outputs/fox-s2.mp4
+
+<span class="c"># fox-fast — upstream tutorial knobs, 11 DiT evaluations</span>
+./h3 --profile -d /path/to/MiniMax-H3 \
+  -p "A red fox walks through fresh snow in a pine forest. Medium tracking shot, natural winter light, realistic fur, soft footsteps and wind." \
+  --width 512 --height 512 --frames 22 \
+  --steps 20 --layers 45 --reuse 2 \
+  -o outputs/fox-fast.mp4</pre>
+  </div>
+</section>
+
+<section id="honest">
+  <div class="wrap">
+    <div class="sec-num"><b>04</b> — Caveats</div>
+    <h2>What these numbers are not</h2>
+    <ul>
+      <li>
+        <strong>Not a cross-vendor benchmark.</strong> Every speedup here is this port against its own first
+        working profile on one machine. It says the HIP backend got faster; it says nothing about AMD versus
+        anyone else.
+      </li>
+      <li>
+        <strong>Not a Metal comparison, either.</strong> Upstream publishes <em>denoise wall</em> on an M5 Max,
+        not end-to-end. On identical fox-fast knobs that figure is 16.7 s against 34.6 s here — but that ratio
+        mixes two different GPUs and two different memory systems, and it is not a port-quality score.
+      </li>
+      <li>
+        <strong>Not quality-traded.</strong> There is no distillation, no LoRA, no calibration pass. The kernel
+        work is gated on the fox-s2 MP4 hashing to
+        <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> — byte-identical output, not a perceptual
+        distance below some threshold.
+      </li>
+      <li>
+        <strong>Not a clean-room measurement.</strong> Host RAM is 31 GiB and a run reads about 107 GiB, so
+        end-to-end wall time depends on page-cache state. That is why E2E is a band and GPU time is the
+        headline.
+      </li>
+      <li>
+        <strong>Not portable yet.</strong> Only <span class="mono">gfx1151</span> is tested.
+        <span class="mono">hipMalloc</span> failure is currently fatal, there is no
+        <span class="mono">hipMemGetInfo</span> budgeting, and the pinned pool is sized from
+        <span class="mono">_SC_PHYS_PAGES</span> — all of which needs fixing before a small-carveout card or a
+        discrete GPU is a supported target.
+      </li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-links">
+      <a href="https://github.com/alexhegit/h3-hip.c">alexhegit/h3-hip.c</a>
+      <a href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/PERFORMANCE.md">Scoreboard</a>
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/KNOWN_ISSUES.md">Known issues</a>
+      <a href="https://github.com/antirez/h3.c">Upstream h3.c</a>
+      <a href="https://github.com/alexhegit/h3-spark.c">CUDA sibling</a>
+      <a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">Weights</a>
+    </div>
+    <p style="max-width:72ch;color:var(--ink-faint)">
+      Host, model and CLI code follow <a href="https://github.com/antirez/h3.c">antirez/h3.c</a>; the HIP backend
+      is <span class="mono">backends/h3_gpu_hip.c</span> plus the kernels under
+      <span class="mono">kernels/</span>. Model weights are subject to the MiniMax-H3 license.
+      Measured on an AMD Ryzen AI MAX+ 395 / Radeon 8060S, ROCm, v0.9.0 tag, 26 Aug 2026.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>
