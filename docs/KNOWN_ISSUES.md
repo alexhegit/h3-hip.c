@@ -1,7 +1,8 @@
 # Known issues (HIP / gfx1151)
 
 Tracked gaps that do **not** block the default `./h3` T2VA generate path on
-Strix Halo (`gfx1151`). Production DiT uses BF16 + INT8 MLP.
+Strix Halo (`gfx1151`). Production DiT uses BF16 activations and INT8 weights
+(hipBLAS) on the default path.
 
 ## KI-001: CPU Euler sampler
 
@@ -47,7 +48,7 @@ tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 
 | ID | Topic | Status |
 |----|-------|--------|
-| P | Perf + HIP `--profile` marks vs Metal | In progress — phase marks fixed; op-class GPU timing under `H3_PROFILE` |
+| P | Remaining E2E vs Metal | GPU kernels are no longer the fox-s2 bottleneck; wall is mostly NVMe weight I/O. Headlines: [`PERFORMANCE.md`](PERFORMANCE.md) |
 | V | `--ref-video-audio VIDEO AUDIO` E2E clip | Same kernels as `--ref-video`; not separately showcased |
 
 ### Profiling notes (HIP)
@@ -56,9 +57,7 @@ tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 `op-classes` breakdown (linear / sdpa / conv / other) from HIP events flushed
 on each submit. DiT emits `load` then `Euler denoise` (or GPU/RES variants) as
 per-phase deltas. On HIP, `wait`/`root-gpu` is stream-sync only; use
-`op-classes` for GPU time. Dated fox-s2 numbers:
-[`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md). Release headlines:
-[`PERFORMANCE.md`](PERFORMANCE.md).
+`op-classes` for GPU time. Tagged headlines: [`PERFORMANCE.md`](PERFORMANCE.md).
 
 ```bash
 rocprofv3 --hip-trace --kernel-trace --stats -o /tmp/h3-prof -- \
