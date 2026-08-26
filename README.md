@@ -11,6 +11,8 @@ Project ident, generated on gfx1151 (864×480, 56 frames, `--steps 20 --layers 5
 --reuse 1`). Click the poster for the MP4:
 [h3-hip-ident.mp4](assets/showcase/h3-hip-ident.mp4).
 
+**Project page:** [alexhegit.github.io/h3-hip.c](https://alexhegit.github.io/h3-hip.c/)
+**Wiki:** [github.com/alexhegit/h3-hip.c/wiki](https://github.com/alexhegit/h3-hip.c/wiki)
 **Original project:** [antirez/h3.c](https://github.com/antirez/h3.c)
 **CUDA sibling (DGX Spark):** [alexhegit/h3-spark.c](https://github.com/alexhegit/h3-spark.c)
 **Official weights:** [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3)
@@ -94,6 +96,8 @@ Current tagged line is **v0.9.0**.
 
 ## Documentation
 
+- **Project page** (speedup ladder and clips): [alexhegit.github.io/h3-hip.c](https://alexhegit.github.io/h3-hip.c/)
+- **Wiki:** [Getting started](https://github.com/alexhegit/h3-hip.c/wiki/Getting-started) and related pages
 - **Tagged timings** (fox-s2 / fox-fast on gfx1151): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
