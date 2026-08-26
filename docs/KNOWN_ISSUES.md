@@ -66,4 +66,4 @@ rocprofv3 --hip-trace --kernel-trace --stats -o /tmp/h3-prof -- \
   --frames 22 --steps 2 --layers 35 --reuse 1 -o /tmp/prof.mp4
 ```
 
-Port plan: [`AMD_HIP_PORT_PLAN.md`](AMD_HIP_PORT_PLAN.md)
+Port plan (historical): [`deprecated/AMD_HIP_PORT_PLAN.md`](deprecated/AMD_HIP_PORT_PLAN.md).

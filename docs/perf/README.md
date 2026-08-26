@@ -26,6 +26,7 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md) | Full v0.9.0 timed tables |
 | [`../perf-runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md) | What antirez/h3.c publishes vs HIP reruns |
 | `docs/perf-day*/STATUS.md` | Session logs |
+| [`../deprecated/`](../deprecated/README.md) | Superseded whole docs (e.g. the pre-port plan) |
 
 ## When tagging a release
 
