@@ -1,6 +1,7 @@
 #include "h3_dit_schedule.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -234,6 +235,82 @@ cleanup:
     return result;
 }
 
+/* Each block's adaln_proj weight is 520 MiB and its projection is a rounding
+ * error of GPU time, so precompute used to be a chain of 50 blocking reads at
+ * single-stream disk speed. Reading a few blocks ahead on worker threads keeps
+ * the drive busy while the stream drains. */
+typedef struct {
+    const h3_weight_store *weights;
+    h3_gpu *gpu;
+    unsigned block;
+    h3_gpu_tensor *weight;
+    h3_gpu_tensor *bias;
+    char error[256];
+    pthread_t thread;
+    int started;
+    int busy;
+} adaln_slot;
+
+enum { ADALN_PREFETCH_MAX = 6 };
+
+static void adaln_slot_read(adaln_slot *slot) {
+    char weight_name[128], bias_name[128];
+    snprintf(weight_name, sizeof(weight_name),
+             "blocks.%u.adaln_proj.linear.weight", slot->block);
+    snprintf(bias_name, sizeof(bias_name),
+             "blocks.%u.adaln_proj.linear.bias", slot->block);
+    slot->weight = weight_bf16_2d(slot->weights, slot->gpu, weight_name,
+                                  BLOCK_OUTPUT, H3_DIT_TIME_DIM, slot->error,
+                                  sizeof(slot->error));
+    slot->bias = weight_bf16_1d(slot->weights, slot->gpu, bias_name,
+                                BLOCK_OUTPUT, slot->error,
+                                sizeof(slot->error));
+}
+
+static void *adaln_slot_worker(void *arg) {
+    adaln_slot_read((adaln_slot *)arg);
+    return NULL;
+}
+
+/* Cold-read A/B on the 26 GiB precompute: serial 24.4s, depth 2 19.0s,
+ * depth 4 17.4s, depth 6 no better. Each slot holds a 520 MiB weight. */
+static int adaln_prefetch_depth(void) {
+    const char *value = getenv("H3_ADALN_PREFETCH");
+    int depth = value ? atoi(value) : 4;
+    if (depth < 0) depth = 0;
+    if (depth > ADALN_PREFETCH_MAX) depth = ADALN_PREFETCH_MAX;
+    return depth;
+}
+
+static void adaln_slot_start(adaln_slot *slot, const h3_weight_store *weights,
+                             h3_gpu *gpu, unsigned block) {
+    slot->weights = weights;
+    slot->gpu = gpu;
+    slot->block = block;
+    slot->weight = NULL;
+    slot->bias = NULL;
+    slot->error[0] = '\0';
+    slot->busy = 1;
+    slot->started =
+        pthread_create(&slot->thread, NULL, adaln_slot_worker, slot) == 0;
+    if (!slot->started) adaln_slot_read(slot);
+}
+
+static void adaln_slot_finish(adaln_slot *slot) {
+    if (slot->started) {
+        pthread_join(slot->thread, NULL);
+        slot->started = 0;
+    }
+}
+
+static void adaln_slot_discard(adaln_slot *slot) {
+    if (!slot->busy) return;
+    adaln_slot_finish(slot);
+    free_tensor(&slot->weight);
+    free_tensor(&slot->bias);
+    slot->busy = 0;
+}
+
 h3_dit_schedule *h3_dit_schedule_precompute(
     const h3_weight_store *weights, h3_gpu *gpu,
     const h3_sigma_schedule *sigmas, int visual_condition,
@@ -261,43 +338,60 @@ h3_dit_schedule *h3_dit_schedule_precompute(
     features = NULL;
     if (!time) goto failed;
 
+    int depth = adaln_prefetch_depth();
+    adaln_slot slots[ADALN_PREFETCH_MAX];
+    memset(slots, 0, sizeof(slots));
+    unsigned queued = 0;
+    for (int index = 0; index < depth && queued < H3_DIT_BLOCKS;
+         index++, queued++) {
+        adaln_slot_start(&slots[index], weights, gpu, queued);
+    }
     for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
-        char weight_name[128], bias_name[128], operation[128];
-        snprintf(weight_name, sizeof(weight_name),
-                 "blocks.%u.adaln_proj.linear.weight", block);
-        snprintf(bias_name, sizeof(bias_name),
-                 "blocks.%u.adaln_proj.linear.bias", block);
-        h3_gpu_tensor *weight = weight_bf16_2d(
-            weights, gpu, weight_name, BLOCK_OUTPUT, H3_DIT_TIME_DIM,
-            error, error_size);
-        h3_gpu_tensor *bias = weight_bf16_1d(
-            weights, gpu, bias_name, BLOCK_OUTPUT, error, error_size);
+        char operation[128];
+        adaln_slot own;
+        memset(&own, 0, sizeof(own));
+        adaln_slot *slot = &own;
+        if (depth) {
+            slot = &slots[block % (unsigned)depth];
+            adaln_slot_finish(slot);
+        } else {
+            own.weights = weights;
+            own.gpu = gpu;
+            own.block = block;
+            own.busy = 1;
+            adaln_slot_read(&own);
+        }
         schedule->blocks[block] = h3_gpu_tensor_new_bf16(
             gpu, (size_t)schedule->time_rows * BLOCK_OUTPUT);
-        if (!weight || !bias || !schedule->blocks[block]) {
-            if (!error || !*error)
-                fail(error, error_size, "cannot allocate AdaLN block %u: %s",
-                     block, h3_gpu_error(gpu));
-            free_tensor(&weight);
-            free_tensor(&bias);
-            h3_gpu_tensor_free(time);
-            goto failed;
+        if (!slot->weight || !slot->bias || !schedule->blocks[block]) {
+            if (error && error_size && !*error)
+                snprintf(error, error_size, "%s", slot->error[0] ?
+                         slot->error : "cannot allocate AdaLN block");
+            goto block_failed;
         }
         snprintf(operation, sizeof(operation), "AdaLN block %u", block);
-        int ok = gpu_op(gpu, h3_gpu_begin(gpu), error, error_size, operation) &&
-            gpu_op(gpu, h3_gpu_linear_bf16(
-                gpu, schedule->blocks[block], time, weight, bias,
+        if (!gpu_op(gpu, h3_gpu_begin(gpu), error, error_size, operation) ||
+            !gpu_op(gpu, h3_gpu_linear_bf16(
+                gpu, schedule->blocks[block], time, slot->weight, slot->bias,
                 schedule->time_rows, H3_DIT_TIME_DIM, BLOCK_OUTPUT),
-                error, error_size, operation) &&
-            gpu_op(gpu, h3_gpu_submit(gpu), error, error_size, operation);
-        free_tensor(&weight);
-        free_tensor(&bias);
-        if (!ok) {
-            h3_gpu_tensor_free(time);
-            goto failed;
+                error, error_size, operation) ||
+            !gpu_op(gpu, h3_gpu_submit(gpu), error, error_size, operation)) {
+            goto block_failed;
         }
+        free_tensor(&slot->weight);
+        free_tensor(&slot->bias);
+        slot->busy = 0;
+        if (depth && queued < H3_DIT_BLOCKS)
+            adaln_slot_start(slot, weights, gpu, queued++);
         if (progress) progress((int)block + 1, (int)H3_DIT_BLOCKS,
                                progress_opaque);
+        continue;
+block_failed:
+        for (int index = 0; index < depth; index++)
+            adaln_slot_discard(&slots[index]);
+        adaln_slot_discard(&own);
+        h3_gpu_tensor_free(time);
+        goto failed;
     }
 
     h3_gpu_tensor *final_w = weight_bf16_2d(
