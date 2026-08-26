@@ -56,8 +56,9 @@ tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 `op-classes` breakdown (linear / sdpa / conv / other) from HIP events flushed
 on each submit. DiT emits `load` then `Euler denoise` (or GPU/RES variants) as
 per-phase deltas. On HIP, `wait`/`root-gpu` is stream-sync only; use
-`op-classes` for GPU time. Baseline numbers and hotspot order:
-[`PERF_BASELINE.md`](PERF_BASELINE.md).
+`op-classes` for GPU time. Dated fox-s2 numbers:
+[`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md). Release headlines:
+[`PERFORMANCE.md`](PERFORMANCE.md).
 
 ```bash
 rocprofv3 --hip-trace --kernel-trace --stats -o /tmp/h3-prof -- \

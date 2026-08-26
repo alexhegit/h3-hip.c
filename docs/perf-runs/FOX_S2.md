@@ -28,6 +28,8 @@ MODEL=/home/amd/HF-MODELS/MiniMax-H3   # or $MODEL
 |-------|---------|
 | **E2E wall** | `/usr/bin/time` process wall (includes mux + gaps between phases) |
 | **phase wall** | `--profile` mark delta for that phase |
+| **encode** | Host time inside `begin`→`submit` (can overlap GPU) |
+| **wait / root-gpu** | `hipStreamSynchronize` only — often near-zero |
 | **GPU (`op-classes`)** | HIP-event exclusive kernel time (authoritative GPU split) |
 | **linear / sdpa / conv / other** | Split of `gpu-op` |
 
@@ -176,9 +178,27 @@ GPU compute (denoise + VAE) is unchanged. E2E is worse than B because text+DiT l
 
 ---
 
+## Run A — first HIP profile (2026-08-18)
+
+No git SHA recorded. No `/usr/bin/time`. Phase-wall sum ≈ **257 s**.
+
+| Phase | wall | GPU (`op-classes`) | Notes |
+|-------|-----:|-------------------:|-------|
+| Qwen text encoder | 23.5s | 2.1s | Wall ≈ I/O |
+| H3 DiT **load** | 114.0s | 1.1s | Almost no GPU |
+| H3 DiT **Euler denoise** (2 steps) | 41.5s | 40.3s | linear 17.2 · sdpa 18.7 · other 4.4 |
+| audio VAE decoder | 4.5s | 3.8s | ≈all conv |
+| video VAE decoder | 73.8s | 53.6s | linear 28.2 · sdpa 24.9 |
+
+vs B: DiT load −73.4 s, denoise −22.9 s, video VAE −40.9 s, phase sum ≈257→117 s.
+
+---
+
 ## How to append the next run
 
 1. Re-run the canonical command with `/usr/bin/time -f 'TIME_E2E wall_sec=%e ...'`.  
 2. Copy the `h3 profile:` lines into a new `## Run C — …` section above (newest first or append below).  
 3. Fill the phase table; note git SHA and date.  
-4. Update the “current” summary in [`PERF_BASELINE.md`](../PERF_BASELINE.md).
+4. Update the headline table in [`../PERFORMANCE.md`](../PERFORMANCE.md) only when tagging a release.
+
+Kernel-level traces: `rocprofv3` notes in [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md).

@@ -29,7 +29,7 @@ fox-fast E2E ≈ 213 s (22 Aug) → 95 s (v0.9.0).
 
 | When | Log | fox-s2 denoise GPU | What kept |
 |------|-----|-------------------:|-----------|
-| 18 Aug | [`PERF_BASELINE.md`](../PERF_BASELINE.md) A | 40.3 s | First HIP `--profile` |
+| 18 Aug | [`perf-runs/FOX_S2.md`](../perf-runs/FOX_S2.md) A | 40.3 s | First HIP `--profile` |
 | 18–19 overnight | [`perf-overnight/STATUS.md`](../perf-overnight/STATUS.md) | ~17.3 s | Wave SDPA grid, INT8 BK=128, VAE d64 4-key, 4-way pread, quant batch 4 |
 | 19 Aug | [`perf-runs/FOX_S2.md`](../perf-runs/FOX_S2.md) B | 17.4 s | E2E 117.3 s dated ledger |
 | day-2 | [`perf-day2/STATUS.md`](../perf-day2/STATUS.md) | 17.3 s | pread8, packed stores; best E2E 105.9 s |

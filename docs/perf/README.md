@@ -13,7 +13,7 @@ spreadsheets on the GitHub release.
 |------|------|
 | [`HISTORY.md`](HISTORY.md) | Chronology 18–26 Aug (start here) |
 | [`../PERFORMANCE.md`](../PERFORMANCE.md) | User-facing release scoreboard |
-| [`PERF_BASELINE.md`](../PERF_BASELINE.md) | Internal pointer + early HIP baselines |
+| [`../perf-runs/FOX_S2.md`](../perf-runs/FOX_S2.md) | Dated fox-s2 ledger (A/B/C/v0.9.0) |
 | [`runs/`](../perf-runs/) | Dated ledgers, tagged baselines, raw `--profile` extracts |
 | [`runs/V0.9.0.md`](../perf-runs/V0.9.0.md) | Full v0.9.0 fox-s2 / fox-fast tables |
 | [`runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md) | What antirez/h3.c actually publishes vs what we ran |
