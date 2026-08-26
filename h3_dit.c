@@ -684,15 +684,17 @@ static int prepare_stream_layer(h3_dit *dit, unsigned layer,
     return 1;
 }
 
+/* Slot buffers are filled from disk on I/O threads and read only by kernels, so
+ * they take the weight allocation and skip page-locking 30.8 GiB per run. */
 static int allocate_stream_slot(h3_dit *dit, h3_dit_block *slot,
                                 char *error, size_t error_size) {
-    slot->qkv = h3_gpu_tensor_new_bf16(
+    slot->qkv = h3_gpu_tensor_new_bf16_device(
         dit->gpu, (size_t)INNER * 3 * HIDDEN);
-    slot->out = h3_gpu_tensor_new_bf16(
+    slot->out = h3_gpu_tensor_new_bf16_device(
         dit->gpu, (size_t)HIDDEN * INNER);
-    slot->fc1 = h3_gpu_tensor_new_bf16(
+    slot->fc1 = h3_gpu_tensor_new_bf16_device(
         dit->gpu, (size_t)FFN * 2 * HIDDEN);
-    slot->fc2 = h3_gpu_tensor_new_bf16(
+    slot->fc2 = h3_gpu_tensor_new_bf16_device(
         dit->gpu, (size_t)HIDDEN * FFN);
     if (!slot->qkv || !slot->out || !slot->fc1 || !slot->fc2) {
         fail(error, error_size, "cannot allocate BF16 SSD layer slot: %s",
@@ -751,14 +753,18 @@ static void *read_stream_layer_thread(void *opaque) {
     return NULL;
 }
 
+/* The quantized weights are the DiT's resident footprint (13.4 GiB across 35
+ * layers) and no host code ever looks at them: the quantize kernel writes them
+ * and the GEMMs read them. Keeping them in device memory is what stops the
+ * phase page-locking its whole working set. */
 static int quantize_block_mlp(h3_dit *dit, h3_dit_block *block,
                               char *error, size_t error_size) {
-    block->fc1_int8 = h3_gpu_tensor_new_i8(
+    block->fc1_int8 = h3_gpu_tensor_new_i8_device(
         dit->gpu, (size_t)FFN * 2 * HIDDEN);
-    block->fc1_scales = h3_gpu_tensor_new_f32(dit->gpu, FFN * 2);
-    block->fc2_int8 = h3_gpu_tensor_new_i8(
+    block->fc1_scales = h3_gpu_tensor_new_f32_device(dit->gpu, FFN * 2);
+    block->fc2_int8 = h3_gpu_tensor_new_i8_device(
         dit->gpu, (size_t)HIDDEN * FFN);
-    block->fc2_scales = h3_gpu_tensor_new_f32(dit->gpu, HIDDEN);
+    block->fc2_scales = h3_gpu_tensor_new_f32_device(dit->gpu, HIDDEN);
     int ok = block->fc1_int8 && block->fc1_scales &&
              block->fc2_int8 && block->fc2_scales &&
              h3_gpu_quantize_weight_int8(
@@ -777,9 +783,9 @@ static int quantize_block_mlp(h3_dit *dit, h3_dit_block *block,
 
 static int quantize_block_qkv(h3_dit *dit, h3_dit_block *block,
                               char *error, size_t error_size) {
-    block->qkv_int8 = h3_gpu_tensor_new_i8(
+    block->qkv_int8 = h3_gpu_tensor_new_i8_device(
         dit->gpu, (size_t)INNER * 3 * HIDDEN);
-    block->qkv_scales = h3_gpu_tensor_new_f32(dit->gpu, INNER * 3);
+    block->qkv_scales = h3_gpu_tensor_new_f32_device(dit->gpu, INNER * 3);
     int ok = block->qkv_int8 && block->qkv_scales &&
              h3_gpu_quantize_weight_int8(
                  dit->gpu, block->qkv_int8, block->qkv_scales, block->qkv,
@@ -794,9 +800,9 @@ static int quantize_block_qkv(h3_dit *dit, h3_dit_block *block,
 
 static int quantize_block_attention_out(h3_dit *dit, h3_dit_block *block,
                                         char *error, size_t error_size) {
-    block->out_int8 = h3_gpu_tensor_new_i8(
+    block->out_int8 = h3_gpu_tensor_new_i8_device(
         dit->gpu, (size_t)HIDDEN * INNER);
-    block->out_scales = h3_gpu_tensor_new_f32(dit->gpu, HIDDEN);
+    block->out_scales = h3_gpu_tensor_new_f32_device(dit->gpu, HIDDEN);
     int ok = block->out_int8 && block->out_scales &&
              h3_gpu_quantize_weight_int8(
                  dit->gpu, block->out_int8, block->out_scales, block->out,
@@ -1317,6 +1323,13 @@ static void configure_gate_ranked_blocks(h3_dit *dit) {
     }
 }
 
+/* There used to be a cross-block read-ahead thread here, on the theory that the
+ * next block's weights could be read while the current one was quantized. It is
+ * gone: once weight buffers moved to device memory the quantize batch fell from
+ * 5.6s to 0.12s, so there is nothing left to hide a read behind, and the arms
+ * measure identical (core stage 19.20s serial versus 19.23s pipelined over two
+ * interleaved pairs at 16 pread streams). The read concurrency that does matter
+ * is per tensor, inside h3_hip_pread_all. */
 static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                      char *error, size_t error_size) {
     /* Default batch=4: ~4GB BF16 peak, overlaps I/O with prior quantize.
@@ -1331,6 +1344,8 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
     unsigned pending[8];
     unsigned n_pending = 0;
     int quant_open = 0;
+    int stage_timing = getenv("H3_PROFILE") != NULL;
+    double wait_io = 0.0, wait_quant = 0.0;
     for (unsigned index = 0; index < H3_DIT_BLOCKS; index++) {
         if (!dit->block_active[index]) {
             report(progress, opaque, "load transformer core", (int)index + 1,
@@ -1345,46 +1360,54 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                 !prepare_stream_layer(dit, index, error, error_size))
                 return 0;
         } else {
-            if (!load_block(dit, &dit->blocks[index], prefix,
-                            error, error_size)) return 0;
+            double io_start = stage_timing ? stream_now() : 0.0;
+            if (!load_block(dit, &dit->blocks[index], prefix, error,
+                            error_size))
+                return 0;
+            if (stage_timing) wait_io += stream_now() - io_start;
             int need_quant = dit->int8_mlp || dit->int8_qkv ||
                              dit->int8_attention_out;
             /* Flush the previous quant batch *after* this block's I/O so GPU
              * quantize overlaps the next shard reads. Free BF16 only after
              * stream sync (see flush_dit_quant_batch). */
+            double quant_start = stage_timing ? stream_now() : 0.0;
             if (need_quant && n_pending >= quant_batch &&
                 !flush_dit_quant_batch(dit, pending, &n_pending,
                                        &quant_open, error, error_size))
-                return 0;
+                goto core_failed;
             if (need_quant) {
                 if (!quant_open) {
                     if (!h3_gpu_begin(dit->gpu)) {
                         fail(error, error_size,
                              "cannot begin DiT quantize: %s",
                              h3_gpu_error(dit->gpu));
-                        return 0;
+                        goto core_failed;
                     }
                     quant_open = 1;
                 }
                 if (dit->int8_mlp &&
                     !quantize_block_mlp(dit, &dit->blocks[index],
-                                        error, error_size)) return 0;
+                                        error, error_size)) goto core_failed;
                 if (dit->int8_qkv &&
                     !quantize_block_qkv(dit, &dit->blocks[index],
-                                        error, error_size)) return 0;
+                                        error, error_size)) goto core_failed;
                 if (dit->int8_attention_out &&
                     !quantize_block_attention_out(
                         dit, &dit->blocks[index], error, error_size))
-                    return 0;
+                    goto core_failed;
                 pending[n_pending++] = index;
             }
+            if (stage_timing) wait_quant += stream_now() - quant_start;
         }
         report(progress, opaque, "load transformer core", (int)index + 1,
                H3_DIT_BLOCKS);
     }
     if (!flush_dit_quant_batch(dit, pending, &n_pending, &quant_open,
                                error, error_size))
-        return 0;
+        goto core_failed;
+    if (stage_timing)
+        fprintf(stderr, "h3 profile: H3 DiT core split   block-io=%7.3fs "
+                        "quantize=%7.3fs\n", wait_io, wait_quant);
     if (dit->ssd_streaming) {
         if (!allocate_stream_slot(dit, &dit->stream_slots[0],
                                   error, error_size) ||
@@ -1467,6 +1490,8 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
     return dit->video_patch_w && dit->video_patch_b && dit->audio_patch_w &&
            dit->audio_patch_b && dit->final_norm && dit->final_video_w &&
            dit->final_video_b && dit->final_audio_w && dit->final_audio_b;
+core_failed:
+    return 0;
 }
 
 static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
@@ -1779,14 +1804,26 @@ static h3_dit *load_dit(const char *weight_directory,
          getenv("H3_BENCH_INT8_MLP_AB") ||
          getenv("H3_INT8_MLP_STAGE"));
     h3_gpu_profile_set_label(dit->gpu, "H3 DiT");
+    int stage_timing = getenv("H3_PROFILE") != NULL;
+    double stage = stream_now();
+#define STAGE(name) do {                                                       \
+    if (stage_timing) {                                                        \
+        double mark = stream_now();                                        \
+        fprintf(stderr, "h3 profile: H3 DiT load stage %-18s %7.3fs\n",        \
+                (name), mark - stage);                                         \
+        stage = mark;                                                          \
+    }                                                                          \
+} while (0)
     report(progress, progress_opaque, "refine text", 0, 1);
     if (!refine_text(dit, text, error, error_size)) goto failed;
     report(progress, progress_opaque, "refine text", 1, 1);
+    STAGE("refine text");
     schedule_progress schedule_state = {progress, progress_opaque};
     dit->schedule = h3_dit_schedule_precompute(
         dit->weights, dit->gpu, sigmas, dit->video_condition_rows != 0,
         dit->audio_condition_rows != 0, schedule_report, &schedule_state,
         error, error_size);
+    STAGE("AdaLN precompute");
     if (dit->schedule) {
         configure_gate_ranked_blocks(dit);
         h3_dit_schedule_prune(dit->schedule, dit->block_active,
@@ -1795,9 +1832,13 @@ static h3_dit *load_dit(const char *weight_directory,
     if (!dit->schedule || !prepare_rope(dit, error, error_size) ||
         !prepare_maps(dit, text, error, error_size) ||
         !prepare_projection_maps(dit, error, error_size) ||
-        !prepare_token_reduction_maps(dit, error, error_size) ||
-        !load_core(dit, progress, progress_opaque, error, error_size) ||
-        !allocate_activations(dit, error, error_size)) goto failed;
+        !prepare_token_reduction_maps(dit, error, error_size)) goto failed;
+    STAGE("rope and maps");
+    if (!load_core(dit, progress, progress_opaque, error, error_size)) goto failed;
+    STAGE("transformer core");
+    if (!allocate_activations(dit, error, error_size)) goto failed;
+    STAGE("activations");
+#undef STAGE
     if ((wanted_video_condition && !h3_gpu_tensor_write_f32_range(
              dit->video_input, 0, condition_video_rows,
              wanted_video_condition)) ||
