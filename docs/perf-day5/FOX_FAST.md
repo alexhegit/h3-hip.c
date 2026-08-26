@@ -27,6 +27,11 @@ without `--show` is unchanged. Timed on a non-graphical Linux session.
 | reuse | 2 → **11** fresh DiT evaluations |
 | this machine | Ryzen AI MAX+ 395 / Radeon 8060S `gfx1151`, Q3 working tree |
 
+**v0.9.0 rerun (2026-08-26):** E2E **94.81 s**, denoise wall **34.63 s** /
+GPU **28.37 s** (11 evals, **~2.58 s**/forward). Full table:
+[`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md). HIP / M5 denoise wall is
+now **2.1×** (this day-5 run was 6.3×).
+
 ## This run (2026-08-22 ~16:25 CST)
 
 Log: `/tmp/h3-profile/fox-fast.log` · output: `outputs/fox-fast.mp4`

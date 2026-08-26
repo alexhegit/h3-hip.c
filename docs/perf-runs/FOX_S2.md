@@ -33,6 +33,45 @@ MODEL=/home/amd/HF-MODELS/MiniMax-H3   # or $MODEL
 
 Raw stderr for a run can live under `/tmp/h3-profile/` (not always committed).
 
+**Current tagged baseline:** [`V0.9.0.md`](V0.9.0.md) (2026-08-26, git `e0d8558`).
+
+---
+
+## Run v0.9.0 — day-9 tree (2026-08-26 13:32 CST)
+
+Full write-up including fox-fast: [`V0.9.0.md`](V0.9.0.md). Two timed fox-s2 repeats, mixed page cache.
+
+| Meta | |
+|------|--|
+| Git | `e0d8558` (intended `v0.9.0` tree) |
+| Output | `/tmp/h3-profile/fox-s2-v0.9.0.mp4` · md5 `1731f95c4aa582597cf83d57f46b8f9e` |
+| Logs | `docs/perf-runs/fox-s2-v0.9.0-r1.log`, `…-r2.log` |
+| E2E wall | **87.30 s** then **82.88 s** (`time` r1: user 15.49 · sys 41.91) |
+| Phase-wall sum | **86.23 s** / **81.76 s** |
+| DiT layer policy | same 15 gate-ranked skips as Run B |
+
+### Phase table (r1)
+
+| Phase | wall (s) | GPU op (s) | linear | sdpa | conv | other | Notes |
+|-------|---------:|-----------:|-------:|-----:|-----:|------:|-------|
+| Qwen text encoder | 29.228 | 2.056 | 1.782 | 0.001 | 0.000 | 0.273 | I/O; r2 was 23.95 |
+| H3 DiT **load** | 38.580 | 0.667 | 0.432 | 0.000 | 0.000 | 0.235 | AdaLN 18.76 · core 18.39 |
+| H3 DiT **Euler denoise** (2 steps) | 6.992 | 6.496 | 4.403 | 1.719 | 0.000 | 0.374 | r2 gpu-op 6.29 |
+| audio VAE decoder | 1.666 | 0.436 | 0.000 | 0.000 | 0.350 | 0.086 | tiled conv1d |
+| video VAE decoder | 9.761 | 5.249 | 4.220 | 0.558 | 0.000 | 0.470 | WMMA f32 linear + d64 SDPA |
+| **Sum / E2E** | **86.23 / 87.30** | **14.90** | | | | | |
+
+### vs Run B
+
+| Phase | B wall / GPU | v0.9.0 r1 wall / GPU | Δ wall |
+|-------|-------------:|---------------------:|-------:|
+| Text encoder | 20.0 / 1.9 | 29.2 / 2.1 | +9.2 s (I/O) |
+| DiT load | 40.6 / 2.4 | 38.6 / 0.7 | −2.0 s |
+| DiT denoise | 18.6 / 17.4 | **7.0 / 6.5** | **−11.6 s** |
+| audio VAE | 4.4 / 3.9 | 1.7 / 0.4 | −2.7 s |
+| video VAE | 32.9 / 25.1 | **9.8 / 5.2** | **−23.1 s** |
+| **E2E** | **117.3** | **87.3** | **−30.0 s** |
+
 ---
 
 ## Run B — post-overnight (2026-08-19 09:11 CST)

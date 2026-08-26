@@ -18,7 +18,10 @@ change since the tiled-SDPA tail fix.
 
 ## Where the run stands
 
-End to end **73.8s**, from a 104s baseline at the start of the I/O work.
+End to end **82.9–87.3 s** on two `/usr/bin/time` repeats at tag time
+([`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md)); an earlier same-tree
+sample hit 73.8 s without `time`. From a 104 s I/O-work starting point and
+from Run B at 117 s.
 
 | phase | wall | GPU op | read | read floor @2.2 GiB/s | disk utilization |
 |---|---:|---:|---:|---:|---:|

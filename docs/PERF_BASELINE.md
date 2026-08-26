@@ -3,7 +3,9 @@
 Machine: AMD Ryzen AI MAX+ 395 / Radeon 8060S (`gfx1151`), ROCm local build.
 Preset: T2VA fox, `512×512`, `frames=22`, `reuse=1`.
 
-**Latest dated fox ledger:** [`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md) (append new runs there).
+**Latest tagged baseline:** [`perf-runs/V0.9.0.md`](perf-runs/V0.9.0.md)
+(2026-08-26, git `e0d8558`). Fox s2 E2E **82.9–87.3 s**; fox-fast E2E **94.8 s**.
+Dated ledger: [`perf-runs/FOX_S2.md`](perf-runs/FOX_S2.md).
 
 ## Profile tooling
 
