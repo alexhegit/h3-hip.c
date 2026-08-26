@@ -595,6 +595,102 @@ static int test_qkv_rope(h3_gpu *gpu) {
     return 0;
 }
 
+/* DiT geometry (head_dim 128, rope_half 48), which is what reaches the
+ * vectorized wave path; the small shapes above only cover the scalar one.
+ * rope_half 64 checks the case where the rotated halves span the full row. */
+static int test_qkv_rope_d128_half(h3_gpu *gpu, uint32_t rope_half) {
+    enum { SEQUENCE = 40, HEADS = 3, HEAD_DIM = 128 };
+    enum { INNER = HEADS * HEAD_DIM, QKV_ELEMS = SEQUENCE * INNER * 3 };
+    enum { OUT_ELEMS = SEQUENCE * INNER };
+    uint16_t *qkv = calloc(QKV_ELEMS, sizeof(*qkv));
+    uint16_t *q_norm = calloc(HEAD_DIM, sizeof(*q_norm));
+    uint16_t *k_norm = calloc(HEAD_DIM, sizeof(*k_norm));
+    uint16_t *rope_cos = calloc((size_t)SEQUENCE * rope_half, sizeof(*rope_cos));
+    uint16_t *rope_sin = calloc((size_t)SEQUENCE * rope_half, sizeof(*rope_sin));
+    uint16_t *expected_q = calloc(OUT_ELEMS, sizeof(*expected_q));
+    uint16_t *expected_k = calloc(OUT_ELEMS, sizeof(*expected_k));
+    uint16_t *expected_v = calloc(OUT_ELEMS, sizeof(*expected_v));
+    CHECK(qkv && q_norm && k_norm && rope_cos && rope_sin && expected_q &&
+          expected_k && expected_v);
+    for (size_t i = 0; i < QKV_ELEMS; i++)
+        qkv[i] = f32_to_bf16(sinf((float)i * 0.37f) * 0.8f);
+    for (uint32_t d = 0; d < HEAD_DIM; d++) {
+        q_norm[d] = f32_to_bf16(0.9f + (float)d * 0.002f);
+        k_norm[d] = f32_to_bf16(1.1f - (float)d * 0.003f);
+    }
+    for (uint32_t row = 0; row < SEQUENCE; row++) {
+        for (uint32_t i = 0; i < rope_half; i++) {
+            float angle = (float)row * 0.05f + (float)i * 0.11f;
+            rope_cos[row * rope_half + i] = f32_to_bf16(cosf(angle));
+            rope_sin[row * rope_half + i] = f32_to_bf16(sinf(angle));
+        }
+    }
+    cpu_qkv_rope_bf16(qkv, q_norm, k_norm, rope_cos, rope_sin, expected_q,
+                      expected_k, expected_v, SEQUENCE, HEADS, HEAD_DIM,
+                      rope_half, 1e-5f);
+    h3_gpu_tensor *gpu_qkv = h3_gpu_tensor_from_bf16(gpu, qkv, QKV_ELEMS);
+    h3_gpu_tensor *gpu_q_norm = h3_gpu_tensor_from_bf16(gpu, q_norm, HEAD_DIM);
+    h3_gpu_tensor *gpu_k_norm = h3_gpu_tensor_from_bf16(gpu, k_norm, HEAD_DIM);
+    h3_gpu_tensor *gpu_cos = h3_gpu_tensor_from_bf16(
+        gpu, rope_cos, (size_t)SEQUENCE * rope_half);
+    h3_gpu_tensor *gpu_sin = h3_gpu_tensor_from_bf16(
+        gpu, rope_sin, (size_t)SEQUENCE * rope_half);
+    h3_gpu_tensor *query = h3_gpu_tensor_new_bf16(gpu, OUT_ELEMS);
+    h3_gpu_tensor *key = h3_gpu_tensor_new_bf16(gpu, OUT_ELEMS);
+    h3_gpu_tensor *value = h3_gpu_tensor_new_bf16(gpu, OUT_ELEMS);
+    CHECK(gpu_qkv && gpu_q_norm && gpu_k_norm && gpu_cos && gpu_sin && query &&
+          key && value);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin qkv rope d128"));
+    CHECK(!require_gpu(gpu, h3_gpu_qkv_rope_bf16(
+        gpu, query, key, value, gpu_qkv, gpu_q_norm, gpu_k_norm, gpu_cos,
+        gpu_sin, SEQUENCE, HEADS, HEAD_DIM, rope_half, 1e-5f),
+        "qkv rope d128"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit qkv rope d128"));
+    uint16_t *got_q = malloc(OUT_ELEMS * sizeof(*got_q));
+    uint16_t *got_k = malloc(OUT_ELEMS * sizeof(*got_k));
+    uint16_t *got_v = malloc(OUT_ELEMS * sizeof(*got_v));
+    CHECK(got_q && got_k && got_v);
+    CHECK(h3_gpu_tensor_read_bf16(query, got_q, OUT_ELEMS));
+    CHECK(h3_gpu_tensor_read_bf16(key, got_k, OUT_ELEMS));
+    CHECK(h3_gpu_tensor_read_bf16(value, got_v, OUT_ELEMS));
+    float max_diff = 0.0f;
+    for (size_t i = 0; i < OUT_ELEMS; i++) {
+        float dq = fabsf(bf16_to_f32(got_q[i]) - bf16_to_f32(expected_q[i]));
+        float dk = fabsf(bf16_to_f32(got_k[i]) - bf16_to_f32(expected_k[i]));
+        if (dq > max_diff) max_diff = dq;
+        if (dk > max_diff) max_diff = dk;
+        CHECK(got_v[i] == expected_v[i]);
+    }
+    printf("qkv rope d128 rope_half=%u max abs %.6g\n", rope_half, max_diff);
+    CHECK(max_diff < 0.01f);
+    free(got_q);
+    free(got_k);
+    free(got_v);
+    free(qkv);
+    free(q_norm);
+    free(k_norm);
+    free(rope_cos);
+    free(rope_sin);
+    free(expected_q);
+    free(expected_k);
+    free(expected_v);
+    h3_gpu_tensor_free(gpu_qkv);
+    h3_gpu_tensor_free(gpu_q_norm);
+    h3_gpu_tensor_free(gpu_k_norm);
+    h3_gpu_tensor_free(gpu_cos);
+    h3_gpu_tensor_free(gpu_sin);
+    h3_gpu_tensor_free(query);
+    h3_gpu_tensor_free(key);
+    h3_gpu_tensor_free(value);
+    return 0;
+}
+
+static int test_qkv_rope_d128(h3_gpu *gpu) {
+    if (test_qkv_rope_d128_half(gpu, 48u) != 0) return 1;
+    if (test_qkv_rope_d128_half(gpu, 64u) != 0) return 1;
+    return 0;
+}
+
 static void cpu_vision_qkv_rope_bf16(
     const uint16_t *qkv, const uint16_t *rope_cos, const uint16_t *rope_sin,
     uint16_t *query, uint16_t *key, uint16_t *value, uint32_t sequence,
@@ -954,6 +1050,77 @@ static int test_conv1d_f32(h3_gpu *gpu) {
     h3_gpu_tensor_free(gpu_weight);
     h3_gpu_tensor_free(gpu_bias);
     h3_gpu_tensor_free(output);
+    return 0;
+}
+
+/* Audio VAE decoder shapes. Covers the tiled kernel's three awkward cases:
+ * an input-channel count that needs several LDS weight slices, a channel count
+ * that is not a whole number of channel tiles, and a length that is not a whole
+ * number of time blocks. */
+static int test_conv1d_f32_audio_shapes(h3_gpu *gpu) {
+    struct { uint32_t length, channels, kernel, dilation; } cases[] = {
+        {512, 8, 11, 5},
+        {300, 8, 11, 1},
+        {200, 96, 7, 3},
+        {64, 128, 3, 1},
+        {37, 40, 1, 1},
+    };
+    enum { BATCH = 2 };
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        uint32_t length = cases[c].length, channels = cases[c].channels;
+        uint32_t kernel = cases[c].kernel, dilation = cases[c].dilation;
+        uint32_t pad = dilation * (kernel - 1) / 2;
+        size_t act = (size_t)BATCH * length * channels;
+        size_t wcount = (size_t)channels * channels * kernel;
+        float *input = calloc(act, sizeof(*input));
+        float *weight = calloc(wcount, sizeof(*weight));
+        float *bias = calloc(channels, sizeof(*bias));
+        float *expected = calloc(act, sizeof(*expected));
+        CHECK(input && weight && bias && expected);
+        for (size_t i = 0; i < act; i++) {
+            input[i] = (float)((int)(i % 23) - 11) * 0.03125f;
+        }
+        for (size_t i = 0; i < wcount; i++) {
+            weight[i] = (float)((int)(i % 17) - 8) * 0.015625f;
+        }
+        for (uint32_t i = 0; i < channels; i++) {
+            bias[i] = (float)((int)(i % 5) - 2) * 0.25f;
+        }
+        cpu_conv1d_stride_f32(input, weight, bias, expected, BATCH, length,
+                              length, channels, channels, kernel, 1, pad,
+                              dilation);
+        h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_f32(gpu, input, act);
+        h3_gpu_tensor *gpu_weight = h3_gpu_tensor_from_f32(gpu, weight, wcount);
+        h3_gpu_tensor *gpu_bias = h3_gpu_tensor_from_f32(gpu, bias, channels);
+        h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, act);
+        CHECK(gpu_input && gpu_weight && gpu_bias && output);
+        CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin conv1d audio"));
+        CHECK(!require_gpu(gpu, h3_gpu_conv1d_f32(
+            gpu, output, gpu_input, gpu_weight, gpu_bias, BATCH, length,
+            channels, channels, kernel, pad, dilation), "conv1d audio"));
+        CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit conv1d audio"));
+        float *got = calloc(act, sizeof(*got));
+        CHECK(got);
+        CHECK(h3_gpu_tensor_read_f32(output, got, act));
+        float max_rel = 0.0f;
+        for (size_t i = 0; i < act; i++) {
+            float scale = fabsf(expected[i]) > 1.0f ? fabsf(expected[i]) : 1.0f;
+            float rel = fabsf(got[i] - expected[i]) / scale;
+            if (rel > max_rel) max_rel = rel;
+        }
+        printf("conv1d f32 L=%u C=%u k=%u d=%u max rel %.7g\n", length,
+               channels, kernel, dilation, max_rel);
+        CHECK(max_rel < 1e-5f);
+        free(input);
+        free(weight);
+        free(bias);
+        free(expected);
+        free(got);
+        h3_gpu_tensor_free(gpu_input);
+        h3_gpu_tensor_free(gpu_weight);
+        h3_gpu_tensor_free(gpu_bias);
+        h3_gpu_tensor_free(output);
+    }
     return 0;
 }
 
@@ -1811,6 +1978,168 @@ static int test_sdpa_f32_d64(h3_gpu *gpu) {
     return 0;
 }
 
+/* Sequences of 256 or more take the tiled WMMA path, where the operands are
+ * rounded to bf16, so the tolerance is looser than the exact wave kernel's.
+ * 300 is not a multiple of the 128-row query block, which exercises the tail
+ * clamp that recomputes overlapping rows. */
+static int test_sdpa_f32_d64_tiled(h3_gpu *gpu) {
+    const uint32_t sequences[] = { 256, 300 };
+    enum { HEADS = 3, HEAD_DIM = 64 };
+    for (size_t s = 0; s < sizeof(sequences) / sizeof(sequences[0]); s++) {
+        uint32_t sequence = sequences[s];
+        size_t count = (size_t)sequence * HEADS * HEAD_DIM;
+        float *query = calloc(count, sizeof(*query));
+        float *key = calloc(count, sizeof(*key));
+        float *value = calloc(count, sizeof(*value));
+        float *expected = calloc(count, sizeof(*expected));
+        CHECK(query && key && value && expected);
+        for (uint32_t pos = 0; pos < sequence; pos++) {
+            for (uint32_t head = 0; head < HEADS; head++) {
+                for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                    size_t index = ((size_t)pos * HEADS + head) * HEAD_DIM + d;
+                    query[index] =
+                        (float)((int)((pos + head + d) % 13) - 6) * 0.03125f;
+                    key[index] =
+                        (float)((int)((pos * 3 + d) % 11) - 5) * 0.015625f;
+                    value[index] =
+                        (float)((int)((pos + head + d * 2) % 7) - 3) * 0.0625f;
+                }
+            }
+        }
+        float scale = 1.0f / sqrtf((float)HEAD_DIM);
+        cpu_sdpa_f32(query, key, value, expected, sequence, HEADS, HEAD_DIM,
+                     scale);
+        h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_f32(gpu, query, count);
+        h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_f32(gpu, key, count);
+        h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_f32(gpu, value, count);
+        h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, count);
+        CHECK(gpu_q && gpu_k && gpu_v && output);
+        CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa f32 d64 tiled"));
+        CHECK(!require_gpu(gpu, h3_gpu_sdpa_f32(
+            gpu, output, gpu_q, gpu_k, gpu_v, sequence, HEADS, HEAD_DIM,
+            scale), "sdpa f32 d64 tiled"));
+        CHECK(!require_gpu(gpu, h3_gpu_submit(gpu),
+                           "submit sdpa f32 d64 tiled"));
+        float *got = calloc(count, sizeof(*got));
+        CHECK(got);
+        CHECK(h3_gpu_tensor_read_f32(output, got, count));
+        float max_abs = 0.0f;
+        for (size_t i = 0; i < count; i++) {
+            float diff = fabsf(got[i] - expected[i]);
+            if (diff > max_abs) max_abs = diff;
+        }
+        printf("sdpa f32 d64 tiled seq=%u max abs %.7g\n", sequence, max_abs);
+        CHECK(max_abs < 5e-3f);
+        free(query);
+        free(key);
+        free(value);
+        free(expected);
+        free(got);
+        h3_gpu_tensor_free(gpu_q);
+        h3_gpu_tensor_free(gpu_k);
+        h3_gpu_tensor_free(gpu_v);
+        h3_gpu_tensor_free(output);
+    }
+    return 0;
+}
+
+/* A tiled query block that overhangs the sequence must leave every output row
+ * with exactly one writer. When two waves both computed and stored a
+ * recomputed row they disagreed in the last bits, so whichever store landed
+ * last decided the value and the whole pipeline stopped being reproducible.
+ * Comparing against a CPU reference cannot see this -- both values are within
+ * tolerance -- so compare repeated runs against each other instead. */
+static int test_sdpa_tiled_repeatable(h3_gpu *gpu) {
+    const uint32_t sequences[] = {257, 300, 511, 1000};
+    enum { HEADS = 3, ROUNDS = 4 };
+    for (size_t s = 0; s < sizeof(sequences) / sizeof(sequences[0]); s++) {
+        uint32_t sequence = sequences[s];
+        for (int f32 = 0; f32 < 2; f32++) {
+            uint32_t head_dim = f32 ? 64u : 128u;
+            size_t count = (size_t)sequence * HEADS * head_dim;
+            float *query = calloc(count, sizeof(*query));
+            float *key = calloc(count, sizeof(*key));
+            float *value = calloc(count, sizeof(*value));
+            float *first = calloc(count, sizeof(*first));
+            float *got = calloc(count, sizeof(*got));
+            CHECK(query && key && value && first && got);
+            /* Irrational-ish values so neighbouring rows do not round to the
+             * same bits, which is what hid the disagreement in earlier tests. */
+            for (size_t i = 0; i < count; i++) {
+                query[i] = sinf((float)i * 0.7913f) * 0.5f;
+                key[i] = cosf((float)i * 0.3171f) * 0.5f;
+                value[i] = sinf((float)i * 0.1234f + 0.5f) * 0.5f;
+            }
+            float scale = 1.0f / sqrtf((float)head_dim);
+            size_t differing = 0;
+            for (int round = 0; round < ROUNDS; round++) {
+                float *dst = round ? got : first;
+                CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin repeat"));
+                if (f32) {
+                    h3_gpu_tensor *q = h3_gpu_tensor_from_f32(gpu, query, count);
+                    h3_gpu_tensor *k = h3_gpu_tensor_from_f32(gpu, key, count);
+                    h3_gpu_tensor *v = h3_gpu_tensor_from_f32(gpu, value, count);
+                    h3_gpu_tensor *o = h3_gpu_tensor_new_f32(gpu, count);
+                    CHECK(q && k && v && o);
+                    CHECK(!require_gpu(gpu, h3_gpu_sdpa_f32(
+                        gpu, o, q, k, v, sequence, HEADS, head_dim, scale),
+                        "sdpa f32 repeat"));
+                    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit"));
+                    CHECK(h3_gpu_tensor_read_f32(o, dst, count));
+                    h3_gpu_tensor_free(q);
+                    h3_gpu_tensor_free(k);
+                    h3_gpu_tensor_free(v);
+                    h3_gpu_tensor_free(o);
+                } else {
+                    uint16_t *qb = calloc(count, sizeof(*qb));
+                    uint16_t *kb = calloc(count, sizeof(*kb));
+                    uint16_t *vb = calloc(count, sizeof(*vb));
+                    CHECK(qb && kb && vb);
+                    for (size_t i = 0; i < count; i++) {
+                        qb[i] = f32_to_bf16(query[i]);
+                        kb[i] = f32_to_bf16(key[i]);
+                        vb[i] = f32_to_bf16(value[i]);
+                    }
+                    h3_gpu_tensor *q = h3_gpu_tensor_from_bf16(gpu, qb, count);
+                    h3_gpu_tensor *k = h3_gpu_tensor_from_bf16(gpu, kb, count);
+                    h3_gpu_tensor *v = h3_gpu_tensor_from_bf16(gpu, vb, count);
+                    h3_gpu_tensor *o = h3_gpu_tensor_new_bf16(gpu, count);
+                    CHECK(q && k && v && o);
+                    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(
+                        gpu, o, q, k, v, sequence, HEADS, head_dim, scale),
+                        "sdpa bf16 repeat"));
+                    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit"));
+                    uint16_t *ob = calloc(count, sizeof(*ob));
+                    CHECK(ob && h3_gpu_tensor_read_bf16(o, ob, count));
+                    for (size_t i = 0; i < count; i++) dst[i] = bf16_to_f32(ob[i]);
+                    free(ob);
+                    free(qb);
+                    free(kb);
+                    free(vb);
+                    h3_gpu_tensor_free(q);
+                    h3_gpu_tensor_free(k);
+                    h3_gpu_tensor_free(v);
+                    h3_gpu_tensor_free(o);
+                }
+                if (round) {
+                    for (size_t i = 0; i < count; i++) {
+                        if (got[i] != first[i]) differing++;
+                    }
+                }
+            }
+            printf("sdpa d%u seq=%u repeatability: %zu differing\n", head_dim,
+                   sequence, differing);
+            free(query);
+            free(key);
+            free(value);
+            free(first);
+            free(got);
+            CHECK(differing == 0);
+        }
+    }
+    return 0;
+}
+
 static int test_sdpa(h3_gpu *gpu) {
     enum { SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
@@ -1845,6 +2174,71 @@ static int test_sdpa(h3_gpu *gpu) {
     h3_gpu_tensor_free(gpu_k);
     h3_gpu_tensor_free(gpu_v);
     h3_gpu_tensor_free(output);
+    return 0;
+}
+
+/* d128 at a sequence long enough to reach the tiled WMMA path (>= 16 rows).
+ * Run with a query-block multiple and with a tail to cover the clamped
+ * block start. */
+static int test_sdpa_head128_seq(h3_gpu *gpu, uint32_t sequence) {
+    enum { HEADS = 3, HEAD_DIM = 128 };
+    size_t count = (size_t)sequence * HEADS * HEAD_DIM;
+    uint16_t *query = calloc(count, sizeof(*query));
+    uint16_t *key = calloc(count, sizeof(*key));
+    uint16_t *value = calloc(count, sizeof(*value));
+    uint16_t *expected = calloc(count, sizeof(*expected));
+    CHECK(query && key && value && expected);
+    for (uint32_t pos = 0; pos < sequence; pos++) {
+        for (uint32_t head = 0; head < HEADS; head++) {
+            for (uint32_t d = 0; d < HEAD_DIM; d++) {
+                size_t index = ((size_t)pos * HEADS + head) * HEAD_DIM + d;
+                query[index] = f32_to_bf16(sinf((float)(pos + d * 3u)) * 0.15f +
+                                           (float)head * 0.05f);
+                key[index] = f32_to_bf16(cosf((float)(pos * 2u + d)) * 0.12f -
+                                         (float)head * 0.03f);
+                value[index] = f32_to_bf16(sinf((float)(pos + d)) * 0.2f);
+            }
+        }
+    }
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    cpu_sdpa_bf16(query, key, value, expected, sequence, HEADS, HEAD_DIM,
+                  scale);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, count);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, count);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, count);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, count);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa d128 seq"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(
+        gpu, output, gpu_q, gpu_k, gpu_v, sequence, HEADS, HEAD_DIM, scale),
+        "sdpa d128 seq"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa d128 seq"));
+    uint16_t *got = malloc(count * sizeof(*got));
+    CHECK(got);
+    CHECK(h3_gpu_tensor_read_bf16(output, got, count));
+    float max_diff = 0.0f;
+    for (size_t i = 0; i < count; i++) {
+        float diff = fabsf(bf16_to_f32(got[i]) - bf16_to_f32(expected[i]));
+        if (diff > max_diff) max_diff = diff;
+    }
+    printf("sdpa d128 seq=%u max abs %.6g\n", sequence, max_diff);
+    CHECK(max_diff < 0.02f);
+    free(got);
+    free(query);
+    free(key);
+    free(value);
+    free(expected);
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    return 0;
+}
+
+static int test_sdpa_head128_tiled(h3_gpu *gpu) {
+    if (test_sdpa_head128_seq(gpu, 192u) != 0) return 1;
+    if (test_sdpa_head128_seq(gpu, 100u) != 0) return 1;
+    if (test_sdpa_head128_seq(gpu, 17u) != 0) return 1;
     return 0;
 }
 
@@ -5181,9 +5575,130 @@ static int bench_sdpa(h3_gpu *gpu) {
     return 0;
 }
 
+/* Same op, same inputs, repeated: any difference means a race or a read of
+ * uninitialized memory. */
+static int check_sdpa_f32_d64_repeatable(h3_gpu *gpu) {
+    enum { HEADS = 32, HEAD_DIM = 64, ROUNDS = 16 };
+    const char *seq_env = getenv("H3_CHECK_SEQ");
+    uint32_t SEQUENCE = seq_env ? (uint32_t)strtoul(seq_env, NULL, 10) : 2273u;
+    size_t count = (size_t)SEQUENCE * HEADS * HEAD_DIM;
+    float *query = calloc(count, sizeof(*query));
+    float *key = calloc(count, sizeof(*key));
+    float *value = calloc(count, sizeof(*value));
+    float *first = calloc(count, sizeof(*first));
+    float *got = calloc(count, sizeof(*got));
+    CHECK(query && key && value && first && got);
+    for (size_t i = 0; i < count; i++) {
+        query[i] = (float)((i % 17) - 8) * 0.03f;
+        key[i] = (float)((i % 13) - 6) * 0.02f;
+        value[i] = (float)((i % 11) - 5) * 0.04f;
+    }
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_f32(gpu, query, count);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_f32(gpu, key, count);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_f32(gpu, value, count);
+    CHECK(gpu_q && gpu_k && gpu_v);
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    size_t mismatches = 0, unwritten = 0;
+    float *sentinel = calloc(count, sizeof(*sentinel));
+    CHECK(sentinel);
+    for (int round = 0; round < ROUNDS; round++) {
+        float mark = 1.0e30f + (float)round;
+        for (size_t i = 0; i < count; i++) sentinel[i] = mark;
+        h3_gpu_tensor *output = h3_gpu_tensor_from_f32(gpu, sentinel, count);
+        CHECK(output);
+        CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa repeat"));
+        CHECK(!require_gpu(gpu, h3_gpu_sdpa_f32(
+            gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM,
+            scale), "sdpa repeat"));
+        CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa repeat"));
+        float *dst = round ? got : first;
+        CHECK(h3_gpu_tensor_read_f32(output, dst, count));
+        for (size_t i = 0; i < count; i++) {
+            if (dst[i] == mark) unwritten++;
+        }
+        if (round) {
+            for (size_t i = 0; i < count; i++) {
+                if (got[i] != first[i]) mismatches++;
+            }
+        }
+        h3_gpu_tensor_free(output);
+    }
+    free(sentinel);
+    printf("sdpa f32 d64 seq=%u: %zu/%zu differing, %zu unwritten\n", SEQUENCE,
+           mismatches, count * (ROUNDS - 1), unwritten);
+    if (unwritten) mismatches++;
+    free(query);
+    free(key);
+    free(value);
+    free(first);
+    free(got);
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    return mismatches ? 1 : 0;
+}
+
+/* Video VAE decoder attention shape. */
+static int bench_sdpa_f32_d64(h3_gpu *gpu) {
+    enum { SEQUENCE = 2304, HEADS = 32, HEAD_DIM = 64, ITERATIONS = 10 };
+    size_t count = (size_t)SEQUENCE * HEADS * HEAD_DIM;
+    float *query = calloc(count, sizeof(*query));
+    float *key = calloc(count, sizeof(*key));
+    float *value = calloc(count, sizeof(*value));
+    CHECK(query && key && value);
+    for (size_t i = 0; i < count; i++) {
+        query[i] = (float)((i % 17) - 8) * 0.03f;
+        key[i] = (float)((i % 13) - 6) * 0.02f;
+        value[i] = (float)((i % 11) - 5) * 0.04f;
+    }
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_f32(gpu, query, count);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_f32(gpu, key, count);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_f32(gpu, value, count);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, count);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    float scale = 1.0f / sqrtf((float)HEAD_DIM);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa f32 warmup"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_f32(
+        gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM, scale),
+        "sdpa f32 warmup"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa f32 warmup"));
+    double start = h3_monotonic_seconds();
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa f32 bench"));
+    for (int iter = 0; iter < ITERATIONS; iter++) {
+        CHECK(!require_gpu(gpu, h3_gpu_sdpa_f32(
+            gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM,
+            scale), "sdpa f32 bench"));
+    }
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa f32 bench"));
+    double ms = (h3_monotonic_seconds() - start) * 1000.0 / (double)ITERATIONS;
+    double flops = 4.0 * (double)SEQUENCE * SEQUENCE * HEADS * HEAD_DIM;
+    printf("sdpa f32 seq=%d heads=%d dim=%d: %.2f ms (%.2f TFLOP/s)\n",
+           SEQUENCE, HEADS, HEAD_DIM, ms, flops / (ms * 1e9));
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    free(query);
+    free(key);
+    free(value);
+    return 0;
+}
+
+static uint32_t env_u32(const char *name, uint32_t fallback) {
+    const char *value = getenv(name);
+    if (!value || !*value) return fallback;
+    unsigned long parsed = strtoul(value, NULL, 10);
+    return parsed ? (uint32_t)parsed : fallback;
+}
+
 static int bench_int8_linear(h3_gpu *gpu) {
-    enum { ROWS = 1920, INPUT_DIM = 14336, OUTPUT_DIM = 5376, ITERATIONS = 3 };
-    uint32_t padded_rows = (ROWS + 127u) & ~127u;
+    enum { ITERATIONS = 3 };
+    /* Shape/group overrides so one binary can sweep every DiT GEMM. */
+    const int ROWS = (int)env_u32("H3_BENCH_M", 1920u);
+    const int INPUT_DIM = (int)env_u32("H3_BENCH_K", 14336u);
+    const int OUTPUT_DIM = (int)env_u32("H3_BENCH_N", 5376u);
+    const int GROUP_SIZE = (int)env_u32("H3_BENCH_G", 1024u);
+    uint32_t padded_rows = ((uint32_t)ROWS + 127u) & ~127u;
     size_t input_elems = (size_t)ROWS * INPUT_DIM;
     size_t weight_elems = (size_t)OUTPUT_DIM * INPUT_DIM;
     size_t output_elems = (size_t)ROWS * OUTPUT_DIM;
@@ -5239,7 +5754,7 @@ static int bench_int8_linear(h3_gpu *gpu) {
     }
     unsetenv("H3_INT8_LEGACY");
     h3_gpu_tensor_free(input_scales);
-    enum { GROUP_SIZE = 1024, SCALE_GROUPS = INPUT_DIM / GROUP_SIZE };
+    const int SCALE_GROUPS = INPUT_DIM / GROUP_SIZE;
     h3_gpu_tensor *group_scales =
         h3_gpu_tensor_new_f32(gpu, (size_t)padded_rows * SCALE_GROUPS);
     CHECK(group_scales);
@@ -5293,9 +5808,21 @@ static int bench_linear_f32(h3_gpu *gpu) {
         {1792, 2048, 2048},
         {1797, 8192, 2048},
         {256, 2048, 16384},
+        /* video VAE decoder geometry */
+        {2304, 2048, 16384},
+        {2304, 2048, 6144},
+        {2304, 8192, 2048},
+        {2304, 2048, 2048},
     };
-    enum { ITERATIONS = 2 };
-    for (size_t shape = 0; shape < sizeof(shapes) / sizeof(shapes[0]); shape++) {
+    size_t shape_count = sizeof(shapes) / sizeof(shapes[0]);
+    /* Two iterations left the fixed begin/submit cost (~23 ms) dominating the
+     * report; the kernel itself was 4x faster than the printed number. */
+    int iterations = (int)env_u32("H3_BENCH_ITERS", 50);
+    if (env_u32("H3_BENCH_VAE_ONLY", 0)) {
+        memmove(shapes, shapes + 3, 4 * sizeof(shapes[0]));
+        shape_count = 4;
+    }
+    for (size_t shape = 0; shape < shape_count; shape++) {
         int rows = shapes[shape].rows;
         int input_dim = shapes[shape].input_dim;
         int output_dim = shapes[shape].output_dim;
@@ -5318,8 +5845,10 @@ static int bench_linear_f32(h3_gpu *gpu) {
         double flops =
             2.0 * (double)rows * (double)output_dim * (double)input_dim;
         const char *modes[] = { NULL, "1" };
-        const char *labels[] = { "r64", "legacy" };
-        int mode_count = (rows >= 1024) ? 2 : 1;
+        const char *labels[] = { "tiled", "legacy" };
+        /* The legacy path is ~40x slower, so it would dominate the run time at
+         * a useful iteration count. */
+        int mode_count = (rows >= 1024 && env_u32("H3_BENCH_LEGACY", 0)) ? 2 : 1;
         for (int mode = 0; mode < mode_count; mode++) {
             if (modes[mode]) setenv("H3_F32_LEGACY", modes[mode], 1);
             else unsetenv("H3_F32_LEGACY");
@@ -5334,7 +5863,7 @@ static int bench_linear_f32(h3_gpu *gpu) {
             double start = h3_monotonic_seconds();
             CHECK(!require_gpu(gpu, h3_gpu_begin(gpu),
                                "begin linear f32 bench"));
-            for (int iter = 0; iter < ITERATIONS; iter++) {
+            for (int iter = 0; iter < iterations; iter++) {
                 CHECK(!require_gpu(gpu, h3_gpu_linear_f32(
                     gpu, output, gpu_input, gpu_weight, NULL, (uint32_t)rows,
                     (uint32_t)input_dim, (uint32_t)output_dim),
@@ -5343,7 +5872,7 @@ static int bench_linear_f32(h3_gpu *gpu) {
             CHECK(!require_gpu(gpu, h3_gpu_submit(gpu),
                                "submit linear f32 bench"));
             double ms = (h3_monotonic_seconds() - start) * 1000.0 /
-                        (double)ITERATIONS;
+                        (double)iterations;
             printf("linear f32 %s M=%d K=%d N=%d: %.1f ms (%.1f TFLOP/s)\n",
                    labels[mode], rows, input_dim, output_dim, ms,
                    flops / (ms * 1e9));
@@ -5367,6 +5896,16 @@ int main(void) {
         h3_gpu_free(gpu);
         return ok;
     }
+    if (getenv("H3_CHECK_SDPA_F32_REPEAT")) {
+        int ok = check_sdpa_f32_d64_repeatable(gpu);
+        h3_gpu_free(gpu);
+        return ok;
+    }
+    if (getenv("H3_BENCH_SDPA_F32")) {
+        int ok = bench_sdpa_f32_d64(gpu);
+        h3_gpu_free(gpu);
+        return ok;
+    }
     if (getenv("H3_BENCH_LINEAR_F32")) {
         int ok = bench_linear_f32(gpu);
         h3_gpu_free(gpu);
@@ -5383,10 +5922,12 @@ int main(void) {
     if (test_gate_adaln_quantize_int8(gpu) != 0) return 1;
     if (test_patch_linear(gpu) != 0) return 1;
     if (test_qkv_rope(gpu) != 0) return 1;
+    if (test_qkv_rope_d128(gpu) != 0) return 1;
     if (test_qkv_rope_f32(gpu) != 0) return 1;
     if (test_vision_qkv_rope(gpu) != 0) return 1;
     if (test_video_qkv_rope_f32(gpu) != 0) return 1;
     if (test_conv1d_f32(gpu) != 0) return 1;
+    if (test_conv1d_f32_audio_shapes(gpu) != 0) return 1;
     if (test_conv1d_stride_f32(gpu) != 0) return 1;
     if (test_conv_transpose1d_f32(gpu) != 0) return 1;
     if (test_alias_free_snake_f32(gpu) != 0) return 1;
@@ -5402,10 +5943,13 @@ int main(void) {
     if (test_sdpa(gpu) != 0) return 1;
     if (test_sdpa_large(gpu) != 0) return 1;
     if (test_sdpa_head128(gpu) != 0) return 1;
+    if (test_sdpa_head128_tiled(gpu) != 0) return 1;
     if (test_sdpa_head_major_output(gpu) != 0) return 1;
     if (test_sdpa_head_major_output_long(gpu) != 0) return 1;
     if (test_sdpa_f32(gpu) != 0) return 1;
     if (test_sdpa_f32_d64(gpu) != 0) return 1;
+    if (test_sdpa_f32_d64_tiled(gpu) != 0) return 1;
+    if (test_sdpa_tiled_repeatable(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;
     if (test_mlp(gpu) != 0) return 1;
     if (test_mlp_nax(gpu) != 0) return 1;
