@@ -33,6 +33,14 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 | **T2VA** — Linux 35 tribute (untitled) | [![Linux 35](assets/showcase/linux35.jpg)](assets/showcase/linux35.mp4) [mp4](assets/showcase/linux35.mp4) |
 | **T2VA** — project ident draft (untitled) | [![ident draft](assets/showcase/h3-hip-ident-draft-raw.jpg)](assets/showcase/h3-hip-ident-draft-raw.mp4) [mp4](assets/showcase/h3-hip-ident-draft-raw.mp4) |
 | **Ref2VA** — AMD developer community (untitled) | [![AMD community](assets/showcase/amd-developer-community-raw.jpg)](assets/showcase/amd-developer-community-raw.mp4) [mp4](assets/showcase/amd-developer-community-raw.mp4) |
+| **T2VA** — 15 s cinematic office (untitled) | [![15 s long](assets/showcase/long-15s-cinematic.jpg)](assets/showcase/long-15s-cinematic.mp4) [mp4](assets/showcase/long-15s-cinematic.mp4) |
+| **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
+
+Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E ~45 min**,
+**10 s E2E ~25 min** on gfx1151. Timings and reproduce commands:
+[`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
+[Wiki: Long video](docs/wiki/Long-video.md) ·
+[Project page § Long T2VA](https://alexhegit.github.io/h3-hip.c/#long).
 
 FL2VA and Ref2VA (image, silent video, embedded soundtrack, image+audio) are
 wired and smoke-tested on the same binary; see [Status](#status).
@@ -80,6 +88,25 @@ MODEL=/path/to/MiniMax-H3
   --steps 20 --layers 50 --reuse 1 \
   --seed 2026 \
   -o assets/showcase/amd-developer-community-raw.mp4
+
+# Long T2VA — 15 s cinematic office (864×480, 362 frames; E2E ~45 min on gfx1151)
+./h3 --profile -d "$MODEL" \
+  -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
+
+[0–3 seconds] Medium shot from behind the desk. Code scrolls on dual monitors; warm red accent light reflects on glass. Ambient: quiet keyboard clicks, soft fan hum, distant city rain.
+
+[3–6 seconds] Slow push-in over the shoulder. On screen, glowing matrix tiles and magenta wavefronts visualize a neural network training. The engineer pauses, sips coffee. Sound: gentle electronic pulse, a single soft notification chime.
+
+[6–9 seconds] Cut to close-up of hands typing, then rack focus to a small window showing a red fox walking through digital snow inside the monitor reflection. Sound: rising synthesized tone, subtle wind.
+
+[9–12 seconds] Smooth lateral move across the desk: terminal windows, GPU metrics, and a grid of video frames assembling on screen. Warm amber grade, volumetric dust in the lamp beam.
+
+[12–15 seconds] Controlled pullback reveals the full workspace at rest. The engineer leans back, satisfied. Sound: clean final impact, room tone fades.
+
+No readable text, no logos, no subtitles. Premium technology documentary aesthetic." \
+  --width 864 --height 480 --seconds 15 \
+  --steps 20 --layers 45 --reuse 2 --seed 42 \
+  -o assets/showcase/long-15s-cinematic.mp4
 ```
 
 ## Status
@@ -97,7 +124,7 @@ Current tagged line is **v0.9.0**.
 ## Documentation
 
 - **Project page** (speedup ladder and clips): [alexhegit.github.io/h3-hip.c](https://alexhegit.github.io/h3-hip.c/)
-- **Wiki:** [Getting started](https://github.com/alexhegit/h3-hip.c/wiki/Getting-started) and related pages
+- **Wiki:** [Getting started](https://github.com/alexhegit/h3-hip.c/wiki/Getting-started), [Long video](https://github.com/alexhegit/h3-hip.c/wiki/Long-video) (source: [`docs/wiki/Long-video.md`](docs/wiki/Long-video.md))
 - **Tagged timings** (fox-s2 / fox-fast on gfx1151): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
