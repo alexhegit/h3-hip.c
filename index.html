@@ -158,6 +158,7 @@
       <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
       <a class="btn" href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a class="btn" href="#results">Results</a>
+      <a class="btn" href="#long">Long video</a>
       <a class="btn" href="#how">How</a>
       <a class="btn" href="#honest">What this is not</a>
     </div>
@@ -331,6 +332,69 @@
         <div class="knobs">864×480 · 56f · --ref-image ×2 · seed 2026</div>
       </div>
     </div>
+
+    <h3 id="long">Long T2VA — 10 s and 15 s on gfx1151</h3>
+    <p>
+      MiniMax-H3 supports up to <strong>362 aligned frames</strong> (~15&nbsp;s at 24&nbsp;fps). On this
+      Strix Halo box, long clips are dominated by DiT denoise — not the fox-fast presets above. Both clips below
+      are raw T2VA output with a fal.ai-style timed shot list; no references.
+    </p>
+
+    <table>
+      <thead><tr><th>Clip</th><th>Aligned frames</th><th>Duration</th><th>E2E wall</th><th>Denoise wall</th><th>Output</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>10 s cinematic</td>
+          <td class="num">243</td><td class="num">10.1 s</td>
+          <td class="num">24.7 min</td><td class="num">21.2 min</td>
+          <td><span class="mono">long-10s-cinematic.mp4</span></td>
+        </tr>
+        <tr class="hi">
+          <td><strong>15 s cinematic</strong></td>
+          <td class="num">362</td><td class="num">15.1 s</td>
+          <td class="num">45.0 min</td><td class="num">40.4 min</td>
+          <td><span class="mono">long-15s-cinematic.mp4</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="cap">
+      Measured 26&nbsp;Aug 2026, v0.9.0, <span class="mono">--steps 20 --layers 45 --reuse 2</span>
+      (11 DiT evals), 864×480. Full phase splits:
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/LONG_VIDEO.md">docs/perf-runs/LONG_VIDEO.md</a>.
+    </p>
+
+    <div class="gallery">
+      <div class="clip">
+        <video src="assets/long-15s-cinematic.mp4" poster="assets/long-15s-cinematic.jpg" controls muted loop playsinline preload="none"></video>
+        <div class="name">T2VA — 15 s cinematic office <span class="tag">untitled</span></div>
+        <div class="knobs">864×480 · 362f · --seconds 15 · --layers 45 --reuse 2 · seed 42 · E2E 45 min</div>
+      </div>
+      <div class="clip">
+        <video src="assets/long-10s-cinematic.mp4" poster="assets/long-10s-cinematic.jpg" controls muted loop playsinline preload="none"></video>
+        <div class="name">T2VA — 10 s cinematic office <span class="tag">untitled</span></div>
+        <div class="knobs">864×480 · 243f · --seconds 10 · --layers 45 --reuse 2 · seed 42 · E2E 25 min</div>
+      </div>
+    </div>
+
+    <h3>Reproduce the 15 s clip</h3>
+    <pre><span class="c"># 864×480 · ~15 s (362 aligned frames) · fox-fast quality knobs</span>
+./h3 --profile -d /path/to/MiniMax-H3 \
+  -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
+
+[0–3 seconds] Medium shot from behind the desk. Code scrolls on dual monitors; warm red accent light reflects on glass. Ambient: quiet keyboard clicks, soft fan hum, distant city rain.
+
+[3–6 seconds] Slow push-in over the shoulder. On screen, glowing matrix tiles and magenta wavefronts visualize a neural network training. The engineer pauses, sips coffee. Sound: gentle electronic pulse, a single soft notification chime.
+
+[6–9 seconds] Cut to close-up of hands typing, then rack focus to a small window showing a red fox walking through digital snow inside the monitor reflection. Sound: rising synthesized tone, subtle wind.
+
+[9–12 seconds] Smooth lateral move across the desk: terminal windows, GPU metrics, and a grid of video frames assembling on screen. Warm amber grade, volumetric dust in the lamp beam.
+
+[12–15 seconds] Controlled pullback reveals the full workspace at rest. The engineer leans back, satisfied. Sound: clean final impact, room tone fades.
+
+No readable text, no logos, no subtitles. Premium technology documentary aesthetic." \
+  --width 864 --height 480 --seconds 15 \
+  --steps 20 --layers 45 --reuse 2 --seed 42 \
+  -o outputs/long-15s-cinematic.mp4</pre>
   </div>
 </section>
 
