@@ -333,22 +333,16 @@
       </div>
     </div>
 
-    <h3 id="long">Long T2VA — 10 s and 15 s on gfx1151</h3>
+    <h3 id="long">Long T2VA — 15 s on gfx1151</h3>
     <p>
       MiniMax-H3 supports up to <strong>362 aligned frames</strong> (~15&nbsp;s at 24&nbsp;fps). On this
-      Strix Halo box, long clips are dominated by DiT denoise — not the fox-fast presets above. Both clips below
-      are raw T2VA output with a fal.ai-style timed shot list; no references.
+      Strix Halo box, a full-length clip is dominated by DiT denoise — not the fox-fast presets above.
+      Raw T2VA output with a fal.ai-style timed shot list; no references.
     </p>
 
     <table>
       <thead><tr><th>Clip</th><th>Aligned frames</th><th>Duration</th><th>E2E wall</th><th>Denoise wall</th><th>Output</th></tr></thead>
       <tbody>
-        <tr>
-          <td>10 s cinematic</td>
-          <td class="num">243</td><td class="num">10.1 s</td>
-          <td class="num">24.7 min</td><td class="num">21.2 min</td>
-          <td><span class="mono">long-10s-cinematic.mp4</span></td>
-        </tr>
         <tr class="hi">
           <td><strong>15 s cinematic</strong></td>
           <td class="num">362</td><td class="num">15.1 s</td>
@@ -363,17 +357,9 @@
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/LONG_VIDEO.md">docs/perf-runs/LONG_VIDEO.md</a>.
     </p>
 
-    <div class="gallery">
-      <div class="clip">
-        <video src="assets/long-15s-cinematic.mp4" poster="assets/long-15s-cinematic.jpg" controls muted loop playsinline preload="none"></video>
-        <div class="name">T2VA — 15 s cinematic office <span class="tag">untitled</span></div>
-        <div class="knobs">864×480 · 362f · --seconds 15 · --layers 45 --reuse 2 · seed 42 · E2E 45 min</div>
-      </div>
-      <div class="clip">
-        <video src="assets/long-10s-cinematic.mp4" poster="assets/long-10s-cinematic.jpg" controls muted loop playsinline preload="none"></video>
-        <div class="name">T2VA — 10 s cinematic office <span class="tag">untitled</span></div>
-        <div class="knobs">864×480 · 243f · --seconds 10 · --layers 45 --reuse 2 · seed 42 · E2E 25 min</div>
-      </div>
+    <div class="hero-media" style="margin-top:28px;padding-bottom:0">
+      <video src="assets/long-15s-cinematic.mp4" poster="assets/long-15s-cinematic.jpg" controls muted loop playsinline preload="metadata"></video>
+      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · 864×480 · 362f · <span class="mono">--seconds 15 --layers 45 --reuse 2</span> · seed 42 · E2E 45 min</div>
     </div>
 
     <h3>Reproduce the 15 s clip</h3>
