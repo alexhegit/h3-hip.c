@@ -13,7 +13,7 @@ ifeq ($(H3_BACKEND),hip)
   CC := gcc
   HIPCC := hipcc
   ROCM_PATH ?= /opt/rocm
-  HIP_ARCH ?= gfx1151
+  HIP_ARCH ?= gfx90a
   CFLAGS := -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow \
 	-Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE \
 	-D__HIP_PLATFORM_AMD__ -I. -Ikernels \
@@ -175,6 +175,7 @@ hip-test: h3_tests h3_hip_smoke h3_hip_bf16_tests h3_tokenizer_tests \
 	h3_audio_gpu_tests h3_av_mux_test h3_hip_real_dit_smoke
 	./h3_tests
 	./h3_hip_smoke
+	H3_DEVICE_WEIGHTS=0 ./h3_hip_smoke
 	./h3_hip_bf16_tests
 	@if test -f "$(H3_MODEL)/FL2VA/tokenizer/tokenizer.json"; then \
 		./h3_tokenizer_tests "$(H3_MODEL)/FL2VA/tokenizer/tokenizer.json"; \

@@ -1,4 +1,5 @@
 #include "h3_kernels.h"
+#include "h3_wave32.h"
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
@@ -14,10 +15,30 @@ static int h3_f32_wmma_on(void) {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("H3_F32_WMMA");
-        cached = (!e || strcmp(e, "0") != 0) ? 1 : 0;
+        int rdna_wmma = h3_hip_rdna_wmma_default();
+        if (e && strcmp(e, "0") == 0) cached = 0;
+        else cached = rdna_wmma;
     }
     return cached;
 }
+
+/* CDNA: large VAE GEMMs go through hipBLAS SGEMM (gfx1151 used rocWMMA).
+ * Opt out: H3_F32_HIPBLAS=0. Force on RDNA: H3_F32_HIPBLAS=1. */
+static int h3_f32_hipblas_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_F32_HIPBLAS");
+        if (e && strcmp(e, "0") == 0) cached = 0;
+        else if (e && strcmp(e, "1") == 0) cached = 1;
+        else cached = !h3_hip_rdna_wmma_default();
+    }
+    return cached;
+}
+
+static int h3_f32_hipblas_linear(const float *input, const float *weight,
+                                 const float *bias, float *output,
+                                 const h3_linear_args *args,
+                                 hipStream_t stream);
 
 static int h3_int8_split_on(void) {
     static int cached = -1;
@@ -1194,6 +1215,11 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
         int wmma_worth_it = host_args.rows >= 256u &&
                             host_args.input_dim >= 512u &&
                             host_args.output_dim >= 512u;
+        if (wmma_worth_it && h3_f32_hipblas_on() &&
+            h3_f32_hipblas_linear(input, weight, bias, output, &host_args,
+                                  stream)) {
+            return 1;
+        }
         if (use_r128 && wmma_worth_it && h3_f32_wmma_on()) {
             uint32_t bm = 0, bn = 0, threads = 0;
             const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads);
@@ -1487,7 +1513,7 @@ __global__ void h3_gqa_causal_bf16_kernel(const uint16_t *query,
 __device__ inline float h3_gqa_warp_sum(float value) {
 #pragma unroll
     for (int mask = 16; mask > 0; mask >>= 1)
-        value += __shfl_xor(value, mask);
+        value += h3_shfl_xor32(value, mask);
     return value;
 }
 
@@ -1665,14 +1691,14 @@ __global__ void h3_quantize_bf16_int8_rows_kernel(
     }
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1)
-        local_max = fmaxf(local_max, __shfl_xor(local_max, offset));
+        local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
     if ((tid & 31u) == 0u) warp_max[tid >> 5] = local_max;
     __syncthreads();
     if (tid < 16u) {
         float value = (tid < (threads >> 5)) ? warp_max[tid] : 0.0f;
 #pragma unroll
         for (int offset = 8; offset > 0; offset >>= 1)
-            value = fmaxf(value, __shfl_xor(value, offset));
+            value = fmaxf(value, h3_shfl_xor32(value, offset));
         if (tid == 0) warp_max[0] = value;
     }
     __syncthreads();
@@ -1744,14 +1770,14 @@ __global__ void h3_quantize_bf16_int8_rows_lds_kernel(
     __syncthreads();
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1)
-        local_max = fmaxf(local_max, __shfl_xor(local_max, offset));
+        local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
     if ((tid & 31u) == 0u) warp_max[tid >> 5] = local_max;
     __syncthreads();
     if (tid < 16u) {
         float value = (tid < (threads >> 5)) ? warp_max[tid] : 0.0f;
 #pragma unroll
         for (int offset = 8; offset > 0; offset >>= 1)
-            value = fmaxf(value, __shfl_xor(value, offset));
+            value = fmaxf(value, h3_shfl_xor32(value, offset));
         if (tid == 0) warp_max[0] = value;
     }
     __syncthreads();
@@ -2564,6 +2590,221 @@ static int h3_int8_ensure_hipblas(hipStream_t stream) {
     if (!h3_hipblas && hipblasCreate(&h3_hipblas) != HIPBLAS_STATUS_SUCCESS)
         return 0;
     return hipblasSetStream(h3_hipblas, stream) == HIPBLAS_STATUS_SUCCESS;
+}
+
+__global__ void __launch_bounds__(256)
+h3_bias_f32_kernel(float *output, const float *bias, uint32_t rows,
+                   uint32_t cols) {
+    uint32_t col = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y;
+    if (row >= rows || col >= cols) return;
+    output[(size_t)row * cols + col] += bias[col];
+}
+
+/* Same layout as INT8 hipBLAS: C[M,N] = A[M,K] * W[N,K]^T (row-major). */
+static int h3_f32_hipblas_linear(const float *input, const float *weight,
+                                 const float *bias, float *output,
+                                 const h3_linear_args *args,
+                                 hipStream_t stream) {
+    if (!h3_int8_ensure_hipblas(stream)) return 0;
+    int m = (int)args->output_dim;
+    int n = (int)args->rows;
+    int k = (int)args->input_dim;
+    const float alpha = 1.0f, beta = 0.0f;
+    if (hipblasSgemm(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
+                     weight, k, input, k, &beta, output, m) !=
+        HIPBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    if (!args->has_bias || !bias) return 1;
+    uint32_t rows = args->rows, cols = args->output_dim;
+    dim3 block(256, 1, 1);
+    dim3 grid((cols + 255u) / 256u, rows, 1);
+    void *bias_args[] = {&output, &bias, &rows, &cols};
+    return hipLaunchKernel(reinterpret_cast<const void *>(h3_bias_f32_kernel),
+                           grid, block, bias_args, 0, stream) == hipSuccess;
+}
+
+static float *h3_sdpa_scratch = NULL;
+static size_t h3_sdpa_scratch_bytes = 0;
+
+static int h3_sdpa_ensure_scratch(size_t bytes) {
+    if (bytes <= h3_sdpa_scratch_bytes) return 1;
+    float *next = NULL;
+    if (hipMalloc(&next, bytes) != hipSuccess) return 0;
+    if (h3_sdpa_scratch) (void)hipFree(h3_sdpa_scratch);
+    h3_sdpa_scratch = next;
+    h3_sdpa_scratch_bytes = bytes;
+    return 1;
+}
+
+static int h3_sdpa_f32_hipblas_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_SDPA_HIPBLAS");
+        if (e && strcmp(e, "0") == 0) cached = 0;
+        else if (e && strcmp(e, "1") == 0) cached = 1;
+        else cached = !h3_hip_rdna_wmma_default();
+    }
+    return cached;
+}
+
+__global__ void h3_transpose_hsd_shd_f32_kernel(const float *input,
+                                                float *output,
+                                                uint32_t sequence,
+                                                uint32_t heads,
+                                                uint32_t head_dim) {
+    uint32_t dimension = threadIdx.x;
+    uint32_t head = blockIdx.x;
+    uint32_t row = blockIdx.y;
+    if (dimension >= head_dim || head >= heads || row >= sequence) return;
+    uint32_t src = (head * sequence + row) * head_dim + dimension;
+    uint32_t dst = (row * heads + head) * head_dim + dimension;
+    output[dst] = input[src];
+}
+
+__global__ void __launch_bounds__(256)
+h3_softmax_rows_f32_kernel(float *scores, uint32_t cols) {
+    uint32_t row = blockIdx.x;
+    float *line = scores + (size_t)row * cols;
+    float row_max = -1e30f;
+    for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x)
+        row_max = fmaxf(row_max, line[col]);
+    __shared__ float red[256];
+    red[threadIdx.x] = row_max;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride >>= 1) {
+        if (threadIdx.x < stride)
+            red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + stride]);
+        __syncthreads();
+    }
+    row_max = red[0];
+    float sum = 0.0f;
+    for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x) {
+        float p = expf(line[col] - row_max);
+        line[col] = p;
+        sum += p;
+    }
+    red[threadIdx.x] = sum;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride >>= 1) {
+        if (threadIdx.x < stride)
+            red[threadIdx.x] += red[threadIdx.x + stride];
+        __syncthreads();
+    }
+    float inv = red[0] > 0.0f ? 1.0f / red[0] : 0.0f;
+    for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x)
+        line[col] *= inv;
+}
+
+extern "C" int h3_launch_sdpa_f32_hipblas(const float *query, const float *key,
+                                          const float *value, float *output,
+                                          const h3_sdpa_args *args,
+                                          hipStream_t stream) {
+    if (!h3_sdpa_f32_hipblas_on() || !args) return 0;
+    uint32_t seq = args->sequence, heads = args->heads, dim = args->head_dim;
+    if ((dim != 64u && dim != 128u) || seq < 128u || seq > 8192u || !heads)
+        return 0;
+    if (!h3_int8_ensure_hipblas(stream)) return 0;
+    size_t hs_d = (size_t)heads * seq * dim;
+    size_t hs_s = (size_t)heads * seq * seq;
+    int need_k = !args->kv_head_major;
+    size_t bytes = (hs_d + hs_s + hs_d) * sizeof(float);
+    if (need_k) bytes += 2u * hs_d * sizeof(float);
+    if (bytes > (size_t)2u << 30) return 0;
+    if (!h3_sdpa_ensure_scratch(bytes)) return 0;
+    float *q_hm = h3_sdpa_scratch;
+    float *scores = q_hm + hs_d;
+    float *out_hm = scores + hs_s;
+    const float *k_hm = key;
+    const float *v_hm = value;
+    if (need_k) {
+        float *k_buf = out_hm + hs_d;
+        float *v_buf = k_buf + hs_d;
+        if (!h3_launch_transpose_shd_hsd_f32(key, k_buf, seq, heads, dim,
+                                             stream) ||
+            !h3_launch_transpose_shd_hsd_f32(value, v_buf, seq, heads, dim,
+                                             stream)) {
+            return 0;
+        }
+        k_hm = k_buf;
+        v_hm = v_buf;
+    }
+    if (!h3_launch_transpose_shd_hsd_f32(query, q_hm, seq, heads, dim, stream))
+        return 0;
+    int m = (int)seq, n = (int)seq, k = (int)dim;
+    const float alpha = args->scale, beta = 0.0f;
+    hipblasStride stride_q = (hipblasStride)((size_t)seq * dim);
+    hipblasStride stride_s = (hipblasStride)((size_t)seq * seq);
+    if (hipblasSgemmStridedBatched(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n,
+                                   k, &alpha, k_hm, k, stride_q, q_hm, k,
+                                   stride_q, &beta, scores, m, stride_s,
+                                   (int)heads) != HIPBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    dim3 soft_grid(heads * seq, 1, 1);
+    void *soft_args[] = {&scores, &seq};
+    if (hipLaunchKernel(reinterpret_cast<const void *>(h3_softmax_rows_f32_kernel),
+                        soft_grid, dim3(256), soft_args, 0,
+                        stream) != hipSuccess) {
+        return 0;
+    }
+    const float one = 1.0f;
+    if (hipblasSgemmStridedBatched(h3_hipblas, HIPBLAS_OP_N, HIPBLAS_OP_N,
+                                   (int)dim, (int)seq, (int)seq, &one, v_hm,
+                                   (int)dim, stride_q, scores, (int)seq,
+                                   stride_s, &beta, out_hm, (int)dim, stride_q,
+                                   (int)heads) != HIPBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    if (args->head_major_output) {
+        return hipMemcpyAsync(output, out_hm, hs_d * sizeof(float),
+                              hipMemcpyDeviceToDevice, stream) == hipSuccess;
+    }
+    void *tr_args[] = {&out_hm, &output, &seq, &heads, &dim};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_transpose_hsd_shd_f32_kernel),
+               dim3(heads, seq, 1), dim3(dim, 1, 1), tr_args, 0,
+               stream) == hipSuccess;
+}
+
+static float *h3_sdpa_bf16_scratch = NULL;
+static size_t h3_sdpa_bf16_scratch_bytes = 0;
+
+static int h3_sdpa_bf16_ensure_scratch(size_t bytes) {
+    if (bytes <= h3_sdpa_bf16_scratch_bytes) return 1;
+    float *next = NULL;
+    if (hipMalloc(&next, bytes) != hipSuccess) return 0;
+    if (h3_sdpa_bf16_scratch) (void)hipFree(h3_sdpa_bf16_scratch);
+    h3_sdpa_bf16_scratch = next;
+    h3_sdpa_bf16_scratch_bytes = bytes;
+    return 1;
+}
+
+extern "C" int h3_launch_sdpa_bf16_hipblas(const uint16_t *query,
+                                           const uint16_t *key,
+                                           const uint16_t *value,
+                                           uint16_t *output,
+                                           const h3_sdpa_args *args,
+                                           hipStream_t stream) {
+    if (!h3_sdpa_f32_hipblas_on() || !args) return 0;
+    uint32_t seq = args->sequence, heads = args->heads, dim = args->head_dim;
+    if ((dim != 64u && dim != 128u) || seq < 128u || seq > 8192u || !heads)
+        return 0;
+    size_t n = (size_t)seq * heads * dim;
+    if (!h3_sdpa_bf16_ensure_scratch(n * 4u * sizeof(float))) return 0;
+    float *q32 = h3_sdpa_bf16_scratch;
+    float *k32 = q32 + n;
+    float *v32 = k32 + n;
+    float *o32 = v32 + n;
+    if (!h3_launch_cast_bf16_to_f32(query, q32, (uint32_t)n, stream) ||
+        !h3_launch_cast_bf16_to_f32(key, k32, (uint32_t)n, stream) ||
+        !h3_launch_cast_bf16_to_f32(value, v32, (uint32_t)n, stream)) {
+        return 0;
+    }
+    if (!h3_launch_sdpa_f32_hipblas(q32, k32, v32, o32, args, stream))
+        return 0;
+    return h3_launch_cast_f32_to_bf16(o32, output, (uint32_t)n, stream);
 }
 
 static int h3_int8_ensure_i32_scratch(size_t bytes) {

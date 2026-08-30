@@ -1,4 +1,5 @@
 #include "h3_kernels.h"
+#include "h3_wave32.h"
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
@@ -808,7 +809,7 @@ __global__ void h3_gate_adaln_bf16_kernel(const uint16_t *residual,
 __device__ inline float h3_warp_reduce_sum(float value) {
 #pragma unroll
     for (int mask = 16; mask > 0; mask >>= 1)
-        value += __shfl_xor(value, mask);
+        value += h3_shfl_xor32(value, mask);
     return value;
 }
 
@@ -891,8 +892,8 @@ h3_qkv_rope_bf16_d128_kernel(const uint16_t *qkv, const uint16_t *q_weight,
     float qp[4], kp[4];
 #pragma unroll
     for (int j = 0; j < 4; j++) {
-        qp[j] = __shfl(qw[j], src);
-        kp[j] = __shfl(kw[j], src);
+        qp[j] = h3_shfl32(qw[j], src);
+        kp[j] = h3_shfl32(kw[j], src);
     }
 
     float qo[4], ko[4];
@@ -2184,7 +2185,7 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
             }
 #pragma unroll
             for (int off = 1; off < 16; off <<= 1)
-                m = fmaxf(m, __shfl_xor(m, off));
+                m = fmaxf(m, h3_shfl_xor32(m, off));
             float new_max = fmaxf(row_max[i], m);
             alpha[i] = h3_fast_exp(row_max[i] - new_max);
             uint32_t prow = 2u * (uint32_t)i + rowg;
@@ -2196,7 +2197,7 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
                 sp[wave][prow * BK + t * 16u + col] = h3_f32_to_bf16(p);
             }
 #pragma unroll
-            for (int off = 1; off < 16; off <<= 1) ps += __shfl_xor(ps, off);
+            for (int off = 1; off < 16; off <<= 1) ps += h3_shfl_xor32(ps, off);
             row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
             row_max[i] = new_max;
         }
@@ -2375,7 +2376,7 @@ h3_sdpa_f32_wmma_d64_kernel(const float *query, const float *key,
             }
 #pragma unroll
             for (int off = 1; off < 16; off <<= 1)
-                m = fmaxf(m, __shfl_xor(m, off));
+                m = fmaxf(m, h3_shfl_xor32(m, off));
             float new_max = fmaxf(row_max[i], m);
             alpha[i] = h3_fast_exp(row_max[i] - new_max);
             uint32_t prow = 2u * (uint32_t)i + rowg;
@@ -2387,7 +2388,7 @@ h3_sdpa_f32_wmma_d64_kernel(const float *query, const float *key,
                 sp[wave][prow * BK + t * 16u + col] = h3_f32_to_bf16(p);
             }
 #pragma unroll
-            for (int off = 1; off < 16; off <<= 1) ps += __shfl_xor(ps, off);
+            for (int off = 1; off < 16; off <<= 1) ps += h3_shfl_xor32(ps, off);
             row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
             row_max[i] = new_max;
         }
@@ -3830,6 +3831,23 @@ static uint32_t h3_env_u32(const char *name, uint32_t fallback) {
     return parsed ? (uint32_t)parsed : fallback;
 }
 
+extern "C" int h3_hip_rdna_wmma_default(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    int device = 0;
+    hipDeviceProp_t props;
+    if (hipGetDevice(&device) != hipSuccess) device = 0;
+    if (hipGetDeviceProperties(&props, device) != hipSuccess) {
+        cached = 0;
+        return cached;
+    }
+    /* gfx11/gfx12: wave32 rocWMMA layouts probed on gfx1151. gfx9 CDNA is
+     * wave64 MFMA, so it must use a separately validated kernel. */
+    cached = (strncmp(props.gcnArchName, "gfx11", 5) == 0 ||
+              strncmp(props.gcnArchName, "gfx12", 5) == 0) ? 1 : 0;
+    return cached;
+}
+
 extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, uint16_t *output,
                                    const h3_sdpa_args *args,
@@ -3841,6 +3859,12 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
     if (!getenv("H3_SDPA_LEGACY")) {
+        if ((host_args.head_dim == 64 || host_args.head_dim == 128) &&
+            host_args.sequence >= 128u &&
+            h3_launch_sdpa_bf16_hipblas(query, key, value, output, &host_args,
+                                        stream)) {
+            return 1;
+        }
         /* Default: one-warp-per-query online softmax. Optional flash path
          * (H3_SDPA_FLASH=1) stages K/V tiles in LDS for multi-Q reuse; kept
          * opt-in after regressing vs wave on gfx1151 DiT shapes. */
@@ -3865,7 +3889,9 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
             static const char *const forced[] = {
                 "H3_SDPA_D128_Q1", "H3_SDPA_D128_Q2", "H3_SDPA_D128_Q3",
                 "H3_SDPA_D128_Q4", "H3_SDPA_D128_Q5", "H3_SDPA_Q6_SCALAR"};
-            wmma = !(e && strcmp(e, "0") == 0);
+            int rdna_wmma = h3_hip_rdna_wmma_default();
+            if (e && strcmp(e, "0") == 0) wmma = 0;
+            else wmma = rdna_wmma;
             for (size_t i = 0; wmma && i < sizeof(forced) / sizeof(*forced);
                  i++) {
                 const char *f = getenv(forced[i]);
@@ -3981,7 +4007,9 @@ static int h3_sdpa_f32_wmma_on(void) {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("H3_SDPA_F32_WMMA");
-        cached = (!e || strcmp(e, "0") != 0) ? 1 : 0;
+        int rdna_wmma = h3_hip_rdna_wmma_default();
+        if (e && strcmp(e, "0") == 0) cached = 0;
+        else cached = rdna_wmma;
     }
     return cached;
 }
@@ -4009,6 +4037,14 @@ extern "C" int h3_launch_sdpa_f32(const float *query, const float *key,
                            h3_sdpa_f32_flash_d128_kernel),
                        grid, block, kernel_args, sizeof(kernel_args),
                        stream) == hipSuccess;
+        }
+        /* CDNA: materialize QK^T with hipBLAS, then softmax + PV. Wave32
+         * online softmax is the gfx1151 path and is ~95 s on VAE d64. */
+        if ((host_args.head_dim == 64 || host_args.head_dim == 128) &&
+            host_args.sequence >= 128u &&
+            h3_launch_sdpa_f32_hipblas(query, key, value, output, &host_args,
+                                       stream)) {
+            return 1;
         }
         /* Tiled WMMA for the long d64 sequences the video VAE decoder runs.
          * Short sequences stay on the exact wave kernel: they gain nothing from

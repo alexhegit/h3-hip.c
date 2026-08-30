@@ -93,6 +93,24 @@ int main(void) {
     h3_gpu_tensor_free(sub_b);
     h3_gpu_tensor_free(sub_out);
 
+    /* Exercise both branches of the discrete-GPU weight allocator. Make runs
+     * this binary once with device weights and once with forced pinned-host
+     * fallback. A kernel must be able to consume either pointer. */
+    const uint16_t device_values[4] = {0x3f80, 0x4000, 0x4040, 0x4080};
+    h3_gpu_tensor *device_bf16 = h3_gpu_tensor_new_bf16_device(gpu, 4);
+    h3_gpu_tensor *device_f32 = h3_gpu_tensor_new_f32(gpu, 4);
+    CHECK(device_bf16 && device_f32);
+    CHECK(h3_gpu_tensor_write_bf16(device_bf16, device_values, 4));
+    CHECK(h3_gpu_begin(gpu));
+    CHECK(h3_gpu_cast_bf16_to_f32(gpu, device_f32, device_bf16, 4));
+    CHECK(h3_gpu_submit(gpu));
+    float device_out[4];
+    CHECK(h3_gpu_tensor_read_f32(device_f32, device_out, 4));
+    CHECK(device_out[0] == 1.0f);
+    CHECK(device_out[3] == 4.0f);
+    h3_gpu_tensor_free(device_bf16);
+    h3_gpu_tensor_free(device_f32);
+
     h3_gpu_tensor_free(silu_input);
     h3_gpu_tensor_free(silu_output);
     h3_gpu_tensor_free(lin_in);

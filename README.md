@@ -1,9 +1,11 @@
 # h3-hip.c
 
-HIP port of [antirez/h3.c](https://github.com/antirez/h3.c) for **AMD GPUs**
-(`gfx1151` / Strix Halo). The original project is a native MiniMax-H3 inference
-engine (Apple Metal / macOS); this repository reimplements the GPU backend in
-pure HIP so the same CLI and model stack run on ROCm.
+HIP port of [antirez/h3.c](https://github.com/antirez/h3.c) for **AMD GPUs**.
+Tagged **v0.9.0** on `main` is validated on **gfx1151** (Strix Halo). This
+**`mi210` branch** is the CDNA / MI210 (`gfx90a`) port. The original project is
+a native MiniMax-H3 inference engine (Apple Metal / macOS); this repository
+reimplements the GPU backend in pure HIP so the same CLI and model stack run on
+ROCm.
 
 [![h3-hip.c ident](assets/showcase/h3-hip-ident.jpg)](assets/showcase/h3-hip-ident.mp4)
 
@@ -133,8 +135,9 @@ fox-fast numbers use `--layers 45 --reuse 2`; commands are in PERFORMANCE.md.
 
 ## Requirements
 
-- Linux + ROCm (`hipcc`, `libamdhip64`) and a `gfx1151` GPU (Strix Halo /
-  Radeon 8060S). Other AMD targets are untested.
+- Linux + ROCm (`hipcc`, `libamdhip64`). **This `mi210` branch** targets
+  `gfx90a` (MI210). `main` / tagged v0.9.0 remain validated on `gfx1151`
+  (Strix Halo). Other AMD targets are still experimental.
 - Official BF16 checkpoint at `MiniMax-H3/` (`FL2VA/*`, optional `Ref2VA/*`)
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)
@@ -148,7 +151,11 @@ make -j$(nproc) h3
 ./h3 --info -d /path/to/MiniMax-H3
 ```
 
-On Linux the Makefile defaults to `H3_BACKEND=hip` and `--offload-arch=gfx1151`.
+On this branch the Makefile defaults to `H3_BACKEND=hip` and
+`--offload-arch=gfx90a` (MI210). Bind one card of a multi-GPU box with
+`H3_HIP_DEVICE=0` (default) or `HIP_VISIBLE_DEVICES=0`. CDNA disables the
+gfx1151 rocWMMA SDPA / f32-linear paths; Phase 2 will add separately validated
+CDNA kernels. Rebuild for Strix Halo with `make HIP_ARCH=gfx1151`.
 Apple Metal sources remain in-tree for reference against [antirez/h3.c](https://github.com/antirez/h3.c)
 and are not the Linux build path.
 

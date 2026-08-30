@@ -2,8 +2,16 @@
 
 #include <hip/hip_runtime_api.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+int h3_hip_device_index(void) {
+    const char *value = getenv("H3_HIP_DEVICE");
+    if (!value || !*value) return 0;
+    int id = atoi(value);
+    return id < 0 ? 0 : id;
+}
 
 int h3_hip_probe(h3_device_info *info, char *error, size_t error_size) {
     if (!info) return 0;
@@ -19,8 +27,18 @@ int h3_hip_probe(h3_device_info *info, char *error, size_t error_size) {
         return 0;
     }
 
+    int device = h3_hip_device_index();
+    if (device >= device_count) {
+        if (error && error_size) {
+            snprintf(error, error_size,
+                     "H3_HIP_DEVICE=%d but only %d HIP device(s)", device,
+                     device_count);
+        }
+        return 0;
+    }
+
     hipDeviceProp_t props;
-    status = hipGetDeviceProperties(&props, 0);
+    status = hipGetDeviceProperties(&props, device);
     if (status != hipSuccess) {
         if (error && error_size) {
             snprintf(error, error_size, "cannot query HIP device: %s",
@@ -29,7 +47,7 @@ int h3_hip_probe(h3_device_info *info, char *error, size_t error_size) {
         return 0;
     }
 
-    status = hipSetDevice(0);
+    status = hipSetDevice(device);
     if (status != hipSuccess) {
         if (error && error_size) {
             snprintf(error, error_size, "cannot select HIP device: %s",

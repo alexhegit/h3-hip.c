@@ -1,8 +1,11 @@
-# Known issues (HIP / gfx1151)
+# Known issues (HIP)
 
 Tracked gaps that do **not** block the default `./h3` T2VA generate path on
-Strix Halo (`gfx1151`). Production DiT uses BF16 activations and INT8 weights
-(hipBLAS) on the default path.
+Strix Halo (`gfx1151`). The `mi210` branch is a CDNA / MI210 port in progress:
+default kernels skip RDNA rocWMMA and keep 32-lane wave launch + hipBLAS INT8.
+
+Production DiT uses BF16 activations and INT8 weights (hipBLAS) on the default
+path.
 
 ## KI-001: CPU Euler sampler
 

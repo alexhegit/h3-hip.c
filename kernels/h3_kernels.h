@@ -8,6 +8,9 @@
 extern "C" {
 #endif
 
+/* 1 on gfx11/gfx12 (RDNA rocWMMA layouts). 0 on CDNA (gfx90a / gfx942). */
+int h3_hip_rdna_wmma_default(void);
+
 typedef struct {
     uint32_t rows;
     uint32_t input_dim;
@@ -408,9 +411,15 @@ int h3_launch_video_qkv_rope_f32(const float *qkv, const float *rope_cos,
 int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                         const uint16_t *value, uint16_t *output,
                         const h3_sdpa_args *args, hipStream_t stream);
+int h3_launch_sdpa_bf16_hipblas(const uint16_t *query, const uint16_t *key,
+                                const uint16_t *value, uint16_t *output,
+                                const h3_sdpa_args *args, hipStream_t stream);
 int h3_launch_sdpa_f32(const float *query, const float *key, const float *value,
                        float *output, const h3_sdpa_args *args,
                        hipStream_t stream);
+int h3_launch_sdpa_f32_hipblas(const float *query, const float *key,
+                               const float *value, float *output,
+                               const h3_sdpa_args *args, hipStream_t stream);
 int h3_launch_transpose_shd_hsd_bf16(const uint16_t *input, uint16_t *output,
                                      uint32_t sequence, uint32_t heads,
                                      uint32_t head_dim, hipStream_t stream);

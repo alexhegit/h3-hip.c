@@ -1,4 +1,5 @@
 #include "h3_gpu.h"
+#include "h3_device.h"
 #include "kernels/h3_kernels.h"
 
 #include <hip/hip_runtime_api.h>
@@ -270,20 +271,16 @@ static size_t h3_hip_pin_hit_bytes;
 static size_t h3_hip_pin_miss_bytes;
 static pthread_mutex_t h3_hip_pin_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* This box has 128 GB of unified memory, but the BIOS splits it into a 96 GiB
- * VRAM carveout and 31 GiB of host RAM (`mem_info_vram_total` 103079215104,
- * `MemTotal` 32481828 kB). `free` only ever sees the 31 GiB half, which is why
- * this file used to be tuned as if the machine had 30 GiB in total.
+/* Prefer device-resident weights (VRAM / APU carveout). Loaders pread into a
+ * recycled pinned staging buffer and DMA to the device.
  *
- * The split is what makes `hipHostMalloc` slow: page-locking draws on the small
- * pool and the pages are then unreclaimable, so at a 23 GiB footprint it falls
- * to 1.6 GiB/s (`tests/probe_stage.hip` arm A). `hipMalloc` draws on the
- * carveout, which nothing else can use at all, and holds 91 GiB/s at the same
- * footprint. Weight buffers therefore live in device memory and the loaders
- * pread into a recycled pinned staging buffer, which swaps ~40s of page-locking
- * for a 52 GiB/s DMA.
+ * On Strix Halo the BIOS split (~96 GiB carveout + ~31 GiB host) made
+ * hipHostMalloc the bottleneck; hipMalloc uses the carveout. On a discrete
+ * GPU the same default still avoids repeated PCIe reads of hot weights, but
+ * hipMalloc failure falls back to pinned host (64 GiB MI210 cannot hold the
+ * full ~107 GiB checkpoint).
  *
- * Opt out with H3_DEVICE_WEIGHTS=0 to get the all-pinned behaviour back. */
+ * Opt out with H3_DEVICE_WEIGHTS=0. Force on with H3_DEVICE_WEIGHTS=1. */
 static int h3_hip_device_weights(void) {
     static int cached;
     if (!cached) {
@@ -291,6 +288,35 @@ static int h3_hip_device_weights(void) {
         cached = (value && !strcmp(value, "0")) ? -1 : 1;
     }
     return cached > 0;
+}
+
+/* Keep enough HBM free for activations and temporary device buffers. MI210
+ * cannot safely allocate weights until hipMalloc fails: by then kernels may
+ * have no room left for their working set. */
+static size_t h3_hip_device_weight_reserve(void) {
+    static size_t cached;
+    if (cached) return cached;
+    const double gib = 1024.0 * 1024.0 * 1024.0;
+    hipDeviceProp_t props;
+    int device = 0;
+    int integrated = 0;
+    if (hipGetDevice(&device) == hipSuccess &&
+        hipGetDeviceProperties(&props, device) == hipSuccess) {
+        integrated = props.integrated ? 1 : 0;
+    }
+    const char *value = getenv("H3_DEVICE_WEIGHT_RESERVE_GIB");
+    double want = value ? atof(value) : (integrated ? 4.0 : 20.0);
+    if (want < 0.0) want = 0.0;
+    cached = (size_t)(want * gib);
+    return cached ? cached : 1;
+}
+
+static int h3_hip_device_weight_fits(size_t request) {
+    size_t free_bytes = 0, total_bytes = 0;
+    if (hipMemGetInfo(&free_bytes, &total_bytes) != hipSuccess) return 0;
+    size_t reserve = h3_hip_device_weight_reserve();
+    if (reserve > total_bytes / 2) reserve = total_bytes / 2;
+    return request <= free_bytes && free_bytes - request >= reserve;
 }
 
 /* With weights in device memory the pinned pool only holds transient staging
@@ -809,13 +835,9 @@ static struct h3_gpu_tensor *h3_hip_tensor_new_ex(struct h3_gpu *gpu,
     }
     double alloc_start = h3_hip_now();
     size_t request = bytes > 0 ? bytes : 1;
-    if (weight && h3_hip_device_weights()) {
-        if (hipMalloc(&tensor->data, request) != hipSuccess) {
-            free(tensor);
-            h3_hip_set_error(gpu, "cannot allocate %zu-byte device buffer",
-                             bytes);
-            return NULL;
-        }
+    if (weight && h3_hip_device_weights() &&
+        h3_hip_device_weight_fits(request) &&
+        hipMalloc(&tensor->data, request) == hipSuccess) {
         tensor->device = 1;
         /* hipHostMalloc hands back zeroed pages and callers depend on it;
          * hipMalloc does not, so match it explicitly when nobody is going to
@@ -916,7 +938,8 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
         }
         return NULL;
     }
-    if (hipSetDevice(0) != hipSuccess ||
+    int device = h3_hip_device_index();
+    if (hipSetDevice(device) != hipSuccess ||
         hipStreamCreate(&gpu->stream) != hipSuccess) {
         if (error && error_size) {
             snprintf(error, error_size, "cannot initialize HIP device/stream");
@@ -924,7 +947,7 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
         free(gpu);
         return NULL;
     }
-    gpu->device_id = 0;
+    gpu->device_id = device;
     snprintf(gpu->profile_label, sizeof(gpu->profile_label), "HIP context");
     gpu->profile_start_wall = h3_hip_now();
     gpu->profile_start_stats = gpu->stats;
