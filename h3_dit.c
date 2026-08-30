@@ -1505,7 +1505,7 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
         !getenv("H3_DISABLE_FUSED_PATCH_CAST") && !getenv("H3_SCALAR_PATCH");
     dit->fused_patch_pack = dit->fused_patch_projection &&
         !getenv("H3_DISABLE_FUSED_PATCH_PACK");
-#define BF(field, elements) (dit->field = h3_gpu_tensor_new_bf16(dit->gpu, (elements)))
+#define BF(field, elements) (dit->field = h3_gpu_tensor_new_bf16_device(dit->gpu, (elements)))
 #define F32(field, elements) (dit->field = h3_gpu_tensor_new_f32(dit->gpu, (elements)))
     h3_gpu_tensor *all[] = {
         F32(video_input, video_total * VIDEO_PATCH),
@@ -1560,11 +1560,11 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
         dit->mod_mlp = dit->qkv;
         dit->mlp_output = NULL;
     } else {
-        dit->attention_heads = h3_gpu_tensor_new_bf16(
+        dit->attention_heads = h3_gpu_tensor_new_bf16_device(
             dit->gpu, sequence * INNER);
-        dit->mod_mlp = h3_gpu_tensor_new_bf16(
+        dit->mod_mlp = h3_gpu_tensor_new_bf16_device(
             dit->gpu, sequence * HIDDEN);
-        dit->mlp_output = h3_gpu_tensor_new_bf16(
+        dit->mlp_output = h3_gpu_tensor_new_bf16_device(
             dit->gpu, sequence * HIDDEN);
     }
     if (!dit->attention_heads || !dit->mod_mlp ||
@@ -1617,10 +1617,10 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
         }
     }
     if (!dit->fused_mlp) {
-        dit->fc1 = h3_gpu_tensor_new_bf16(dit->gpu, sequence * FFN * 2);
+        dit->fc1 = h3_gpu_tensor_new_bf16_device(dit->gpu, sequence * FFN * 2);
     }
     if (!dit->fused_mlp || dit->nax_mlp || dit->int8_mlp) {
-        dit->activated = h3_gpu_tensor_new_bf16(dit->gpu, sequence * FFN);
+        dit->activated = h3_gpu_tensor_new_bf16_device(dit->gpu, sequence * FFN);
         if ((!dit->fused_mlp && !dit->fc1) || !dit->activated) {
             fail(error, error_size,
                  "cannot allocate diagnostic DiT MLP tensors: %s",
@@ -1630,9 +1630,9 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
     }
     if (dit->int8_mlp || dit->int8_qkv || dit->int8_attention_out) {
         size_t padded_sequence = (sequence + 127) & ~(size_t)127;
-        dit->int8_activation = h3_gpu_tensor_new_i8(
+        dit->int8_activation = h3_gpu_tensor_new_i8_device(
             dit->gpu, padded_sequence * FFN);
-        dit->int8_activation_scales = h3_gpu_tensor_new_f32(
+        dit->int8_activation_scales = h3_gpu_tensor_new_f32_device(
             dit->gpu, padded_sequence * (FFN / 1024));
         if (!dit->int8_activation || !dit->int8_activation_scales) {
             fail(error, error_size,
@@ -1673,9 +1673,9 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
         }
     }
     if (dit->core_reuse_interval > 1) {
-        dit->core_input = h3_gpu_tensor_new_bf16(
+        dit->core_input = h3_gpu_tensor_new_bf16_device(
             dit->gpu, sequence * HIDDEN);
-        dit->core_residual = h3_gpu_tensor_new_bf16(
+        dit->core_residual = h3_gpu_tensor_new_bf16_device(
             dit->gpu, sequence * HIDDEN);
         if (!dit->core_input || !dit->core_residual) {
             fail(error, error_size,

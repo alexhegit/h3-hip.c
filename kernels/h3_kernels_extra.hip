@@ -40,6 +40,28 @@ static int h3_f32_hipblas_linear(const float *input, const float *weight,
                                  const h3_linear_args *args,
                                  hipStream_t stream);
 
+static int h3_f32_stats_on(void) {
+    const char *e = getenv("H3_F32_STATS");
+    return e && strcmp(e, "0") != 0;
+}
+
+static void h3_f32_stats_add(const char *path, const h3_linear_args *args) {
+    if (!h3_f32_stats_on() || !args) return;
+    static unsigned calls;
+    static unsigned long long flop;
+    if (calls < 24u) {
+        fprintf(stderr, "f32-linear %s M=%u K=%u N=%u\n", path, args->rows,
+                args->input_dim, args->output_dim);
+    }
+    calls++;
+    flop += 2ull * (unsigned long long)args->rows *
+            (unsigned long long)args->input_dim *
+            (unsigned long long)args->output_dim;
+    if ((calls & 63u) == 0u)
+        fprintf(stderr, "f32-linear stats calls=%u flops=%.2f TFLOP last=%s\n",
+                calls, (double)flop * 1e-12, path);
+}
+
 static int h3_int8_split_on(void) {
     static int cached = -1;
     if (cached < 0) {
@@ -1218,6 +1240,7 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
         if (wmma_worth_it && h3_f32_hipblas_on() &&
             h3_f32_hipblas_linear(input, weight, bias, output, &host_args,
                                   stream)) {
+            h3_f32_stats_add("hipblas", &host_args);
             return 1;
         }
         if (use_r128 && wmma_worth_it && h3_f32_wmma_on()) {
@@ -1225,12 +1248,14 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
             const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads);
             dim3 grid((host_args.output_dim + bn - 1u) / bn,
                       (host_args.rows + bm - 1u) / bm, 1);
+            h3_f32_stats_add("wmma", &host_args);
             return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, 0,
                                    stream) == hipSuccess;
         }
         if (use_r128) {
             dim3 grid((host_args.output_dim + 127u) / 128u,
                       (host_args.rows + 127u) / 128u, 1);
+            h3_f32_stats_add("r128", &host_args);
             return hipLaunchKernel(
                        reinterpret_cast<const void *>(
                            h3_linear_f32_r128_kernel<32>),
@@ -1242,6 +1267,7 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
         const void *kernel = host_args.input_dim % 32u == 0 ?
             reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<32>) :
             reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<16>);
+        h3_f32_stats_add("r64", &host_args);
         return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
                hipSuccess;
     }
@@ -2611,9 +2637,13 @@ static int h3_f32_hipblas_linear(const float *input, const float *weight,
     int n = (int)args->rows;
     int k = (int)args->input_dim;
     const float alpha = 1.0f, beta = 0.0f;
-    if (hipblasSgemm(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
-                     weight, k, input, k, &beta, output, m) !=
-        HIPBLAS_STATUS_SUCCESS) {
+    hipblasStatus_t st =
+        hipblasSgemm(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
+                     weight, k, input, k, &beta, output, m);
+    if (st != HIPBLAS_STATUS_SUCCESS) {
+        if (h3_f32_stats_on())
+            fprintf(stderr, "f32-linear hipblasSgemm status=%d M=%d N=%d K=%d\n",
+                    (int)st, n, m, k);
         return 0;
     }
     if (!args->has_bias || !bias) return 1;

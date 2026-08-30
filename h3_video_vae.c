@@ -462,7 +462,7 @@ static int prepare_rope(vae_context *vae, char *error, size_t error_size) {
 static int allocate_activations(vae_context *vae, char *error,
                                 size_t error_size) {
     size_t patches = vae->patches, sequence = vae->sequence;
-#define F32(field, elements) (vae->field = h3_gpu_tensor_new_f32(vae->gpu, (elements)))
+#define F32(field, elements) (vae->field = h3_gpu_tensor_new_f32_device(vae->gpu, (elements)))
     h3_gpu_tensor *all[] = {
         F32(post, patches * LATENT_CHANNELS),
         F32(patch_hidden, patches * HIDDEN),
