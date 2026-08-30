@@ -909,16 +909,16 @@ static int refine_text(h3_dit *dit, const h3_text_embedding *text,
                              error, error_size);
     size_t rows = dit->text_rows;
     if (ok && final_norm) {
-        dit->refined_text = h3_gpu_tensor_new_bf16(dit->gpu, rows * HIDDEN);
-        norm = h3_gpu_tensor_new_bf16(dit->gpu, rows * HIDDEN);
-        qkv = h3_gpu_tensor_new_bf16(dit->gpu, rows * INNER * 3);
-        query = h3_gpu_tensor_new_bf16(dit->gpu, rows * INNER);
-        key = h3_gpu_tensor_new_bf16(dit->gpu, rows * INNER);
-        value = h3_gpu_tensor_new_bf16(dit->gpu, rows * INNER);
-        heads = h3_gpu_tensor_new_bf16(dit->gpu, rows * INNER);
-        branch = h3_gpu_tensor_new_bf16(dit->gpu, rows * HIDDEN);
-        fc1 = h3_gpu_tensor_new_bf16(dit->gpu, rows * FFN * 2);
-        activated = h3_gpu_tensor_new_bf16(dit->gpu, rows * FFN);
+        dit->refined_text = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * HIDDEN);
+        norm = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * HIDDEN);
+        qkv = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * INNER * 3);
+        query = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * INNER);
+        key = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * INNER);
+        value = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * INNER);
+        heads = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * INNER);
+        branch = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * HIDDEN);
+        fc1 = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * FFN * 2);
+        activated = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * FFN);
         ok = dit->refined_text && norm && qkv && query && key && value &&
              heads && branch && fc1 && activated;
     }

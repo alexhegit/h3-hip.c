@@ -177,15 +177,15 @@ static h3_gpu_tensor *time_embeddings(const h3_weight_store *weights,
         error, error_size);
     h3_gpu_tensor *out_b = weight_f32_1d(weights, gpu,
         "time_embedder.proj_out.bias", H3_DIT_TIME_DIM, error, error_size);
-    h3_gpu_tensor *hidden = h3_gpu_tensor_new_f32(
+    h3_gpu_tensor *hidden = h3_gpu_tensor_new_f32_device(
         gpu, (size_t)rows * TIME_HIDDEN);
-    h3_gpu_tensor *activated = h3_gpu_tensor_new_f32(
+    h3_gpu_tensor *activated = h3_gpu_tensor_new_f32_device(
         gpu, (size_t)rows * TIME_HIDDEN);
-    h3_gpu_tensor *output = h3_gpu_tensor_new_f32(
+    h3_gpu_tensor *output = h3_gpu_tensor_new_f32_device(
         gpu, (size_t)rows * H3_DIT_TIME_DIM);
-    h3_gpu_tensor *bf16 = h3_gpu_tensor_new_bf16(
+    h3_gpu_tensor *bf16 = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)rows * H3_DIT_TIME_DIM);
-    h3_gpu_tensor *silu = h3_gpu_tensor_new_bf16(
+    h3_gpu_tensor *silu = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)rows * H3_DIT_TIME_DIM);
     h3_gpu_tensor *result = NULL;
     h3_gpu_tensor *all[] = {input, in_w, in_b, out_w, out_b, hidden,
@@ -346,6 +346,15 @@ h3_dit_schedule *h3_dit_schedule_precompute(
          index++, queued++) {
         adaln_slot_start(&slots[index], weights, gpu, queued);
     }
+    /* Keep at most `batch` AdaLN weights live and one stream submit per batch
+     * instead of 50 host round-trips. Depth 4 already holds that many slots. */
+    int batch = depth ? depth : 4;
+    h3_gpu_tensor *hold_w[ADALN_PREFETCH_MAX];
+    h3_gpu_tensor *hold_b[ADALN_PREFETCH_MAX];
+    int hold_n = 0;
+    int stream_open = 0;
+    memset(hold_w, 0, sizeof(hold_w));
+    memset(hold_b, 0, sizeof(hold_b));
     for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
         char operation[128];
         adaln_slot own;
@@ -361,7 +370,7 @@ h3_dit_schedule *h3_dit_schedule_precompute(
             own.busy = 1;
             adaln_slot_read(&own);
         }
-        schedule->blocks[block] = h3_gpu_tensor_new_bf16(
+        schedule->blocks[block] = h3_gpu_tensor_new_bf16_device(
             gpu, (size_t)schedule->time_rows * BLOCK_OUTPUT);
         if (!slot->weight || !slot->bias || !schedule->blocks[block]) {
             if (error && error_size && !*error)
@@ -370,23 +379,46 @@ h3_dit_schedule *h3_dit_schedule_precompute(
             goto block_failed;
         }
         snprintf(operation, sizeof(operation), "AdaLN block %u", block);
-        if (!gpu_op(gpu, h3_gpu_begin(gpu), error, error_size, operation) ||
-            !gpu_op(gpu, h3_gpu_linear_bf16(
+        if (!stream_open) {
+            if (!gpu_op(gpu, h3_gpu_begin(gpu), error, error_size, operation))
+                goto block_failed;
+            stream_open = 1;
+        }
+        if (!gpu_op(gpu, h3_gpu_linear_bf16(
                 gpu, schedule->blocks[block], time, slot->weight, slot->bias,
                 schedule->time_rows, H3_DIT_TIME_DIM, BLOCK_OUTPUT),
-                error, error_size, operation) ||
-            !gpu_op(gpu, h3_gpu_submit(gpu), error, error_size, operation)) {
+                error, error_size, operation)) {
             goto block_failed;
         }
-        free_tensor(&slot->weight);
-        free_tensor(&slot->bias);
+        hold_w[hold_n] = slot->weight;
+        hold_b[hold_n] = slot->bias;
+        slot->weight = NULL;
+        slot->bias = NULL;
+        hold_n++;
         slot->busy = 0;
+        int last = (block + 1u == H3_DIT_BLOCKS);
+        if (hold_n == batch || last) {
+            if (!gpu_op(gpu, h3_gpu_submit(gpu), error, error_size, operation))
+                goto block_failed;
+            stream_open = 0;
+            for (int index = 0; index < hold_n; index++) {
+                free_tensor(&hold_w[index]);
+                free_tensor(&hold_b[index]);
+            }
+            hold_n = 0;
+        }
         if (depth && queued < H3_DIT_BLOCKS)
             adaln_slot_start(slot, weights, gpu, queued++);
         if (progress) progress((int)block + 1, (int)H3_DIT_BLOCKS,
                                progress_opaque);
         continue;
 block_failed:
+        if (stream_open)
+            (void)h3_gpu_submit(gpu);
+        for (int index = 0; index < hold_n; index++) {
+            free_tensor(&hold_w[index]);
+            free_tensor(&hold_b[index]);
+        }
         for (int index = 0; index < depth; index++)
             adaln_slot_discard(&slots[index]);
         adaln_slot_discard(&own);
@@ -400,7 +432,7 @@ block_failed:
     h3_gpu_tensor *final_b = weight_bf16_1d(
         weights, gpu, "final_layer.adaln_proj.linear.bias",
         FINAL_OUTPUT, error, error_size);
-    schedule->final = h3_gpu_tensor_new_bf16(
+    schedule->final = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)schedule->time_rows * FINAL_OUTPUT);
     if (!final_w || !final_b || !schedule->final ||
         !gpu_op(gpu, h3_gpu_begin(gpu), error, error_size,

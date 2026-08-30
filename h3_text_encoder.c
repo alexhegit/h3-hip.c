@@ -577,16 +577,16 @@ static int text_encode_bf16_impl(
         gpu, sines, token_count * TEXT_ROPE_HALF);
     free(cosines);
     free(sines);
-    h3_gpu_tensor *hidden = h3_gpu_tensor_new_bf16(gpu, hidden_count);
-    h3_gpu_tensor *norm = h3_gpu_tensor_new_bf16(gpu, hidden_count);
-    h3_gpu_tensor *query = h3_gpu_tensor_new_bf16(gpu, query_count);
-    h3_gpu_tensor *key = h3_gpu_tensor_new_bf16(gpu, kv_count);
-    h3_gpu_tensor *value = h3_gpu_tensor_new_bf16(gpu, kv_count);
-    h3_gpu_tensor *attention_heads = h3_gpu_tensor_new_bf16(gpu, query_count);
-    h3_gpu_tensor *attention_output = h3_gpu_tensor_new_bf16(gpu, hidden_count);
-    h3_gpu_tensor *gate = h3_gpu_tensor_new_bf16(gpu, intermediate_count);
-    h3_gpu_tensor *up = h3_gpu_tensor_new_bf16(gpu, intermediate_count);
-    h3_gpu_tensor *mlp_output = h3_gpu_tensor_new_bf16(gpu, hidden_count);
+    h3_gpu_tensor *hidden = h3_gpu_tensor_new_bf16_device(gpu, hidden_count);
+    h3_gpu_tensor *norm = h3_gpu_tensor_new_bf16_device(gpu, hidden_count);
+    h3_gpu_tensor *query = h3_gpu_tensor_new_bf16_device(gpu, query_count);
+    h3_gpu_tensor *key = h3_gpu_tensor_new_bf16_device(gpu, kv_count);
+    h3_gpu_tensor *value = h3_gpu_tensor_new_bf16_device(gpu, kv_count);
+    h3_gpu_tensor *attention_heads = h3_gpu_tensor_new_bf16_device(gpu, query_count);
+    h3_gpu_tensor *attention_output = h3_gpu_tensor_new_bf16_device(gpu, hidden_count);
+    h3_gpu_tensor *gate = h3_gpu_tensor_new_bf16_device(gpu, intermediate_count);
+    h3_gpu_tensor *up = h3_gpu_tensor_new_bf16_device(gpu, intermediate_count);
+    h3_gpu_tensor *mlp_output = h3_gpu_tensor_new_bf16_device(gpu, hidden_count);
     h3_gpu_tensor *deepstack[3] = {NULL, NULL, NULL};
     if (span_count) {
         uint16_t *values = calloc(hidden_count, sizeof(*values));

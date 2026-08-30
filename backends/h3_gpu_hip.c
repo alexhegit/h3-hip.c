@@ -2836,9 +2836,9 @@ int h3_gpu_mlp_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     if (!ctx || !rows || !input_dim || !hidden_dim || !output_dim) {
         return 0;
     }
-    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(
+    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)rows * hidden_dim * 2);
-    h3_gpu_tensor *activated = h3_gpu_tensor_new_bf16(
+    h3_gpu_tensor *activated = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)rows * hidden_dim);
     if (!fc1_out || !activated) {
         h3_gpu_tensor_free(fc1_out);
@@ -2874,7 +2874,7 @@ static int h3_hip_fc1_swiglu_nax_bf16(
                              "NAX FC1 output")) {
         return 0;
     }
-    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(
+    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)rows * hidden_dim * 2);
     if (!fc1_out) {
         h3_hip_set_error(ctx, "NAX FC1 temporary allocation failed");
@@ -3682,7 +3682,7 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              "int8 MLP output")) {
         return 0;
     }
-    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16(
+    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)rows * fc1_output_dim);
     if (!fc1_out) {
         h3_hip_set_error(ctx, "int8 MLP FC1 temporary allocation failed");
@@ -3817,7 +3817,7 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
         !h3_hip_require_bf16(ctx, value, projected, "int8 value")) {
         return 0;
     }
-    h3_gpu_tensor *qkv = h3_gpu_tensor_new_bf16(gpu, (size_t)rows * qkv_dim);
+    h3_gpu_tensor *qkv = h3_gpu_tensor_new_bf16_device(gpu, (size_t)rows * qkv_dim);
     if (!qkv) {
         h3_hip_set_error(ctx, "int8 QKV temporary allocation failed");
         return 0;
@@ -3876,7 +3876,7 @@ int h3_gpu_gate_adaln_quantize_int8(
                             "int8 gate AdaLN scales")) {
         return 0;
     }
-    h3_gpu_tensor *adaln_out = h3_gpu_tensor_new_bf16(gpu, count);
+    h3_gpu_tensor *adaln_out = h3_gpu_tensor_new_bf16_device(gpu, count);
     if (!adaln_out) {
         h3_hip_set_error(ctx, "int8 gate AdaLN temporary allocation failed");
         return 0;
