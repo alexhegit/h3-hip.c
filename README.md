@@ -8,7 +8,8 @@ One tree, two supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
 | `gfx1151` | Strix Halo (RDNA) | INT8 + BF16 activations | wave32 rocWMMA |
 | `gfx90a` | MI210 (CDNA) | BF16 GEMM | wave64 MFMA flash |
 
-Tagged **v0.10.0** on `main` is the dual-ISA line (`gfx1151` and `gfx90a`).
+Tagged **v0.10.1** on `main` is the dual-ISA line (`gfx1151` and `gfx90a`).
+v0.10.0 is the same kernels; 0.10.1 adds preset/docs clarifications.
 v0.9.x remains the gfx1151-only history. The original project is a native
 MiniMax-H3 inference engine (Apple Metal / macOS); this repository reimplements
 the GPU backend in pure HIP so the same CLI and model stack run on ROCm.
@@ -140,7 +141,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.10.0**.
+Current tagged line is **v0.10.1**.
 
 | Capability | Status |
 |------------|--------|
@@ -184,7 +185,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.10.0
+git checkout v0.10.1
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

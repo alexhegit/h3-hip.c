@@ -8,15 +8,15 @@ the Makefile does **not** probe the GPU.
 | `gfx1151` | Strix Halo (RDNA, wave32) | INT8 weights (hipBLAS), BF16 activations | rocWMMA |
 | `gfx90a` | MI210 (CDNA, wave64) | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 
-Other AMD targets are experimental. Tagged **v0.10.0** on `main` covers both
-ISAs. gfx1151 fox-s2 still matches the v0.9.0 md5 gate.
+Other AMD targets are experimental. Tagged **v0.10.1** on `main` covers both
+ISAs (same kernels as v0.10.0). gfx1151 fox-s2 still matches the v0.9.0 md5 gate.
 
 ## Build
 
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.10.0
+git checkout v0.10.1
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
