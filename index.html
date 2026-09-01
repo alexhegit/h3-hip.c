@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiniMax-H3 on AMD HIP — h3-hip.c</title>
-<meta name="description" content="A HIP port of antirez/h3.c running MiniMax-H3 text-to-video-and-audio on a single AMD Strix Halo iGPU. 3.0x end-to-end on fox-s2, bit-identical output.">
+<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. v0.10.0 supports gfx1151 (Strix Halo) and gfx90a (MI210). Pass HIP_ARCH yourself.">
 <style>
   :root {
     --bg: #0b0c0e;
@@ -143,19 +143,19 @@
 
 <header>
   <div class="wrap">
-    <div class="eyebrow">Day-nine optimization · single APU</div>
+    <div class="eyebrow">v0.10.0 · gfx1151 and gfx90a</div>
     <h1>MiniMax-H3 on AMD HIP
-      <span class="sub">A pure-HIP port that gets 3.0&times; end to end on one Strix Halo iGPU — with byte-identical output.</span>
+      <span class="sub">One tree, two ISAs — Strix Halo fox-s2 still 83–87&nbsp;s; MI210 does the same 15&nbsp;s clip in 12&nbsp;min 33&nbsp;s.</span>
     </h1>
     <p class="lede">
       <a href="https://github.com/alexhegit/h3-hip.c">h3-hip.c</a> reimplements the GPU backend of
-      <a href="https://github.com/antirez/h3.c">antirez/h3.c</a> in HIP, so the same MiniMax-H3 CLI and model
-      stack run on ROCm. Nine days of kernel and weight-I/O work took a first-light port from 257&nbsp;s to
-      83&ndash;87&nbsp;s on the fox-s2 preset. No distillation, no fine-tune, no quality trade: the fox-s2 MP4
-      still hashes to the same md5 it did before the fast kernels landed.
+      <a href="https://github.com/antirez/h3.c">antirez/h3.c</a> in HIP. Pass
+      <span class="mono">HIP_ARCH=gfx1151</span> or <span class="mono">HIP_ARCH=gfx90a</span> — the Makefile
+      does not probe the GPU. Halo fox-s2 still hashes to the v0.9.0 md5.
     </p>
     <div class="hero-links">
       <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
+      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.0">v0.10.0</a>
       <a class="btn" href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a class="btn" href="#results">Results</a>
       <a class="btn" href="#long">Long video</a>
@@ -181,11 +181,11 @@
       the GPU layer with HIP.
     </p>
     <p>
-      The target is deliberately modest hardware: an <strong>AMD Ryzen AI MAX+ 395</strong> with a
-      <strong>Radeon 8060S</strong> integrated GPU (<span class="mono">gfx1151</span>). 128&nbsp;GB of unified
-      memory, of which the BIOS carves <strong>96&nbsp;GiB as VRAM</strong>, leaving the host about
-      <strong>31&nbsp;GiB</strong>. That split turns out to shape the entire optimization story: one T2VA run
-      streams roughly <strong>107&nbsp;GiB</strong> of weights, so the page cache never holds the working set.
+      Two supported HIP offload ISAs, one source tree. <strong>gfx1151</strong> (Strix Halo / Radeon 8060S)
+      is the original APU path: 96&nbsp;GiB VRAM carveout, ~31&nbsp;GiB host RAM, ~107&nbsp;GiB of weights
+      per T2VA run. <strong>gfx90a</strong> (MI210) is the discrete CDNA path: BF16 DiT GEMM and wave64
+      MFMA flash attention. You choose the ISA at compile time with
+      <span class="mono">make HIP_ARCH=…</span>.
     </p>
   </div>
 </section>
@@ -284,28 +284,30 @@
       </p>
     </div>
 
-    <h3>Tagged baseline — v0.9.0</h3>
+    <h3>Tagged baseline — v0.10.0</h3>
     <table>
       <thead>
-        <tr><th>Preset</th><th>Knobs</th><th class="num">E2E</th><th class="num">Denoise GPU</th></tr>
+        <tr><th>Preset</th><th class="num">gfx1151</th><th class="num">gfx90a</th></tr>
       </thead>
       <tbody>
         <tr class="hi">
-          <td><strong>fox-s2</strong></td>
-          <td class="mono">512² · 22f · --steps 2 --layers 35 --reuse 1</td>
-          <td class="num">83–87 s</td><td class="num">6.3–6.5 s</td>
+          <td><strong>fox-s2</strong> E2E</td>
+          <td class="num">83–87 s</td><td class="num">~10.5 s</td>
         </tr>
         <tr class="hi">
-          <td><strong>fox-fast</strong></td>
-          <td class="mono">512² · 22f · --steps 20 --layers 45 --reuse 2</td>
-          <td class="num">95 s</td><td class="num">28 s</td>
+          <td><strong>fox-fast</strong> E2E</td>
+          <td class="num">~95 s</td><td class="num">~18 s</td>
+        </tr>
+        <tr class="hi">
+          <td><strong>15 s cinematic</strong> E2E</td>
+          <td class="num">45.0 min</td><td class="num">12 min 33 s</td>
         </tr>
       </tbody>
     </table>
     <p class="cap">
-      fox-fast is the upstream tutorial preset and runs 11 DiT evaluations, not 20 —
-      <span class="mono">--reuse 2</span> skips steps. fox-s2 output md5
-      <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span>.
+      gfx1151 fox-s2 md5 <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> (same as v0.9.0).
+      Build: <span class="mono">make HIP_ARCH=gfx1151</span> or <span class="mono">HIP_ARCH=gfx90a</span>.
+      Halo denoise GPU: fox-s2 6.3–6.5 s · fox-fast 28 s. MI210 fox-fast denoise ~8.2 s (sdpa 1.08 s).
     </p>
 
     <h3>Clips from this build</h3>
@@ -333,37 +335,45 @@
       </div>
     </div>
 
-    <h3 id="long">Long T2VA — 15 s on gfx1151</h3>
+    <h3 id="long">Long T2VA — 15 s</h3>
     <p>
-      MiniMax-H3 supports up to <strong>362 aligned frames</strong> (~15&nbsp;s at 24&nbsp;fps). On this
-      Strix Halo box, a full-length clip is dominated by DiT denoise — not the fox-fast presets above.
-      Raw T2VA output with a fal.ai-style timed shot list; no references.
+      MiniMax-H3 supports up to <strong>362 aligned frames</strong> (~15&nbsp;s at 24&nbsp;fps). Same knobs
+      on both ISAs: <span class="mono">--steps 20 --layers 45 --reuse 2</span>, 864×480, seed 42.
+      DiT denoise dominates; MI210 flash SDPA is why the wall clock drops.
     </p>
 
     <table>
-      <thead><tr><th>Clip</th><th>Aligned frames</th><th>Duration</th><th>E2E wall</th><th>Denoise wall</th><th>Output</th></tr></thead>
+      <thead><tr><th>GPU</th><th>Aligned frames</th><th>Duration</th><th>E2E wall</th><th>Denoise wall</th></tr></thead>
       <tbody>
         <tr class="hi">
-          <td><strong>15 s cinematic</strong></td>
+          <td><strong>gfx1151</strong> v0.9.0</td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">45.0 min</td><td class="num">40.4 min</td>
-          <td><span class="mono">long-15s-cinematic.mp4</span></td>
+        </tr>
+        <tr class="hi">
+          <td><strong>gfx90a</strong> v0.10.0</td>
+          <td class="num">362</td><td class="num">15.1 s</td>
+          <td class="num">12 min 33 s</td><td class="num">10 min 48 s</td>
         </tr>
       </tbody>
     </table>
     <p class="cap">
-      Measured 26&nbsp;Aug 2026, v0.9.0, <span class="mono">--steps 20 --layers 45 --reuse 2</span>
-      (11 DiT evals), 864×480. Full phase splits:
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/LONG_VIDEO.md">docs/perf-runs/LONG_VIDEO.md</a>.
+      Halo phase splits:
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.0/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>.
+      MI210 session:
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.0/docs/perf-mi210/STATUS.md">perf-mi210/STATUS.md</a>.
     </p>
 
     <div class="hero-media" style="margin-top:28px;padding-bottom:0">
       <video src="assets/long-15s-cinematic.mp4" poster="assets/long-15s-cinematic.jpg" controls muted loop playsinline preload="metadata"></video>
-      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · 864×480 · 362f · <span class="mono">--seconds 15 --layers 45 --reuse 2</span> · seed 42 · E2E 45 min</div>
+      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · 864×480 · 362f · seed 42 · gfx1151 E2E 45 min · gfx90a E2E 12 min 33 s</div>
     </div>
 
     <h3>Reproduce the 15 s clip</h3>
-    <pre><span class="c"># 864×480 · ~15 s (362 aligned frames) · fox-fast quality knobs</span>
+    <pre><span class="c"># build for this GPU first</span>
+make HIP_ARCH=gfx1151 -j$(nproc) h3   <span class="c"># or gfx90a</span>
+
+<span class="c"># 864×480 · ~15 s (362 aligned frames) · fox-fast quality knobs</span>
 ./h3 --profile -d /path/to/MiniMax-H3 \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
 
@@ -428,8 +438,10 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       <div class="win">AdaLN precompute 34.0 s → 10.6 s · video VAE weight load hidden behind GPU work</div>
     </div>
 
-    <h3>Reproduce the baseline</h3>
-    <pre><span class="c"># fox-s2 — the short A/B smoke, and the md5 gate</span>
+    <h3>Reproduce fox-s2 / fox-fast</h3>
+    <pre><span class="c">make HIP_ARCH=gfx1151 -j$(nproc) h3   # or gfx90a</span>
+
+<span class="c"># fox-s2 — the short A/B smoke, and the gfx1151 md5 gate</span>
 ./h3 --profile -d /path/to/MiniMax-H3 \
   -p "A red fox walks through fresh snow." \
   --width 512 --height 512 --frames 22 \
@@ -467,16 +479,16 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
         distance below some threshold.
       </li>
       <li>
-        <strong>Not a clean-room measurement.</strong> Host RAM is 31 GiB and a run reads about 107 GiB, so
-        end-to-end wall time depends on page-cache state. That is why E2E is a band and GPU time is the
-        headline.
+        <strong>Not a clean-room measurement.</strong> On gfx1151 the BIOS carveout leaves ~31&nbsp;GiB
+        host RAM while a run reads about 107&nbsp;GiB, so end-to-end wall time depends on page-cache state.
+        That is why E2E is a band and GPU time is the headline. gfx90a numbers are discrete-GPU wall times.
       </li>
       <li>
-        <strong>Not portable yet.</strong> Only <span class="mono">gfx1151</span> is tested.
-        <span class="mono">hipMalloc</span> failure is currently fatal, there is no
-        <span class="mono">hipMemGetInfo</span> budgeting, and the pinned pool is sized from
-        <span class="mono">_SC_PHYS_PAGES</span> — all of which needs fixing before a small-carveout card or a
-        discrete GPU is a supported target.
+        <strong>Not every AMD GPU.</strong> Supported ISAs are
+        <span class="mono">gfx1151</span> and <span class="mono">gfx90a</span>. You must pass
+        <span class="mono">HIP_ARCH</span> to match the card. Other targets are experimental.
+        <span class="mono">hipMalloc</span> failure is still fatal; small-carveout cards still need
+        <span class="mono">hipMemGetInfo</span> budgeting.
       </li>
     </ul>
   </div>
@@ -486,6 +498,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   <div class="wrap">
     <div class="foot-links">
       <a href="https://github.com/alexhegit/h3-hip.c">alexhegit/h3-hip.c</a>
+      <a href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.0">v0.10.0</a>
       <a href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/PERFORMANCE.md">Scoreboard</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/KNOWN_ISSUES.md">Known issues</a>
@@ -497,7 +510,8 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       Host, model and CLI code follow <a href="https://github.com/antirez/h3.c">antirez/h3.c</a>; the HIP backend
       is <span class="mono">backends/h3_gpu_hip.c</span> plus the kernels under
       <span class="mono">kernels/</span>. Model weights are subject to the MiniMax-H3 license.
-      Measured on an AMD Ryzen AI MAX+ 395 / Radeon 8060S, ROCm, v0.9.0 tag, 26 Aug 2026.
+      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Tagged <span class="mono">v0.10.0</span>,
+      1 Sep 2026. Halo fox-s2 md5 unchanged from v0.9.0.
     </p>
   </div>
 </footer>
