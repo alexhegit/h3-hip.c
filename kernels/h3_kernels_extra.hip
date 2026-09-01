@@ -2655,6 +2655,57 @@ static int h3_f32_hipblas_linear(const float *input, const float *weight,
                            grid, block, bias_args, 0, stream) == hipSuccess;
 }
 
+static int h3_bf16_hipblas_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_BF16_HIPBLAS");
+        if (e && strcmp(e, "0") == 0) cached = 0;
+        else if (e && strcmp(e, "1") == 0) cached = 1;
+        else cached = !h3_hip_rdna_wmma_default();
+    }
+    return cached;
+}
+
+__global__ void __launch_bounds__(256)
+h3_bias_bf16_kernel(uint16_t *output, const uint16_t *bias, uint32_t rows,
+                    uint32_t cols) {
+    uint32_t col = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t row = blockIdx.y;
+    if (row >= rows || col >= cols) return;
+    size_t index = (size_t)row * cols + col;
+    output[index] = h3_f32_to_bf16(h3_bf16_to_f32(output[index]) +
+                                   h3_bf16_to_f32(bias[col]));
+}
+
+extern "C" int h3_try_linear_bf16_hipblas(const uint16_t *input,
+                                          const uint16_t *weight,
+                                          const uint16_t *bias,
+                                          uint16_t *output,
+                                          const h3_linear_args *args,
+                                          hipStream_t stream) {
+    if (!h3_bf16_hipblas_on() || !args) return 0;
+    if (args->rows < 64u || args->input_dim < 64u || args->output_dim < 16u)
+        return 0;
+    if (args->input_dim % 2u) return 0;
+    if (!h3_int8_ensure_hipblas(stream)) return 0;
+    int m = (int)args->output_dim;
+    int n = (int)args->rows;
+    int k = (int)args->input_dim;
+    const float alpha = 1.0f, beta = 0.0f;
+    hipblasStatus_t st = hipblasGemmEx(
+        h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha, weight,
+        HIP_R_16BF, k, input, HIP_R_16BF, k, &beta, output, HIP_R_16BF, m,
+        HIPBLAS_COMPUTE_32F, HIPBLAS_GEMM_DEFAULT);
+    if (st != HIPBLAS_STATUS_SUCCESS) return 0;
+    if (!args->has_bias || !bias) return 1;
+    uint32_t rows = args->rows, cols = args->output_dim;
+    dim3 block(256, 1, 1);
+    dim3 grid((cols + 255u) / 256u, rows, 1);
+    void *bias_args[] = {&output, &bias, &rows, &cols};
+    return hipLaunchKernel(reinterpret_cast<const void *>(h3_bias_bf16_kernel),
+                           grid, block, bias_args, 0, stream) == hipSuccess;
+}
+
 static float *h3_sdpa_scratch = NULL;
 static size_t h3_sdpa_scratch_bytes = 0;
 
@@ -2698,8 +2749,20 @@ h3_softmax_rows_f32_kernel(float *scores, uint32_t cols) {
     uint32_t row = blockIdx.x;
     float *line = scores + (size_t)row * cols;
     float row_max = -1e30f;
-    for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x)
-        row_max = fmaxf(row_max, line[col]);
+    uint32_t vec = cols >> 2;
+    int vectorized = (cols & 3u) == 0u;
+    if (vectorized) {
+        float4 *line4 = reinterpret_cast<float4 *>(line);
+        for (uint32_t col = threadIdx.x; col < vec; col += blockDim.x) {
+            float4 value = line4[col];
+            row_max = fmaxf(row_max,
+                            fmaxf(fmaxf(value.x, value.y),
+                                  fmaxf(value.z, value.w)));
+        }
+    } else {
+        for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x)
+            row_max = fmaxf(row_max, line[col]);
+    }
     __shared__ float red[256];
     red[threadIdx.x] = row_max;
     __syncthreads();
@@ -2710,10 +2773,23 @@ h3_softmax_rows_f32_kernel(float *scores, uint32_t cols) {
     }
     row_max = red[0];
     float sum = 0.0f;
-    for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x) {
-        float p = expf(line[col] - row_max);
-        line[col] = p;
-        sum += p;
+    if (vectorized) {
+        float4 *line4 = reinterpret_cast<float4 *>(line);
+        for (uint32_t col = threadIdx.x; col < vec; col += blockDim.x) {
+            float4 value = line4[col];
+            value.x = expf(value.x - row_max);
+            value.y = expf(value.y - row_max);
+            value.z = expf(value.z - row_max);
+            value.w = expf(value.w - row_max);
+            line4[col] = value;
+            sum += value.x + value.y + value.z + value.w;
+        }
+    } else {
+        for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x) {
+            float p = expf(line[col] - row_max);
+            line[col] = p;
+            sum += p;
+        }
     }
     red[threadIdx.x] = sum;
     __syncthreads();
@@ -2723,8 +2799,20 @@ h3_softmax_rows_f32_kernel(float *scores, uint32_t cols) {
         __syncthreads();
     }
     float inv = red[0] > 0.0f ? 1.0f / red[0] : 0.0f;
-    for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x)
-        line[col] *= inv;
+    if (vectorized) {
+        float4 *line4 = reinterpret_cast<float4 *>(line);
+        for (uint32_t col = threadIdx.x; col < vec; col += blockDim.x) {
+            float4 value = line4[col];
+            value.x *= inv;
+            value.y *= inv;
+            value.z *= inv;
+            value.w *= inv;
+            line4[col] = value;
+        }
+    } else {
+        for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x)
+            line[col] *= inv;
+    }
 }
 
 extern "C" int h3_launch_sdpa_f32_hipblas(const float *query, const float *key,
@@ -2738,6 +2826,7 @@ extern "C" int h3_launch_sdpa_f32_hipblas(const float *query, const float *key,
     if (!h3_int8_ensure_hipblas(stream)) return 0;
     size_t hs_d = (size_t)heads * seq * dim;
     size_t hs_s = (size_t)heads * seq * seq;
+    if (hs_d > UINT32_MAX || hs_s > UINT32_MAX) return 0;
     int need_k = !args->kv_head_major;
     size_t bytes = (hs_d + hs_s + hs_d) * sizeof(float);
     if (need_k) bytes += 2u * hs_d * sizeof(float);
@@ -2800,6 +2889,9 @@ extern "C" int h3_launch_sdpa_f32_hipblas(const float *query, const float *key,
 
 static float *h3_sdpa_bf16_scratch = NULL;
 static size_t h3_sdpa_bf16_scratch_bytes = 0;
+static unsigned char *h3_sdpa_bf16_direct_scratch = NULL;
+static size_t h3_sdpa_bf16_direct_scratch_bytes = 0;
+static hipblasHandle_t h3_sdpa_bf16_direct_hipblas = NULL;
 
 static int h3_sdpa_bf16_ensure_scratch(size_t bytes) {
     if (bytes <= h3_sdpa_bf16_scratch_bytes) return 1;
@@ -2811,6 +2903,308 @@ static int h3_sdpa_bf16_ensure_scratch(size_t bytes) {
     return 1;
 }
 
+static int h3_sdpa_bf16_direct_ensure_scratch(size_t bytes) {
+    if (bytes <= h3_sdpa_bf16_direct_scratch_bytes) return 1;
+    unsigned char *next = NULL;
+    if (hipMalloc(&next, bytes) != hipSuccess) return 0;
+    if (h3_sdpa_bf16_direct_scratch)
+        (void)hipFree(h3_sdpa_bf16_direct_scratch);
+    h3_sdpa_bf16_direct_scratch = next;
+    h3_sdpa_bf16_direct_scratch_bytes = bytes;
+    return 1;
+}
+
+__global__ void h3_scatter_f32_to_bf16_hsd_kernel(
+    const float *input, uint16_t *output, uint32_t query_start,
+    uint32_t query_rows, uint32_t sequence, uint32_t heads,
+    uint32_t head_dim, uint32_t count) {
+    uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) return;
+    uint32_t dimension = index % head_dim;
+    uint32_t query = (index / head_dim) % query_rows;
+    uint32_t head = index / (head_dim * query_rows);
+    size_t destination =
+        ((size_t)head * sequence + query_start + query) * head_dim + dimension;
+    reinterpret_cast<__hip_bfloat16 *>(output)[destination] =
+        (__hip_bfloat16)input[index];
+}
+
+__global__ void h3_scatter_f32_to_bf16_shd_kernel(
+    const float *input, uint16_t *output, uint32_t query_start,
+    uint32_t query_rows, uint32_t heads, uint32_t head_dim,
+    uint32_t count) {
+    uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) return;
+    uint32_t dimension = index % head_dim;
+    uint32_t query = (index / head_dim) % query_rows;
+    uint32_t head = index / (head_dim * query_rows);
+    size_t destination =
+        ((size_t)(query_start + query) * heads + head) * head_dim + dimension;
+    reinterpret_cast<__hip_bfloat16 *>(output)[destination] =
+        (__hip_bfloat16)input[index];
+}
+
+static int h3_sdpa_bf16_direct_on(void) {
+    const char *e = getenv("H3_SDPA_BF16_DIRECT");
+    if (e) return strcmp(e, "0") != 0;
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    int device = 0;
+    hipDeviceProp_t props;
+    cached = hipGetDevice(&device) == hipSuccess &&
+             hipGetDeviceProperties(&props, device) == hipSuccess &&
+             strncmp(props.gcnArchName, "gfx90a", 6) == 0;
+    return cached;
+}
+
+static int h3_sdpa_bf16_direct_ensure_hipblas(hipStream_t stream) {
+    if (!h3_sdpa_bf16_direct_hipblas &&
+        hipblasCreate(&h3_sdpa_bf16_direct_hipblas) != HIPBLAS_STATUS_SUCCESS) {
+        return 0;
+    }
+    return hipblasSetStream(h3_sdpa_bf16_direct_hipblas, stream) ==
+           HIPBLAS_STATUS_SUCCESS;
+}
+
+__global__ void h3_sdpa_online_init_kernel(float *acc, float *m, float *l,
+                                           uint32_t dim) {
+    uint32_t row = blockIdx.x;
+    if (threadIdx.x == 0) {
+        m[row] = -1e30f;
+        l[row] = 0.0f;
+    }
+    float *line = acc + (size_t)row * dim;
+    for (uint32_t col = threadIdx.x; col < dim; col += blockDim.x)
+        line[col] = 0.0f;
+}
+
+__global__ void __launch_bounds__(256)
+h3_sdpa_online_prepare_p_kernel(float *scores, float *acc, float *m, float *l,
+                                uint32_t cols, uint32_t dim) {
+    uint32_t row = blockIdx.x;
+    float *line = scores + (size_t)row * cols;
+    float row_max = -1e30f;
+    uint32_t vec = cols >> 2;
+    int vectorized = (cols & 3u) == 0u;
+    if (vectorized) {
+        float4 *line4 = reinterpret_cast<float4 *>(line);
+        for (uint32_t col = threadIdx.x; col < vec; col += blockDim.x) {
+            float4 value = line4[col];
+            row_max = fmaxf(row_max,
+                            fmaxf(fmaxf(value.x, value.y),
+                                  fmaxf(value.z, value.w)));
+        }
+    } else {
+        for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x)
+            row_max = fmaxf(row_max, line[col]);
+    }
+    __shared__ float red[256];
+    red[threadIdx.x] = row_max;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride >>= 1) {
+        if (threadIdx.x < stride)
+            red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + stride]);
+        __syncthreads();
+    }
+    row_max = red[0];
+    float m_old = m[row];
+    float m_new = fmaxf(m_old, row_max);
+    float alpha = expf(m_old - m_new);
+    float *out = acc + (size_t)row * dim;
+    for (uint32_t col = threadIdx.x; col < dim; col += blockDim.x)
+        out[col] *= alpha;
+    float sum = 0.0f;
+    if (vectorized) {
+        float4 *line4 = reinterpret_cast<float4 *>(line);
+        for (uint32_t col = threadIdx.x; col < vec; col += blockDim.x) {
+            float4 value = line4[col];
+            value.x = expf(value.x - m_new);
+            value.y = expf(value.y - m_new);
+            value.z = expf(value.z - m_new);
+            value.w = expf(value.w - m_new);
+            line4[col] = value;
+            sum += value.x + value.y + value.z + value.w;
+        }
+    } else {
+        for (uint32_t col = threadIdx.x; col < cols; col += blockDim.x) {
+            float p = expf(line[col] - m_new);
+            line[col] = p;
+            sum += p;
+        }
+    }
+    red[threadIdx.x] = sum;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride >>= 1) {
+        if (threadIdx.x < stride)
+            red[threadIdx.x] += red[threadIdx.x + stride];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        m[row] = m_new;
+        l[row] = l[row] * alpha + red[0];
+    }
+}
+
+__global__ void h3_sdpa_online_finalize_kernel(float *acc, const float *l,
+                                               uint32_t dim) {
+    uint32_t row = blockIdx.x;
+    float inv = l[row] > 0.0f ? 1.0f / l[row] : 0.0f;
+    float *line = acc + (size_t)row * dim;
+    for (uint32_t col = threadIdx.x; col < dim; col += blockDim.x)
+        line[col] *= inv;
+}
+
+/* CDNA matrix-core QK with F32 softmax and PV. Long sequences are split by
+ * query row, bounding the score matrix without changing attention semantics.
+ * Sequences above 8192 also tile the key axis with online softmax so the
+ * score buffer stays cache-sized. */
+static int h3_launch_sdpa_bf16_hipblas_direct(
+    const uint16_t *query, const uint16_t *key, const uint16_t *value,
+    uint16_t *output, const h3_sdpa_args *args, hipStream_t stream) {
+    if (!h3_sdpa_bf16_direct_on() || !args) return 0;
+    uint32_t seq = args->sequence, heads = args->heads, dim = args->head_dim;
+    if ((dim != 64u && dim != 128u) || seq < 128u || !heads ||
+        !args->kv_head_major)
+        return 0;
+    if (!h3_sdpa_bf16_direct_ensure_hipblas(stream)) return 0;
+    size_t hs_d = (size_t)heads * seq * dim;
+    if (hs_d > UINT32_MAX) return 0;
+    uint32_t query_rows = seq;
+    if (seq > 8192u) query_rows = 128u;
+    const char *configured = getenv("H3_SDPA_BF16_QROWS");
+    if (configured && *configured) {
+        unsigned long parsed = strtoul(configured, NULL, 10);
+        if (parsed && parsed <= seq) query_rows = (uint32_t)parsed;
+    }
+    uint32_t k_tile = seq;
+    if (seq > 8192u) k_tile = 4096u;
+    const char *k_configured = getenv("H3_SDPA_BF16_KTILE");
+    if (k_configured && *k_configured) {
+        unsigned long parsed = strtoul(k_configured, NULL, 10);
+        if (parsed) k_tile = (uint32_t)parsed;
+    }
+    if (k_tile > seq) k_tile = seq;
+    int online = k_tile < seq;
+    int need_out = !args->head_major_output;
+    size_t score_elements = (size_t)heads * query_rows * k_tile;
+    size_t output_elements = (size_t)heads * query_rows * dim;
+    size_t stat_elements = (size_t)heads * query_rows;
+    if (score_elements > UINT32_MAX || output_elements > UINT32_MAX)
+        return 0;
+    size_t bytes = hs_d * sizeof(uint16_t) +
+                   (hs_d + score_elements + output_elements) * sizeof(float);
+    if (online) bytes += 2u * stat_elements * sizeof(float);
+    if (!h3_sdpa_bf16_direct_ensure_scratch(bytes)) {
+        return 0;
+    }
+    uint16_t *q_hm =
+        reinterpret_cast<uint16_t *>(h3_sdpa_bf16_direct_scratch);
+    float *v32 = reinterpret_cast<float *>(q_hm + hs_d);
+    float *scores = v32 + hs_d;
+    float *o32 = scores + score_elements;
+    float *m_stats = online ? o32 + output_elements : NULL;
+    float *l_stats = online ? m_stats + stat_elements : NULL;
+    if (!h3_launch_transpose_shd_hsd_bf16(
+            query, q_hm, seq, heads, dim, stream) ||
+        !h3_launch_cast_bf16_to_f32(
+            value, v32, (uint32_t)hs_d, stream)) {
+        return 0;
+    }
+    const float alpha = args->scale, beta = 0.0f;
+    hipblasStride stride_q = (hipblasStride)((size_t)seq * dim);
+    const float one = 1.0f;
+    for (uint32_t start = 0; start < seq; start += query_rows) {
+        uint32_t rows = seq - start;
+        if (rows > query_rows) rows = query_rows;
+        uint32_t stat_rows = heads * rows;
+        hipblasStride stride_o = (hipblasStride)((size_t)rows * dim);
+        if (online) {
+            void *init_args[] = {&o32, &m_stats, &l_stats, &dim};
+            if (hipLaunchKernel(
+                    reinterpret_cast<const void *>(h3_sdpa_online_init_kernel),
+                    dim3(stat_rows), dim3(64), init_args, 0,
+                    stream) != hipSuccess) {
+                return 0;
+            }
+        }
+        for (uint32_t k0 = 0; k0 < seq; k0 += k_tile) {
+            uint32_t keys = seq - k0;
+            if (keys > k_tile) keys = k_tile;
+            hipblasStride stride_s = (hipblasStride)((size_t)keys * rows);
+            hipblasStatus_t status = hipblasGemmStridedBatchedEx(
+                h3_sdpa_bf16_direct_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N,
+                (int)keys, (int)rows, (int)dim, &alpha,
+                key + (size_t)k0 * dim, HIP_R_16BF, (int)dim, stride_q,
+                q_hm + (size_t)start * dim, HIP_R_16BF, (int)dim, stride_q,
+                &beta, scores, HIP_R_32F, (int)keys, stride_s, (int)heads,
+                HIPBLAS_COMPUTE_32F, HIPBLAS_GEMM_DEFAULT);
+            if (status != HIPBLAS_STATUS_SUCCESS) return 0;
+            if (online) {
+                void *prep_args[] = {&scores, &o32, &m_stats, &l_stats, &keys,
+                                     &dim};
+                if (hipLaunchKernel(
+                        reinterpret_cast<const void *>(
+                            h3_sdpa_online_prepare_p_kernel),
+                        dim3(stat_rows), dim3(256), prep_args, 0,
+                        stream) != hipSuccess) {
+                    return 0;
+                }
+            } else {
+                void *soft_args[] = {&scores, &keys};
+                if (hipLaunchKernel(
+                        reinterpret_cast<const void *>(
+                            h3_softmax_rows_f32_kernel),
+                        dim3(stat_rows), dim3(256), soft_args, 0,
+                        stream) != hipSuccess) {
+                    return 0;
+                }
+            }
+            const float *pv_beta = online ? &one : &beta;
+            status = hipblasSgemmStridedBatched(
+                h3_sdpa_bf16_direct_hipblas, HIPBLAS_OP_N, HIPBLAS_OP_N,
+                (int)dim, (int)rows, (int)keys, &one,
+                v32 + (size_t)k0 * dim, (int)dim, stride_q,
+                scores, (int)keys, stride_s, pv_beta, o32, (int)dim, stride_o,
+                (int)heads);
+            if (status != HIPBLAS_STATUS_SUCCESS) return 0;
+        }
+        if (online) {
+            void *fin_args[] = {&o32, &l_stats, &dim};
+            if (hipLaunchKernel(
+                    reinterpret_cast<const void *>(
+                        h3_sdpa_online_finalize_kernel),
+                    dim3(stat_rows), dim3(64), fin_args, 0,
+                    stream) != hipSuccess) {
+                return 0;
+            }
+        }
+        uint32_t count = heads * rows * dim;
+        dim3 scatter_grid((count + 255u) / 256u);
+        if (need_out) {
+            void *scatter_args[] = {&o32, &output, &start, &rows, &heads,
+                                    &dim, &count};
+            if (hipLaunchKernel(
+                    reinterpret_cast<const void *>(
+                        h3_scatter_f32_to_bf16_shd_kernel),
+                    scatter_grid, dim3(256), scatter_args, 0,
+                    stream) != hipSuccess) {
+                return 0;
+            }
+        } else {
+            void *scatter_args[] = {&o32, &output, &start, &rows, &seq,
+                                    &heads, &dim, &count};
+            if (hipLaunchKernel(
+                    reinterpret_cast<const void *>(
+                        h3_scatter_f32_to_bf16_hsd_kernel),
+                    scatter_grid, dim3(256), scatter_args, 0,
+                    stream) != hipSuccess) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 extern "C" int h3_launch_sdpa_bf16_hipblas(const uint16_t *query,
                                            const uint16_t *key,
                                            const uint16_t *value,
@@ -2818,6 +3212,10 @@ extern "C" int h3_launch_sdpa_bf16_hipblas(const uint16_t *query,
                                            const h3_sdpa_args *args,
                                            hipStream_t stream) {
     if (!h3_sdpa_f32_hipblas_on() || !args) return 0;
+    if (h3_launch_sdpa_bf16_hipblas_direct(
+            query, key, value, output, args, stream)) {
+        return 1;
+    }
     uint32_t seq = args->sequence, heads = args->heads, dim = args->head_dim;
     if ((dim != 64u && dim != 128u) || seq < 128u || seq > 8192u || !heads)
         return 0;
@@ -2906,10 +3304,11 @@ h3_i32_scale_to_bf16_kernel(const int32_t *acc, const float *sa, const float *sb
     uint16_t *dst = out + (size_t)row * cols + col;
     if (col + 3u < cols) {
         int4 v = *reinterpret_cast<const int4 *>(in);
-        uint16_t o0 = h3_f32_to_bf16((float)v.x * srow * sb[col]);
-        uint16_t o1 = h3_f32_to_bf16((float)v.y * srow * sb[col + 1u]);
-        uint16_t o2 = h3_f32_to_bf16((float)v.z * srow * sb[col + 2u]);
-        uint16_t o3 = h3_f32_to_bf16((float)v.w * srow * sb[col + 3u]);
+        float4 scale = *reinterpret_cast<const float4 *>(sb + col);
+        uint16_t o0 = h3_f32_to_bf16((float)v.x * srow * scale.x);
+        uint16_t o1 = h3_f32_to_bf16((float)v.y * srow * scale.y);
+        uint16_t o2 = h3_f32_to_bf16((float)v.z * srow * scale.z);
+        uint16_t o3 = h3_f32_to_bf16((float)v.w * srow * scale.w);
         uint2 packed;
         packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
         packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);

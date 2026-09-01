@@ -211,6 +211,12 @@ static double h3_hip_now(void) {
     return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
+/* hipSetDevice is per-thread. Loader/prefetch workers start on device 0, so
+ * every HIP allocation and DMA path rebinds to H3_HIP_DEVICE. */
+static int h3_hip_bind_thread_device(void) {
+    return hipSetDevice(h3_hip_device_index()) == hipSuccess;
+}
+
 /* Weight-load accounting: allocation, file-read and device-upload costs are
  * billed separately so a slow load can be attributed without a profiler. The
  * seconds are summed across loader threads, so they exceed phase wall time. */
@@ -425,8 +431,9 @@ static hipStream_t h3_hip_upload_stream;
 static pthread_once_t h3_hip_upload_once = PTHREAD_ONCE_INIT;
 
 static void h3_hip_upload_stream_create(void) {
-    if (hipStreamCreateWithFlags(&h3_hip_upload_stream, hipStreamNonBlocking) !=
-        hipSuccess) {
+    if (!h3_hip_bind_thread_device() ||
+        hipStreamCreateWithFlags(&h3_hip_upload_stream, hipStreamNonBlocking) !=
+            hipSuccess) {
         h3_hip_upload_stream = NULL;
     }
 }
@@ -491,6 +498,7 @@ static size_t h3_hip_stage_block(size_t bytes) {
  * `source` may be ordinary heap, which is the whole point: the caller never has
  * to own pinned memory. */
 static int h3_hip_upload_bytes(void *device, const void *source, size_t bytes) {
+    if (!h3_hip_bind_thread_device()) return 0;
     hipStream_t stream = h3_hip_upload();
     if (!stream || !bytes) return bytes == 0;
     size_t chunk = h3_hip_stage_chunk(bytes), block = h3_hip_stage_block(bytes);
@@ -514,6 +522,7 @@ static int h3_hip_upload_bytes(void *device, const void *source, size_t bytes) {
  * for a staging buffer it would only use once. */
 static int h3_hip_download_bytes(void *destination, const void *device,
                                  size_t bytes) {
+    if (!h3_hip_bind_thread_device()) return 0;
     hipStream_t stream = h3_hip_upload();
     if (!stream || !bytes) return bytes == 0;
     return hipMemcpyAsync(destination, device, bytes, hipMemcpyDeviceToHost,
@@ -580,6 +589,8 @@ struct h3_gpu {
     size_t kv_hm_scratch_bytes;
     /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
     int sdpa_kv_already_hm;
+    void *nax_fc1_temp;
+    size_t nax_fc1_temp_elems;
 };
 
 enum {
@@ -833,6 +844,12 @@ static struct h3_gpu_tensor *h3_hip_tensor_new_ex(struct h3_gpu *gpu,
         h3_hip_set_error(gpu, "out of memory allocating tensor metadata");
         return NULL;
     }
+    if (!h3_hip_bind_thread_device()) {
+        free(tensor);
+        h3_hip_set_error(gpu, "cannot bind HIP device %d",
+                         h3_hip_device_index());
+        return NULL;
+    }
     double alloc_start = h3_hip_now();
     size_t request = bytes > 0 ? bytes : 1;
     if (weight && h3_hip_device_weights() &&
@@ -966,6 +983,7 @@ void h3_gpu_free(h3_gpu *gpu) {
     h3_hip_profile_emit_load(ctx);
     h3_hip_profile_destroy_ops(ctx);
     if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
+    if (ctx->nax_fc1_temp) h3_gpu_tensor_free((h3_gpu_tensor *)ctx->nax_fc1_temp);
     hipStreamDestroy(ctx->stream);
     free(ctx);
     h3_hip_pin_purge();
@@ -983,7 +1001,11 @@ int h3_gpu_has_nax_mlp(const h3_gpu *gpu) {
 
 int h3_gpu_has_int8_mlp(const h3_gpu *gpu) {
     (void)gpu;
-    return 1;
+    const char *e = getenv("H3_INT8_MLP");
+    if (e && strcmp(e, "0") == 0) return 0;
+    if (e && strcmp(e, "1") == 0) return 1;
+    /* gfx90a: hipBLAS BF16 GEMM is faster than INT8+epilogue. RDNA keeps INT8. */
+    return h3_hip_rdna_wmma_default();
 }
 
 h3_gpu_tensor *h3_gpu_tensor_new_f32(h3_gpu *gpu, size_t elements) {
@@ -1287,6 +1309,11 @@ int h3_gpu_continue(h3_gpu *gpu) {
 int h3_gpu_submit(h3_gpu *gpu) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     if (!ctx) return 0;
+    if (!h3_hip_bind_thread_device()) {
+        h3_hip_set_error(ctx, "cannot bind HIP device %d",
+                         h3_hip_device_index());
+        return 0;
+    }
     double now = h3_hip_now();
     if (ctx->in_command && ctx->command_start_wall > 0.0) {
         ctx->stats.command_encode_seconds += now - ctx->command_start_wall;
@@ -2874,8 +2901,13 @@ static int h3_hip_fc1_swiglu_nax_bf16(
                              "NAX FC1 output")) {
         return 0;
     }
-    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16_device(
-        gpu, (size_t)rows * hidden_dim * 2);
+    size_t temp_elems = (size_t)rows * hidden_dim * 2;
+    if (!ctx->nax_fc1_temp || ctx->nax_fc1_temp_elems < temp_elems) {
+        h3_gpu_tensor_free((h3_gpu_tensor *)ctx->nax_fc1_temp);
+        ctx->nax_fc1_temp = h3_gpu_tensor_new_bf16_device(gpu, temp_elems);
+        ctx->nax_fc1_temp_elems = ctx->nax_fc1_temp ? temp_elems : 0;
+    }
+    h3_gpu_tensor *fc1_out = (h3_gpu_tensor *)ctx->nax_fc1_temp;
     if (!fc1_out) {
         h3_hip_set_error(ctx, "NAX FC1 temporary allocation failed");
         return 0;
@@ -2883,7 +2915,6 @@ static int h3_hip_fc1_swiglu_nax_bf16(
     int ok = h3_gpu_linear_bf16(gpu, fc1_out, input, weight, NULL, rows,
                                 input_dim, hidden_dim * 2) &&
              h3_gpu_swiglu_bf16(gpu, output, fc1_out, rows, hidden_dim);
-    h3_gpu_tensor_free(fc1_out);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_fc1_swiglu_nax_bf16 failed");
     }

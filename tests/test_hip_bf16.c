@@ -5511,27 +5511,34 @@ static double h3_monotonic_seconds(void) {
 }
 
 static int bench_sdpa(h3_gpu *gpu) {
-    enum { SEQUENCE = 1920, HEADS = 56, HEAD_DIM = 128, ITERATIONS = 3 };
-    size_t count = (size_t)SEQUENCE * HEADS * HEAD_DIM;
+    int sequence = getenv("H3_BENCH_SDPA_SEQ")
+        ? atoi(getenv("H3_BENCH_SDPA_SEQ")) : 1920;
+    int heads = getenv("H3_BENCH_SDPA_HEADS")
+        ? atoi(getenv("H3_BENCH_SDPA_HEADS")) : 56;
+    int iterations = getenv("H3_BENCH_SDPA_ITERS")
+        ? atoi(getenv("H3_BENCH_SDPA_ITERS")) : 3;
+    enum { HEAD_DIM = 128 };
+    CHECK(sequence > 0 && heads > 0 && iterations > 0);
+    size_t count = (size_t)sequence * (size_t)heads * HEAD_DIM;
     int kv_hm = getenv("H3_SDPA_KV_HM") && strcmp(getenv("H3_SDPA_KV_HM"), "0") != 0;
     uint16_t *query = calloc(count, sizeof(*query));
     uint16_t *key = calloc(count, sizeof(*key));
     uint16_t *value = calloc(count, sizeof(*value));
     CHECK(query && key && value);
     for (size_t i = 0; i < count; i++) {
-        query[i] = f32_to_bf16((float)((i % 17) - 8) * 0.03f);
-        key[i] = f32_to_bf16((float)((i % 13) - 6) * 0.02f);
-        value[i] = f32_to_bf16((float)((i % 11) - 5) * 0.04f);
+        query[i] = f32_to_bf16((float)((int)(i % 17) - 8) * 0.03f);
+        key[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.02f);
+        value[i] = f32_to_bf16((float)((int)(i % 11) - 5) * 0.04f);
     }
     if (kv_hm) {
         uint16_t *key_hm = calloc(count, sizeof(*key_hm));
         uint16_t *value_hm = calloc(count, sizeof(*value_hm));
         CHECK(key_hm && value_hm);
-        for (uint32_t s = 0; s < SEQUENCE; s++) {
-            for (uint32_t h = 0; h < HEADS; h++) {
+        for (uint32_t s = 0; s < (uint32_t)sequence; s++) {
+            for (uint32_t h = 0; h < (uint32_t)heads; h++) {
                 for (uint32_t d = 0; d < HEAD_DIM; d++) {
-                    size_t src = ((size_t)s * HEADS + h) * HEAD_DIM + d;
-                    size_t dst = ((size_t)h * SEQUENCE + s) * HEAD_DIM + d;
+                    size_t src = ((size_t)s * (size_t)heads + h) * HEAD_DIM + d;
+                    size_t dst = ((size_t)h * (size_t)sequence + s) * HEAD_DIM + d;
                     key_hm[dst] = key[src];
                     value_hm[dst] = value[src];
                 }
@@ -5542,27 +5549,32 @@ static int bench_sdpa(h3_gpu *gpu) {
         key = key_hm;
         value = value_hm;
     }
-    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, count);
-    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, count);
-    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, count);
-    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, count);
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_new_bf16_device(gpu, count);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_new_bf16_device(gpu, count);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_new_bf16_device(gpu, count);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16_device(gpu, count);
     CHECK(gpu_q && gpu_k && gpu_v && output);
+    CHECK(h3_gpu_tensor_write_bf16_range(gpu_q, 0, query, count));
+    CHECK(h3_gpu_tensor_write_bf16_range(gpu_k, 0, key, count));
+    CHECK(h3_gpu_tensor_write_bf16_range(gpu_v, 0, value, count));
     float scale = 1.0f / sqrtf((float)HEAD_DIM);
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa warmup"));
     CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(
-        gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM, scale),
+        gpu, output, gpu_q, gpu_k, gpu_v, (uint32_t)sequence, (uint32_t)heads,
+        HEAD_DIM, scale),
         "sdpa warmup"));
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa warmup"));
     double start = h3_monotonic_seconds();
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sdpa bench"));
-    for (int iter = 0; iter < ITERATIONS; iter++) {
+    for (int iter = 0; iter < iterations; iter++) {
         CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(
-            gpu, output, gpu_q, gpu_k, gpu_v, SEQUENCE, HEADS, HEAD_DIM,
+            gpu, output, gpu_q, gpu_k, gpu_v, (uint32_t)sequence,
+            (uint32_t)heads, HEAD_DIM,
             scale), "sdpa bench"));
     }
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sdpa bench"));
-    double ms = (h3_monotonic_seconds() - start) * 1000.0 / (double)ITERATIONS;
-    printf("sdpa bf16 seq=%d heads=%d dim=%d: %.1f ms%s%s\n", SEQUENCE, HEADS,
+    double ms = (h3_monotonic_seconds() - start) * 1000.0 / (double)iterations;
+    printf("sdpa bf16 seq=%d heads=%d dim=%d: %.1f ms%s%s\n", sequence, heads,
            HEAD_DIM, ms, getenv("H3_SDPA_LEGACY") ? " (legacy)" : "",
            kv_hm ? " (kv-hm)" : "");
     h3_gpu_tensor_free(gpu_q);
@@ -5709,17 +5721,20 @@ static int bench_int8_linear(h3_gpu *gpu) {
         input[i] = f32_to_bf16((float)((int)(i % 17) - 8) * 0.03125f);
     for (size_t i = 0; i < weight_elems; i += 13)
         weight_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.015625f);
-    h3_gpu_tensor *gpu_input = h3_gpu_tensor_from_bf16(gpu, input, input_elems);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_new_bf16_device(gpu, input_elems);
     h3_gpu_tensor *gpu_weight_bf16 =
-        h3_gpu_tensor_from_bf16(gpu, weight_bf16, weight_elems);
-    h3_gpu_tensor *weight = h3_gpu_tensor_new_i8(gpu, weight_elems);
-    h3_gpu_tensor *weight_scales = h3_gpu_tensor_new_f32(gpu, OUTPUT_DIM);
+        h3_gpu_tensor_new_bf16_device(gpu, weight_elems);
+    h3_gpu_tensor *weight = h3_gpu_tensor_new_i8_device(gpu, weight_elems);
+    h3_gpu_tensor *weight_scales = h3_gpu_tensor_new_f32_device(gpu, OUTPUT_DIM);
     h3_gpu_tensor *quantized =
-        h3_gpu_tensor_new_i8(gpu, (size_t)padded_rows * INPUT_DIM);
-    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32(gpu, padded_rows);
-    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, output_elems);
+        h3_gpu_tensor_new_i8_device(gpu, (size_t)padded_rows * INPUT_DIM);
+    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32_device(gpu, padded_rows);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16_device(gpu, output_elems);
     CHECK(gpu_input && gpu_weight_bf16 && weight && weight_scales &&
           quantized && input_scales && output);
+    CHECK(h3_gpu_tensor_write_bf16_range(gpu_input, 0, input, input_elems));
+    CHECK(h3_gpu_tensor_write_bf16_range(gpu_weight_bf16, 0, weight_bf16,
+                                         weight_elems));
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin int8 linear quant"));
     CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
         gpu, weight, weight_scales, gpu_weight_bf16, OUTPUT_DIM, INPUT_DIM),
@@ -5753,10 +5768,21 @@ static int bench_int8_linear(h3_gpu *gpu) {
                flops / (ms * 1e9));
     }
     unsetenv("H3_INT8_LEGACY");
+    if (GROUP_SIZE <= 0 || INPUT_DIM % GROUP_SIZE) {
+        h3_gpu_tensor_free(gpu_input);
+        h3_gpu_tensor_free(gpu_weight_bf16);
+        h3_gpu_tensor_free(weight);
+        h3_gpu_tensor_free(weight_scales);
+        h3_gpu_tensor_free(quantized);
+        h3_gpu_tensor_free(output);
+        free(input);
+        free(weight_bf16);
+        return 0;
+    }
     h3_gpu_tensor_free(input_scales);
     const int SCALE_GROUPS = INPUT_DIM / GROUP_SIZE;
     h3_gpu_tensor *group_scales =
-        h3_gpu_tensor_new_f32(gpu, (size_t)padded_rows * SCALE_GROUPS);
+        h3_gpu_tensor_new_f32_device(gpu, (size_t)padded_rows * SCALE_GROUPS);
     CHECK(group_scales);
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin grouped int8 quant"));
     CHECK(!require_gpu(gpu, h3_hip_quantize_bf16_int8_groups_dispatch(
@@ -5796,6 +5822,54 @@ static int bench_int8_linear(h3_gpu *gpu) {
     h3_gpu_tensor_free(output);
     free(input);
     free(weight_bf16);
+    return 0;
+}
+
+static int bench_linear_bf16(h3_gpu *gpu) {
+    const int ROWS = (int)env_u32("H3_BENCH_M", 1920u);
+    const int INPUT_DIM = (int)env_u32("H3_BENCH_K", 5376u);
+    const int OUTPUT_DIM = (int)env_u32("H3_BENCH_N", 14336u);
+    int iterations = (int)env_u32("H3_BENCH_ITERS", 5u);
+    size_t input_elems = (size_t)ROWS * INPUT_DIM;
+    size_t weight_elems = (size_t)OUTPUT_DIM * INPUT_DIM;
+    size_t output_elems = (size_t)ROWS * OUTPUT_DIM;
+    uint16_t *input = calloc(input_elems, sizeof(*input));
+    uint16_t *weight = calloc(weight_elems, sizeof(*weight));
+    CHECK(input && weight);
+    for (size_t i = 0; i < input_elems; i += 17)
+        input[i] = f32_to_bf16((float)((int)(i % 17) - 8) * 0.03125f);
+    for (size_t i = 0; i < weight_elems; i += 13)
+        weight[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.015625f);
+    h3_gpu_tensor *gpu_input = h3_gpu_tensor_new_bf16_device(gpu, input_elems);
+    h3_gpu_tensor *gpu_weight = h3_gpu_tensor_new_bf16_device(gpu, weight_elems);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16_device(gpu, output_elems);
+    CHECK(gpu_input && gpu_weight && output);
+    CHECK(h3_gpu_tensor_write_bf16_range(gpu_input, 0, input, input_elems));
+    CHECK(h3_gpu_tensor_write_bf16_range(gpu_weight, 0, weight, weight_elems));
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin bf16 linear warmup"));
+    CHECK(!require_gpu(gpu, h3_gpu_linear_bf16(
+        gpu, output, gpu_input, gpu_weight, NULL, ROWS, INPUT_DIM, OUTPUT_DIM),
+        "bf16 linear warmup"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit bf16 linear warmup"));
+    double start = h3_monotonic_seconds();
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin bf16 linear bench"));
+    for (int iter = 0; iter < iterations; iter++) {
+        CHECK(!require_gpu(gpu, h3_gpu_linear_bf16(
+            gpu, output, gpu_input, gpu_weight, NULL, ROWS, INPUT_DIM,
+            OUTPUT_DIM), "bf16 linear bench"));
+    }
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit bf16 linear bench"));
+    double ms = (h3_monotonic_seconds() - start) * 1000.0 / (double)iterations;
+    double flops = 2.0 * (double)ROWS * (double)OUTPUT_DIM * (double)INPUT_DIM;
+    printf("bf16 linear M=%d K=%d N=%d: %.1f ms (%.1f TFLOP/s)%s\n", ROWS,
+           INPUT_DIM, OUTPUT_DIM, ms, flops / (ms * 1e9),
+           getenv("H3_BF16_HIPBLAS") && !strcmp(getenv("H3_BF16_HIPBLAS"), "0")
+               ? " (kernel)" : " (hipblas-default)");
+    h3_gpu_tensor_free(gpu_input);
+    h3_gpu_tensor_free(gpu_weight);
+    h3_gpu_tensor_free(output);
+    free(input);
+    free(weight);
     return 0;
 }
 
@@ -5903,6 +5977,11 @@ int main(void) {
     }
     if (getenv("H3_BENCH_SDPA_F32")) {
         int ok = bench_sdpa_f32_d64(gpu);
+        h3_gpu_free(gpu);
+        return ok;
+    }
+    if (getenv("H3_BENCH_LINEAR_BF16")) {
+        int ok = bench_linear_bf16(gpu);
         h3_gpu_free(gpu);
         return ok;
     }

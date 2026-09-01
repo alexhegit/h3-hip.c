@@ -23,6 +23,10 @@ On gfx1151 (v0.9.0): fox-fast **~95 s** end-to-end (512², 22 frames, 20 steps);
 short fox-s2 smoke **83–87 s**. Release scoreboard:
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
+On MI210 (`mi210` branch): the same fox-fast preset is **18.56 s**. The public
+864×480, 15-second cinematic example is **12 min 33.29 s**, down from
+50 min 14.58 s before the native gfx90a MFMA flash-attention path.
+
 ## Showcase (AMD gfx1151)
 
 Clips below were generated on an AMD Strix Halo iGPU (`gfx1151`) with this HIP
@@ -153,7 +157,9 @@ make -j$(nproc) h3
 
 On this branch the Makefile defaults to `H3_BACKEND=hip` and
 `--offload-arch=gfx90a` (MI210). Bind one card of a multi-GPU box with
-`H3_HIP_DEVICE=0` (default) or `HIP_VISIBLE_DEVICES=0`. CDNA disables the
+`H3_HIP_DEVICE=N` (default 0) or `HIP_VISIBLE_DEVICES=N`. On the four-GPU
+MI210 box: GPU 0 compile/debug, GPU 1 quality gates, GPU 2 long T2VA,
+GPU 3 spare. Do not run two weight-streaming T2VA jobs at once. CDNA disables the
 gfx1151 rocWMMA SDPA / f32-linear paths; Phase 2 will add separately validated
 CDNA kernels. Rebuild for Strix Halo with `make HIP_ARCH=gfx1151`.
 Apple Metal sources remain in-tree for reference against [antirez/h3.c](https://github.com/antirez/h3.c)

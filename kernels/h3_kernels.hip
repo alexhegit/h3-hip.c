@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <type_traits>
 
 __device__ __host__ inline float h3_bf16_to_f32(uint16_t value) {
     /* Exact bf16→f32: place mantissa/exp in the high half of an f32. Avoids
@@ -2241,6 +2242,183 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     }
 }
 
+/* gfx90a/CDNA2 counterpart of the wave32 WMMA kernel above. rocWMMA maps a
+ * 16x16 f32 accumulator over a wave64 as:
+ *   lane l -> columns l&15, rows 4*(l>>4) + fragment element [0..3].
+ * Keeping that mapping explicit lets online-softmax rescale the PV
+ * accumulators in registers and avoids materializing the score matrix in HBM.
+ */
+template <uint32_t WAVES, uint32_t BK, bool FP16_PV = false>
+__global__ void __launch_bounds__(WAVES * 64u)
+h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
+                              const uint16_t *value, uint16_t *output,
+                              h3_sdpa_args args) {
+    constexpr uint32_t D = 128u;
+    constexpr uint32_t LD = H3_SDPA_WMMA_LD;
+    constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
+    constexpr uint32_t THREADS = WAVES * 64u;
+    constexpr uint32_t NT = BK / 16u;
+    typedef rocwmma::bfloat16_t bf16;
+    typedef typename std::conditional<FP16_PV, _Float16, bf16>::type pv16;
+
+    __shared__ __align__(16) uint16_t sk[BK * LD];
+    __shared__ __align__(16) uint16_t sv[BK * LD];
+    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
+
+    const uint32_t tid = threadIdx.x;
+    const uint32_t wave = tid >> 6;
+    const uint32_t lane = tid & 63u;
+    const uint32_t col = lane & 15u;
+    const uint32_t rowg = lane >> 4;
+    const uint32_t head = blockIdx.y;
+    const uint32_t sequence = args.sequence;
+
+    uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
+    uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
+
+    rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                      rocwmma::row_major> fq[8];
+    const uint16_t *qp = query + (size_t)(qbase * args.heads + head) * D;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        rocwmma::load_matrix_sync(
+            fq[i], reinterpret_cast<const bf16 *>(qp + (uint32_t)i * 16u),
+            args.heads * D);
+    }
+
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) rocwmma::fill_fragment(fo[j], 0.0f);
+    float row_max[4], row_sum[4];
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        row_max[i] = -1e30f;
+        row_sum[i] = 0.0f;
+    }
+
+    const uint32_t kv_stride = args.kv_head_major ? D : args.heads * D;
+    const size_t kv_base = args.kv_head_major
+                               ? (size_t)head * sequence * D
+                               : (size_t)head * D;
+    const uint16_t *kp = key + kv_base;
+    const uint16_t *vp = value + kv_base;
+
+    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
+        __syncthreads();
+        for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
+            uint32_t r = idx >> 7;
+            uint32_t d = idx & 127u;
+            uint32_t g = k0 + r;
+            uint2 kk = uint2{0u, 0u};
+            if (g < sequence) {
+                size_t off = (size_t)g * kv_stride + d;
+                kk = *reinterpret_cast<const uint2 *>(kp + off);
+                if constexpr (FP16_PV) {
+#pragma unroll
+                    for (uint32_t x = 0; x < 4u; x++)
+                        reinterpret_cast<_Float16 *>(sv + r * LD + d)[x] =
+                            (_Float16)h3_bf16_to_f32(vp[off + x]);
+                } else {
+                    *reinterpret_cast<uint2 *>(sv + r * LD + d) =
+                        *reinterpret_cast<const uint2 *>(vp + off);
+                }
+            } else {
+                *reinterpret_cast<uint2 *>(sv + r * LD + d) = uint2{0u, 0u};
+            }
+            *reinterpret_cast<uint2 *>(sk + r * LD + d) = kk;
+        }
+        __syncthreads();
+
+        rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fs[NT];
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            rocwmma::fill_fragment(fs[t], 0.0f);
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                  rocwmma::col_major> fk;
+                rocwmma::load_matrix_sync(
+                    fk, reinterpret_cast<const bf16 *>(
+                            sk + t * 16u * LD + (uint32_t)i * 16u),
+                    LD);
+                rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
+            }
+        }
+
+        float alpha[4];
+#pragma unroll
+        for (int i = 0; i < 4; i++) {
+            float s[NT];
+            float m = -1e30f;
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                s[t] = k0 + t * 16u + col < sequence
+                           ? fs[t].x[i] * args.scale
+                           : -1e30f;
+                m = fmaxf(m, s[t]);
+            }
+#pragma unroll
+            for (int off = 1; off < 16; off <<= 1)
+                m = fmaxf(m, __shfl_xor(m, off, 16));
+            float new_max = fmaxf(row_max[i], m);
+            alpha[i] = h3_fast_exp(row_max[i] - new_max);
+            uint32_t prow = rowg * 4u + (uint32_t)i;
+            float ps = 0.0f;
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                float p = h3_fast_exp(s[t] - new_max);
+                ps += p;
+                uint16_t *pdst = sp[wave] + prow * BK + t * 16u + col;
+                if constexpr (FP16_PV)
+                    *reinterpret_cast<_Float16 *>(pdst) = (_Float16)p;
+                else
+                    *pdst = h3_f32_to_bf16(p);
+            }
+#pragma unroll
+            for (int off = 1; off < 16; off <<= 1)
+                ps += __shfl_xor(ps, off, 16);
+            row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
+            row_max[i] = new_max;
+        }
+#pragma unroll
+        for (int j = 0; j < 8; j++)
+#pragma unroll
+            for (int i = 0; i < 4; i++) fo[j].x[i] *= alpha[i];
+
+        __builtin_amdgcn_wave_barrier();
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+            rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, pv16,
+                              rocwmma::row_major> fp;
+            rocwmma::load_matrix_sync(
+                fp, reinterpret_cast<const pv16 *>(sp[wave] + t * 16u), BK);
+#pragma unroll
+            for (int j = 0; j < 8; j++) {
+                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, pv16,
+                                  rocwmma::row_major> fv;
+                rocwmma::load_matrix_sync(
+                    fv, reinterpret_cast<const pv16 *>(
+                            sv + t * 16u * LD + (uint32_t)j * 16u),
+                    LD);
+                rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+            }
+        }
+    }
+
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+        float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
+        uint32_t q_pos = qbase + rowg * 4u + (uint32_t)i;
+        if (q_pos < q_row0) continue;
+#pragma unroll
+        for (int j = 0; j < 8; j++) {
+            uint32_t d = (uint32_t)j * 16u + col;
+            output[h3_sdpa_output_index(args, q_pos, head, d)] =
+                h3_f32_to_bf16(fo[j].x[i] * inv);
+        }
+    }
+}
+
 /* Same tiled-WMMA flash attention for the f32 head_dim=64 path used by the
  * video VAE decoder. The wave kernel it replaces spends a 5-shuffle
  * h3_warp_reduce_sum on every (query, key) score, which held it to 1.28
@@ -3593,6 +3771,8 @@ extern "C" int h3_launch_linear_bf16(const uint16_t *input,
                                      const uint16_t *bias, uint16_t *output,
                                      const h3_linear_args *args,
                                      hipStream_t stream) {
+    if (h3_try_linear_bf16_hipblas(input, weight, bias, output, args, stream))
+        return 1;
     h3_linear_args host_args = *args;
     void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
     dim3 block(16, 16, 1);
@@ -3831,6 +4011,17 @@ static uint32_t h3_env_u32(const char *name, uint32_t fallback) {
     return parsed ? (uint32_t)parsed : fallback;
 }
 
+static int h3_hip_gfx90a(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    int device = 0;
+    hipDeviceProp_t props;
+    cached = hipGetDevice(&device) == hipSuccess &&
+             hipGetDeviceProperties(&props, device) == hipSuccess &&
+             strncmp(props.gcnArchName, "gfx90a", 6) == 0;
+    return cached;
+}
+
 extern "C" int h3_hip_rdna_wmma_default(void) {
     static int cached = -1;
     if (cached >= 0) return cached;
@@ -3859,6 +4050,44 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
     if (!getenv("H3_SDPA_LEGACY")) {
+        const char *cdna_flash = getenv("H3_SDPA_CDNA_FLASH");
+        if (h3_hip_gfx90a() && host_args.head_dim == 128 &&
+            host_args.sequence >= H3_SDPA_WMMA_QROWS &&
+            (!cdna_flash || strcmp(cdna_flash, "0") != 0)) {
+            uint32_t waves = h3_env_u32("H3_SDPA_CDNA_WAVES", 8u);
+            uint32_t bk = h3_env_u32("H3_SDPA_CDNA_BK", 32u);
+            const char *fp16_pv_env = getenv("H3_SDPA_CDNA_FP16_PV");
+            int fp16_pv =
+                !fp16_pv_env || strcmp(fp16_pv_env, "0") != 0;
+            const void *kernel = NULL;
+#define H3_SDPA_MFMA_PICK(w, b)                                              \
+    if (waves == (w) && bk == (b)) {                                         \
+        kernel = fp16_pv                                                     \
+            ? reinterpret_cast<const void *>(                                \
+                  h3_sdpa_bf16_mfma_d128_kernel<w, b, true>)                  \
+            : reinterpret_cast<const void *>(                                \
+                  h3_sdpa_bf16_mfma_d128_kernel<w, b, false>);                \
+    }
+            H3_SDPA_MFMA_PICK(4u, 32u)
+            H3_SDPA_MFMA_PICK(8u, 16u)
+            H3_SDPA_MFMA_PICK(8u, 32u)
+#undef H3_SDPA_MFMA_PICK
+            if (!kernel) {
+                waves = 8u;
+                bk = 32u;
+                kernel = fp16_pv
+                    ? reinterpret_cast<const void *>(
+                          h3_sdpa_bf16_mfma_d128_kernel<8u, 32u, true>)
+                    : reinterpret_cast<const void *>(
+                          h3_sdpa_bf16_mfma_d128_kernel<8u, 32u, false>);
+            }
+            uint32_t bq = waves * H3_SDPA_WMMA_QROWS;
+            dim3 grid((host_args.sequence + bq - 1u) / bq,
+                      host_args.heads, 1);
+            return hipLaunchKernel(kernel, grid, dim3(waves * 64u),
+                                   kernel_args, sizeof(kernel_args),
+                                   stream) == hipSuccess;
+        }
         if ((host_args.head_dim == 64 || host_args.head_dim == 128) &&
             host_args.sequence >= 128u &&
             h3_launch_sdpa_bf16_hipblas(query, key, value, output, &host_args,

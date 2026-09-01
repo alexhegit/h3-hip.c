@@ -1,10 +1,13 @@
 #include "h3_weights.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 struct h3_weight_store {
     h3_st_header *headers;
@@ -199,4 +202,45 @@ h3_gpu_tensor *h3_weight_load_f32(const h3_weight_store *store, h3_gpu *gpu,
                                   char *error, size_t error_size) {
     return load_tensor(store, gpu, name, ndim, shape, H3_DTYPE_F32,
                        error, error_size);
+}
+
+void h3_weight_directory_warmup(const char *directory) {
+    if (!directory || !*directory) return;
+    const char *disabled = getenv("H3_WEIGHT_WARMUP");
+    if (disabled && !strcmp(disabled, "0")) return;
+    DIR *stream = opendir(directory);
+    if (!stream) return;
+    char *buffer = malloc((size_t)8u << 20);
+    if (!buffer) {
+        closedir(stream);
+        return;
+    }
+    struct dirent *entry;
+    while ((entry = readdir(stream)) != NULL) {
+        if (!safetensors_name(entry->d_name)) continue;
+        size_t length = strlen(directory) + strlen(entry->d_name) + 2;
+        char *path = malloc(length);
+        if (!path) continue;
+        snprintf(path, length, "%s/%s", directory, entry->d_name);
+        int fd = open(path, O_RDONLY);
+        free(path);
+        if (fd < 0) continue;
+        struct stat status;
+        if (fstat(fd, &status) == 0 && status.st_size > 0) {
+#if defined(POSIX_FADV_WILLNEED)
+            posix_fadvise(fd, 0, status.st_size, POSIX_FADV_WILLNEED);
+#endif
+            size_t chunk = (size_t)8u << 20;
+            for (off_t offset = 0; offset < status.st_size; ) {
+                size_t want = (size_t)(status.st_size - offset);
+                if (want > chunk) want = chunk;
+                ssize_t got = pread(fd, buffer, want, offset);
+                if (got <= 0) break;
+                offset += got;
+            }
+        }
+        close(fd);
+    }
+    free(buffer);
+    closedir(stream);
 }

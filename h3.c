@@ -11,9 +11,11 @@
 #include "h3_video_encoder.h"
 #include "h3_video_vae.h"
 #include "h3_vision_encoder.h"
+#include "h3_weights.h"
 
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -723,6 +725,39 @@ static h3_video_vae_decoder *h3_acquire_video_decoder(
     return decoder;
 }
 
+typedef struct {
+    const char *paths[2];
+    int count;
+    pthread_t thread;
+    int started;
+} h3_weight_warmup;
+
+static void *h3_weight_warmup_worker(void *opaque) {
+    h3_weight_warmup *warmup = opaque;
+    for (int index = 0; index < warmup->count; index++)
+        h3_weight_directory_warmup(warmup->paths[index]);
+    return NULL;
+}
+
+static void h3_weight_warmup_start(h3_weight_warmup *warmup,
+                                   const char *first, const char *second) {
+    const char *disabled = getenv("H3_WEIGHT_WARMUP");
+    if (!warmup || (disabled && !strcmp(disabled, "0"))) return;
+    warmup->count = 0;
+    if (first) warmup->paths[warmup->count++] = first;
+    if (second) warmup->paths[warmup->count++] = second;
+    if (!warmup->count) return;
+    warmup->started =
+        pthread_create(&warmup->thread, NULL, h3_weight_warmup_worker,
+                       warmup) == 0;
+}
+
+static void h3_weight_warmup_join(h3_weight_warmup *warmup) {
+    if (!warmup || !warmup->started) return;
+    pthread_join(warmup->thread, NULL);
+    warmup->started = 0;
+}
+
 static void h3_vision_progress_bridge(int completed, int total, void *opaque) {
     h3_progress_emit(opaque, "Qwen vision", completed, total);
 }
@@ -907,6 +942,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     memset(&layout, 0, sizeof(layout));
     h3_dit *dit = NULL;
     h3_video_vae_decoder *preview_decoder = NULL;
+    h3_weight_warmup decode_warmup;
+    memset(&decode_warmup, 0, sizeof(decode_warmup));
     h3_live_preview live_preview;
     memset(&live_preview, 0, sizeof(live_preview));
     float *video = NULL, *audio = NULL;
@@ -1578,6 +1615,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     h3_rng_seed(&audio_rng, params->seed);
     h3_rng_fill_normal(&video_rng, video, video_count);
     h3_rng_fill_normal(&audio_rng, audio, audio_count);
+    if (!params->preview_denoise)
+        h3_weight_warmup_start(&decode_warmup, audio_vae_path, vae_path);
     if (!h3_dit_denoise_euler_preview(
             dit, video, audio, params->denoise_reuse,
             h3_dit_progress_bridge, &progress,
@@ -1634,6 +1673,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     }
     if (!dit_is_cached) h3_dit_free(dit);
     dit = NULL;
+    h3_weight_warmup_join(&decode_warmup);
     if (progress.cancelled) goto cleanup;
     h3_progress_emit(&progress, "audio VAE", 0, 7);
     if (!h3_audio_vae_decode(audio_vae_path, "h3_shaders.metal", audio,
@@ -1734,6 +1774,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     result->seed = params->seed;
 
 cleanup:
+    h3_weight_warmup_join(&decode_warmup);
     free(conditioning_key);
     free(prepared_key);
     free(decoder_key);
