@@ -59,6 +59,5 @@ nearest valid count at 24 fps (`--seconds 15` → 362 frames, 15.08 s).
 
 ## Project page
 
-Live clips and the reproduce block on GitHub Pages still quote **gfx1151**
-v0.9.0 numbers until this branch merges to `main`:
+Live clips and the reproduce block:
 [alexhegit.github.io/h3-hip.c/#long](https://alexhegit.github.io/h3-hip.c/#long)

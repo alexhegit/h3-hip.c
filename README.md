@@ -8,8 +8,8 @@ One tree, two supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
 | `gfx1151` | Strix Halo (RDNA) | INT8 + BF16 activations | wave32 rocWMMA |
 | `gfx90a` | MI210 (CDNA) | BF16 GEMM | wave64 MFMA flash |
 
-Tagged **v0.9.0** on `main` is the gfx1151-validated line. This **`mi210`
-branch** keeps that RDNA path and adds MI210. The original project is a native
+Tagged **v0.10.0** on `main` is the dual-ISA line (`gfx1151` and `gfx90a`).
+v0.9.x remains the gfx1151-only history. The original project is a native
 MiniMax-H3 inference engine (Apple Metal / macOS); this repository reimplements
 the GPU backend in pure HIP so the same CLI and model stack run on ROCm.
 
@@ -27,7 +27,7 @@ Project ident, generated on gfx1151 (864×480, 56 frames, `--steps 20 --layers 5
 
 Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
 
-| Preset | gfx1151 v0.9.0 | gfx90a (`mi210`) |
+| Preset | gfx1151 (v0.9.0 numbers, still current) | gfx90a (v0.10.0) |
 |--------|----------------|------------------|
 | fox-s2 | 83–87 s | **~10.5 s** |
 | fox-fast | ~95 s | **~18 s** |
@@ -125,7 +125,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.9.0**.
+Current tagged line is **v0.10.0**.
 
 | Capability | Status |
 |------------|--------|
@@ -139,11 +139,11 @@ Current tagged line is **v0.9.0**.
 ## Documentation
 
 - **Project page** (speedup ladder and clips): [alexhegit.github.io/h3-hip.c](https://alexhegit.github.io/h3-hip.c/)
-- **Wiki sources** (GitHub wiki still tracks `main` / gfx1151 until this branch merges):
+- **Wiki sources** (also published to the GitHub wiki):
   [Getting started](docs/wiki/Getting-started.md),
   [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
   [Long video](docs/wiki/Long-video.md)
-- **Timings** (gfx1151 v0.9.0 and gfx90a on this branch): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
+- **Timings** (gfx1151 and gfx90a): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
 The fox showcase uses `--steps 20 --layers 50 --reuse 1`. The published
@@ -151,9 +151,9 @@ fox-fast numbers use `--layers 45 --reuse 2`; commands are in PERFORMANCE.md.
 
 ## Requirements
 
-- Linux + ROCm (`hipcc`, `libamdhip64`). This branch supports two HIP
-  offload ISAs; you must pass `HIP_ARCH` to match the GPU you are building
-  for. Other AMD targets are still experimental.
+- Linux + ROCm (`hipcc`, `libamdhip64`). Two HIP offload ISAs; you must pass
+  `HIP_ARCH` to match the GPU you are building for. Other AMD targets are still
+  experimental.
   - **gfx1151** — Strix Halo (RDNA). Runtime: INT8 DiT + rocWMMA SDPA.
   - **gfx90a** — MI210 (CDNA). Runtime: BF16 DiT + MFMA flash SDPA.
 - Official BF16 checkpoint at `MiniMax-H3/` (`FL2VA/*`, optional `Ref2VA/*`)
@@ -168,7 +168,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout mi210
+git checkout v0.10.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
@@ -180,7 +180,7 @@ make HIP_ARCH=gfx90a -j$(nproc) h3
 ```
 
 `make clean` does not need `HIP_ARCH`. After changing arch, run `make clean`
-before rebuilding. Halo pre-merge gate: `make HIP_ARCH=gfx1151 halo-regression`
+before rebuilding. Halo fox-s2 md5 gate: `make HIP_ARCH=gfx1151 halo-regression`
 (see [`tools/halo_regression.sh`](tools/halo_regression.sh)).
 
 Bind one card of a multi-GPU box with `H3_HIP_DEVICE=N` (default 0) or

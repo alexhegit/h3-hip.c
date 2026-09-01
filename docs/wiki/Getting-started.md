@@ -8,16 +8,15 @@ the Makefile does **not** probe the GPU.
 | `gfx1151` | Strix Halo (RDNA, wave32) | INT8 weights (hipBLAS), BF16 activations | rocWMMA |
 | `gfx90a` | MI210 (CDNA, wave64) | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 
-Other AMD targets are experimental. Tagged **v0.9.0** on `main` is the
-gfx1151-validated line. This `mi210` branch adds gfx90a and keeps the gfx1151
-path; both have passed fox-s2 / fox-fast gates on their own hardware.
+Other AMD targets are experimental. Tagged **v0.10.0** on `main` covers both
+ISAs. gfx1151 fox-s2 still matches the v0.9.0 md5 gate.
 
 ## Build
 
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout mi210
+git checkout v0.10.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
@@ -31,7 +30,7 @@ make HIP_ARCH=gfx90a -j$(nproc) h3
 `make clean` does not need `HIP_ARCH`. After switching ISA, `make clean` then
 rebuild. A missing `HIP_ARCH` on any non-clean target is a hard error.
 
-Halo pre-merge gate (fox-s2 md5 vs v0.9.0):
+Halo fox-s2 md5 gate (same hash as v0.9.0):
 
 ```bash
 make HIP_ARCH=gfx1151 halo-regression

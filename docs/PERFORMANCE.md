@@ -9,7 +9,20 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.9.0 gfx1151 (2026-08-26)
+## Current release — v0.10.0 (2026-09-01)
+
+One tree, two ISAs. Build with `make HIP_ARCH=gfx1151` or `make HIP_ARCH=gfx90a`.
+`h3 --info` prints `h3-hip 0.10.0`.
+
+| Preset | gfx1151 | gfx90a |
+|--------|--------:|-------:|
+| fox-s2 E2E | 83–87 s | **~10.5 s** |
+| fox-fast E2E | ~95 s | **~18 s** |
+| 15 s cinematic E2E | 45.0 min | **12 min 33 s** |
+
+gfx1151 fox-s2 md5 is unchanged from v0.9.0: `1731f95c4aa582597cf83d57f46b8f9e`.
+
+## gfx1151 — same numbers as v0.9.0 (2026-08-26)
 
 AMD Ryzen AI MAX+ 395 / Radeon 8060S. Build: `make HIP_ARCH=gfx1151`.
 
@@ -54,7 +67,7 @@ wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
 figure is 16.7 s; HIP denoise wall here is 35 s. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
-## This branch — gfx90a / MI210
+## gfx90a / MI210 — v0.10.0
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
 **BF16 hipBLAS** (not INT8). Measured on a four-GPU MI210 box (`H3_HIP_DEVICE=1`
@@ -75,6 +88,5 @@ mostly weight I/O.
 
 ## How a GitHub Release should quote this
 
-Paste the **v0.9.0 gfx1151** table and, on this branch, the **gfx90a** table.
-Do not paste phase splits, KEEP/REJECT lists, or Metal ratio tables into the
-release body.
+Paste the **v0.10.0** summary table (both ISAs). Do not paste phase splits,
+KEEP/REJECT lists, or Metal ratio tables into the release body.
