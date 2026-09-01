@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiniMax-H3 on AMD HIP — h3-hip.c</title>
-<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. v0.10.0 supports gfx1151 (Strix Halo) and gfx90a (MI210). Pass HIP_ARCH yourself.">
+<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. v0.10.1 supports gfx1151 (Strix Halo) and gfx90a (MI210). Pass HIP_ARCH yourself.">
 <style>
   :root {
     --bg: #0b0c0e;
@@ -144,7 +144,7 @@
 
 <header>
   <div class="wrap">
-    <div class="eyebrow">v0.10.0 · gfx1151 and gfx90a</div>
+    <div class="eyebrow">v0.10.1 · gfx1151 and gfx90a</div>
     <h1>MiniMax-H3 on AMD HIP
       <span class="sub">One tree, two ISAs — Strix Halo fox-s2 still 83–87&nbsp;s; MI210 does the same 15&nbsp;s clip in 12&nbsp;min 33&nbsp;s.</span>
     </h1>
@@ -156,7 +156,7 @@
     </p>
     <div class="hero-links">
       <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
-      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.0">v0.10.0</a>
+      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.1">v0.10.1</a>
       <a class="btn" href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a class="btn" href="#results">Results</a>
       <a class="btn" href="#long">Long video</a>
@@ -285,7 +285,7 @@
       </p>
     </div>
 
-    <h3>Tagged baseline — v0.10.0</h3>
+    <h3>Tagged baseline — v0.10.1</h3>
     <table>
       <thead>
         <tr><th>Preset</th><th class="num">gfx1151</th><th class="num">gfx90a</th></tr>
@@ -360,9 +360,9 @@
     </table>
     <p class="cap">
       Halo phase splits:
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.0/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>.
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.1/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>.
       MI210 session:
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.0/docs/perf-mi210/STATUS.md">perf-mi210/STATUS.md</a>.
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.1/docs/perf-mi210/STATUS.md">perf-mi210/STATUS.md</a>.
     </p>
 
     <div class="hero-media" style="margin-top:28px;padding-bottom:0">
@@ -499,7 +499,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   <div class="wrap">
     <div class="foot-links">
       <a href="https://github.com/alexhegit/h3-hip.c">alexhegit/h3-hip.c</a>
-      <a href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.0">v0.10.0</a>
+      <a href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.1">v0.10.1</a>
       <a href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/PERFORMANCE.md">Scoreboard</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/KNOWN_ISSUES.md">Known issues</a>
@@ -511,8 +511,8 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       Host, model and CLI code follow <a href="https://github.com/antirez/h3.c">antirez/h3.c</a>; the HIP backend
       is <span class="mono">backends/h3_gpu_hip.c</span> plus the kernels under
       <span class="mono">kernels/</span>. Model weights are subject to the MiniMax-H3 license.
-      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Tagged <span class="mono">v0.10.0</span>,
-      1 Sep 2026. Halo fox-s2 md5 unchanged from v0.9.0.
+      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Tagged <span class="mono">v0.10.1</span>,
+      1 Sep 2026. Halo fox-s2 md5 unchanged from v0.9.0. Numbers match v0.10.0.
     </p>
   </div>
 </footer>
