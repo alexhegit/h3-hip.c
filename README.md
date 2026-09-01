@@ -33,6 +33,19 @@ Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.m
 | fox-fast | ~95 s | **~18 s** |
 | 15 s cinematic (864×480, 362 f) | 45.0 min | **12 min 33 s** |
 
+These are **complete muxed MP4s** (video + audio), not stubs. fox-s2 and
+fox-fast are both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only
+in DiT knobs. The README fox **showcase** clip is a third preset
+(`--layers 50 --reuse 1`). The 15 s cinematic reuses fox-fast quality knobs
+at 864×480 / 362 frames.
+
+| Name | Size | Knobs | Role |
+|------|------|-------|------|
+| **fox-s2** | 512² · 22 f | `--steps 2 --layers 35 --reuse 1` | HIP A/B + gfx1151 md5 gate |
+| **fox-fast** | 512² · 22 f | `--steps 20 --layers 45 --reuse 2` | Complete short clip; 11 DiT evals; upstream “first fast video” |
+| **fox showcase** | 512² · 22 f | `--steps 20 --layers 50 --reuse 1` | README / wiki gallery fox |
+| **15 s cinematic** | 864×480 · 362 f | `--steps 20 --layers 45 --reuse 2` | Same quality path as fox-fast, long duration |
+
 ## Showcase (AMD gfx1151)
 
 Clips below were generated on an AMD Strix Halo iGPU (`gfx1151`) with this HIP
@@ -63,6 +76,8 @@ run (`--layers 50 --reuse 1`). The ident row in the table is the untitled
 512×288 draft.
 
 ### Reproduce the showcase clips
+
+Build first (`make HIP_ARCH=gfx1151` or `HIP_ARCH=gfx90a`). Then:
 
 ```bash
 MODEL=/path/to/MiniMax-H3
@@ -146,8 +161,9 @@ Current tagged line is **v0.10.0**.
 - **Timings** (gfx1151 and gfx90a): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
-The fox showcase uses `--steps 20 --layers 50 --reuse 1`. The published
-fox-fast numbers use `--layers 45 --reuse 2`; commands are in PERFORMANCE.md.
+Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
+Known issues) live only on GitHub wiki. In-tree copies of Getting started,
+T2VA pipeline, and Long video are under `docs/wiki/`.
 
 ## Requirements
 
@@ -204,9 +220,11 @@ Same fox preset as the T2VA showcase clip:
   -o outputs/fox.mp4
 ```
 
-First run pays model load from disk (~107 GiB on this T2VA path). Repeat runs
-still miss most of the page cache on this box (~31 GiB host RAM). For the
-commands used in the tagged scoreboard, see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+First run pays model load from disk (~107 GiB on this T2VA path). On gfx1151
+the BIOS carveout leaves ~31 GiB host RAM, so repeat runs still miss most of
+the page cache. gfx90a is a discrete GPU; its E2E is still dominated by weight
+I/O on fox-s2. For the tagged scoreboard commands, see
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
 ## Conditional paths
 
@@ -232,6 +250,7 @@ make HIP_ARCH=gfx1151 -j$(nproc) test          # Strix Halo
 make HIP_ARCH=gfx90a  -j$(nproc) test          # MI210
 make HIP_ARCH=gfx1151 hip-functional
 make HIP_ARCH=gfx1151 halo-regression          # Halo fox-s2 md5 gate
+make HIP_ARCH=gfx90a  hip-test                 # MI210 unit + smokes
 ```
 
 Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default.

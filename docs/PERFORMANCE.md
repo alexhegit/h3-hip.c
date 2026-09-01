@@ -30,6 +30,13 @@ AMD Ryzen AI MAX+ 395 / Radeon 8060S. Build: `make HIP_ARCH=gfx1151`.
 |--------|---------------|----:|------------:|
 | **fox-s2** | 512² · 22 frames · `--steps 2 --layers 35 --reuse 1` | **83–87 s** | **6.3–6.5 s** |
 | **fox-fast** | 512² · 22 frames · `--steps 20 --layers 45 --reuse 2` | **95 s** | **28 s** (11 evals) |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **45.0 min** | **40.4 min** denoise wall |
+
+fox-s2 and fox-fast are complete T2VA MP4s (~0.9 s of picture+sound at 24 fps),
+not truncated previews. fox-fast matches upstream’s “first fast video”
+(`--reuse 2` → 11 DiT evals). The README fox showcase clip is `--layers 50
+--reuse 1` and is **not** the fox-fast scoreboard. 15 s cinematic uses the
+fox-fast quality knobs at long duration.
 
 fox-s2 output md5 `1731f95c4aa582597cf83d57f46b8f9e` on this tree.
 

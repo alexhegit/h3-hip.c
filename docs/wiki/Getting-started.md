@@ -64,8 +64,16 @@ MODEL=/path/to/MiniMax-H3
   -o outputs/fox.mp4
 ```
 
-fox-fast knobs (`--layers 45 --reuse 2`) and timings:
-[`docs/PERFORMANCE.md`](../PERFORMANCE.md).
+Three fox presets (all complete MP4s, not stubs):
+
+| Name | Knobs | What you get |
+|------|-------|----------------|
+| **fox-s2** | `--steps 2 --layers 35 --reuse 1` | HIP A/B; gfx1151 md5 gate |
+| **fox-fast** | `--steps 20 --layers 45 --reuse 2` | ~0.9 s complete clip; 11 DiT evals |
+| **fox showcase** | `--steps 20 --layers 50 --reuse 1` | README / wiki gallery fox |
+
+For a ~15 s clip, keep fox-fast knobs and raise `--seconds 15` at 864×480
+([Long video](Long-video.md)). Timings: [`docs/PERFORMANCE.md`](../PERFORMANCE.md).
 
 On a multi-GPU box bind one card: `H3_HIP_DEVICE=N` (default 0). Do not run two
 weight-streaming T2VA jobs against the same NVMe at once.
