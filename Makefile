@@ -52,7 +52,8 @@ LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c h3_ffmpeg.c \
 LIB_OBJ := $(LIB_C:.c=.o) $(LIB_GPU)
 CLI_OBJ := main.o h3_cli.o linenoise.o
 
-.PHONY: all test parity real-parity clean hip-smoke hip-test hip-functional
+.PHONY: all test parity real-parity clean hip-smoke hip-test hip-test-strict \
+	hip-functional halo-regression
 
 all: h3 libh3.a
 
@@ -172,7 +173,7 @@ h3_hip_vae_zero: tests/test_hip_vae_zero.o $(LIB_OBJ)
 test: hip-test
 
 hip-test: h3_tests h3_hip_smoke h3_hip_bf16_tests h3_tokenizer_tests \
-	h3_audio_gpu_tests h3_av_mux_test h3_hip_real_dit_smoke
+	h3_audio_gpu_tests h3_av_mux_test
 	./h3_tests
 	./h3_hip_smoke
 	H3_DEVICE_WEIGHTS=0 ./h3_hip_smoke
@@ -190,7 +191,12 @@ hip-test: h3_tests h3_hip_smoke h3_hip_bf16_tests h3_tokenizer_tests \
 	else \
 		echo "skip: FFmpeg is not installed"; \
 	fi
+
+hip-test-strict: hip-test h3_hip_real_dit_smoke
 	./h3_hip_real_dit_smoke "$(H3_MODEL)"
+
+halo-regression:
+	./tools/halo_regression.sh
 
 hip-functional: h3_hip_encoder_roundtrip h3_hip_audio_smoke h3_hip_vision_smoke \
 	h3_hip_text_smoke h3_hip_multimodal_smoke h3_hip_ref2va_smoke
