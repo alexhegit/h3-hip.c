@@ -31,6 +31,9 @@ the recognizable fur/face/motion gate.
    no HBM score matrix, BF16 QK + FP16 PV + F32 accumulation. The 44.7k kernel
    is **4.15x** faster; full 15-second E2E is **4.00x** faster and beats Halo
    by **3.58x**.
+8. **gfx90a f32 d64 VAE flash** (16×32). VAE SDPA micro 103→15 ms; fox-fast
+   E2E 18.56→**17.99 s**. Register-P and K/V double-buffer on DiT flash were
+   slower and rejected.
 
 ## Quality
 
@@ -52,4 +55,6 @@ H3_F32_HIPBLAS=0
 H3_SDPA_HIPBLAS=0
 H3_SDPA_CDNA_FLASH=0    # restore gfx90a hipBLAS score-materializing fallback
 H3_SDPA_CDNA_FP16_PV=0 # use BF16 rather than default FP16 for flash PV
+H3_SDPA_CDNA_D64_WAVES=16
+H3_SDPA_CDNA_D64_BK=32
 ```

@@ -164,6 +164,26 @@ now 24.9% (161.23 s) and SDPA is still 474.18 s, so further work should tune
 MFMA occupancy/exp throughput rather than return to score materialization.
 fox-s2 remains dominated by serial model I/O and VAE decode.
 
+## Follow-up (register-P / dbuf REJECT, VAE d64 KEEP)
+
+Tried two DiT flash changes against 8/32 FP16-PV at seq=44.7k **949 ms**:
+
+- **REJECT** register-resident P via wave64 shuffle-transpose of accumulator
+  → matrix_a. Tests passed (d128 max abs `1.53e-5`) but seq=44.7k **1722 ms**.
+- **REJECT** K/V LDS double-buffer. seq=12k 8/32 **97 ms** vs 69 ms; extra LDS
+  occupancy loss beat any prefetch.
+
+**KEEP** vectorized BF16→FP16 V packing (`h3_pack_f16x2`): seq=12k **67.8 ms**,
+seq=44.7k **933 ms**.
+
+**KEEP** gfx90a wave64 f32 d64 flash for video VAE
+(`h3_sdpa_f32_mfma_d64_kernel`, default 16 waves × 32-key). Micro seq=2304
+heads=32: hipBLAS **103.2 ms** → **14.7 ms** (7.0×). fox-fast VAE SDPA
+**0.76 → 0.21 s**, VAE wall **2.80 → 2.28 s**, E2E **18.56 → 17.99 s**.
+PSNR **45.0 dB** vs `fox-fast-cdna-fp16pv.mp4`. 15 s VAE SDPA was 21.4 s;
+same ratio projects ~5–6 s. Did not re-run 15 s: DiT 44.7k is still **933 ms**,
+above the 550 ms gate. Opt out with `H3_SDPA_CDNA_FLASH=0`.
+
 ## Repro
 
 ```bash
