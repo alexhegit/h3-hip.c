@@ -1,11 +1,17 @@
 # h3-hip.c
 
 HIP port of [antirez/h3.c](https://github.com/antirez/h3.c) for **AMD GPUs**.
-Tagged **v0.9.0** on `main` is validated on **gfx1151** (Strix Halo). This
-**`mi210` branch** is the CDNA / MI210 (`gfx90a`) port. The original project is
-a native MiniMax-H3 inference engine (Apple Metal / macOS); this repository
-reimplements the GPU backend in pure HIP so the same CLI and model stack run on
-ROCm.
+One tree, two supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
+
+| ISA | GPU | Default DiT | SDPA |
+|-----|-----|-------------|------|
+| `gfx1151` | Strix Halo (RDNA) | INT8 + BF16 activations | wave32 rocWMMA |
+| `gfx90a` | MI210 (CDNA) | BF16 GEMM | wave64 MFMA flash |
+
+Tagged **v0.9.0** on `main` is the gfx1151-validated line. This **`mi210`
+branch** keeps that RDNA path and adds MI210. The original project is a native
+MiniMax-H3 inference engine (Apple Metal / macOS); this repository reimplements
+the GPU backend in pure HIP so the same CLI and model stack run on ROCm.
 
 [![h3-hip.c ident](assets/showcase/h3-hip-ident.jpg)](assets/showcase/h3-hip-ident.mp4)
 
@@ -19,13 +25,13 @@ Project ident, generated on gfx1151 (864×480, 56 frames, `--steps 20 --layers 5
 **CUDA sibling (DGX Spark):** [alexhegit/h3-spark.c](https://github.com/alexhegit/h3-spark.c)
 **Official weights:** [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3)
 
-On gfx1151 (v0.9.0): fox-fast **~95 s** end-to-end (512², 22 frames, 20 steps);
-short fox-s2 smoke **83–87 s**. Release scoreboard:
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
 
-On MI210 (`mi210` branch): the same fox-fast preset is **18.56 s**. The public
-864×480, 15-second cinematic example is **12 min 33.29 s**, down from
-50 min 14.58 s before the native gfx90a MFMA flash-attention path.
+| Preset | gfx1151 v0.9.0 | gfx90a (`mi210`) |
+|--------|----------------|------------------|
+| fox-s2 | 83–87 s | **~10.5 s** |
+| fox-fast | ~95 s | **~18 s** |
+| 15 s cinematic (864×480, 362 f) | 45.0 min | **12 min 33 s** |
 
 ## Showcase (AMD gfx1151)
 
@@ -42,8 +48,9 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 | **T2VA** — 15 s cinematic office (untitled) | [![15 s long](assets/showcase/long-15s-cinematic.jpg)](assets/showcase/long-15s-cinematic.mp4) [mp4](assets/showcase/long-15s-cinematic.mp4) |
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
-Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E ~45 min**,
-**10 s E2E ~25 min** on gfx1151. Timings and reproduce commands:
+Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E ~45 min**
+and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 33 s** on MI210.
+Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
 [Wiki: Long video](docs/wiki/Long-video.md) ·
 [Project page § Long T2VA](https://alexhegit.github.io/h3-hip.c/#long).
@@ -95,7 +102,8 @@ MODEL=/path/to/MiniMax-H3
   --seed 2026 \
   -o assets/showcase/amd-developer-community-raw.mp4
 
-# Long T2VA — 15 s cinematic office (864×480, 362 frames; E2E ~45 min on gfx1151)
+# Long T2VA — 15 s cinematic office (864×480, 362 frames;
+# E2E ~45 min gfx1151 / 12 min 33 s gfx90a)
 ./h3 --profile -d "$MODEL" \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
 
@@ -122,16 +130,20 @@ Current tagged line is **v0.9.0**.
 | Capability | Status |
 |------------|--------|
 | T2VA (text → video+audio) | ✅ |
+| Dual HIP ISA (`HIP_ARCH=gfx1151` / `gfx90a`) | ✅ |
 | FL2VA (`--first-frame` / `--last-frame`) | ✅ |
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
-| Runtime INT8 DiT (hipBLAS) | ✅ |
+| Runtime INT8 DiT (hipBLAS) | ✅ gfx1151 default; gfx90a via `H3_INT8_MLP=1` |
 | `--frames-dir` / `--ssd-streaming` / `--token-reduction` | ✅ |
 
 ## Documentation
 
 - **Project page** (speedup ladder and clips): [alexhegit.github.io/h3-hip.c](https://alexhegit.github.io/h3-hip.c/)
-- **Wiki:** [Getting started](https://github.com/alexhegit/h3-hip.c/wiki/Getting-started), [Long video](https://github.com/alexhegit/h3-hip.c/wiki/Long-video) (source: [`docs/wiki/Long-video.md`](docs/wiki/Long-video.md))
-- **Tagged timings** (fox-s2 / fox-fast on gfx1151): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
+- **Wiki sources** (GitHub wiki still tracks `main` / gfx1151 until this branch merges):
+  [Getting started](docs/wiki/Getting-started.md),
+  [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
+  [Long video](docs/wiki/Long-video.md)
+- **Timings** (gfx1151 v0.9.0 and gfx90a on this branch): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
 The fox showcase uses `--steps 20 --layers 50 --reuse 1`. The published
@@ -139,29 +151,42 @@ fox-fast numbers use `--layers 45 --reuse 2`; commands are in PERFORMANCE.md.
 
 ## Requirements
 
-- Linux + ROCm (`hipcc`, `libamdhip64`). **This `mi210` branch** targets
-  `gfx90a` (MI210). `main` / tagged v0.9.0 remain validated on `gfx1151`
-  (Strix Halo). Other AMD targets are still experimental.
+- Linux + ROCm (`hipcc`, `libamdhip64`). This branch supports two HIP
+  offload ISAs; you must pass `HIP_ARCH` to match the GPU you are building
+  for. Other AMD targets are still experimental.
+  - **gfx1151** — Strix Halo (RDNA). Runtime: INT8 DiT + rocWMMA SDPA.
+  - **gfx90a** — MI210 (CDNA). Runtime: BF16 DiT + MFMA flash SDPA.
 - Official BF16 checkpoint at `MiniMax-H3/` (`FL2VA/*`, optional `Ref2VA/*`)
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)
 
 ## Build
 
+Pick the ISA that matches `rocminfo` / `hipGetDeviceProperties` on **this**
+machine. The Makefile does not probe the GPU.
+
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-make -j$(nproc) h3
+git checkout mi210
+
+# Strix Halo
+make HIP_ARCH=gfx1151 -j$(nproc) h3
+
+# MI210
+make HIP_ARCH=gfx90a -j$(nproc) h3
+
 ./h3 --info -d /path/to/MiniMax-H3
 ```
 
-On this branch the Makefile defaults to `H3_BACKEND=hip` and
-`--offload-arch=gfx90a` (MI210). Bind one card of a multi-GPU box with
-`H3_HIP_DEVICE=N` (default 0) or `HIP_VISIBLE_DEVICES=N`. On the four-GPU
-MI210 box: GPU 0 compile/debug, GPU 1 quality gates, GPU 2 long T2VA,
-GPU 3 spare. Do not run two weight-streaming T2VA jobs at once. CDNA disables the
-gfx1151 rocWMMA SDPA / f32-linear paths; Phase 2 will add separately validated
-CDNA kernels. Rebuild for Strix Halo with `make HIP_ARCH=gfx1151`.
+`make clean` does not need `HIP_ARCH`. After changing arch, run `make clean`
+before rebuilding. Halo pre-merge gate: `make HIP_ARCH=gfx1151 halo-regression`
+(see [`tools/halo_regression.sh`](tools/halo_regression.sh)).
+
+Bind one card of a multi-GPU box with `H3_HIP_DEVICE=N` (default 0) or
+`HIP_VISIBLE_DEVICES=N`. On the four-GPU MI210 box: GPU 0 compile/debug,
+GPU 1 quality gates, GPU 2 long T2VA, GPU 3 spare. Do not run two
+weight-streaming T2VA jobs at once.
 Apple Metal sources remain in-tree for reference against [antirez/h3.c](https://github.com/antirez/h3.c)
 and are not the Linux build path.
 
@@ -203,8 +228,10 @@ generation path with the soundtrack supplied as a separate file.
 ## Tests
 
 ```bash
-make -j$(nproc) test
-make hip-functional
+make HIP_ARCH=gfx1151 -j$(nproc) test          # Strix Halo
+make HIP_ARCH=gfx90a  -j$(nproc) test          # MI210
+make HIP_ARCH=gfx1151 hip-functional
+make HIP_ARCH=gfx1151 halo-regression          # Halo fox-s2 md5 gate
 ```
 
 Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default.
@@ -215,10 +242,11 @@ targets are skipped.
 
 Host/model/CLI code follows [antirez/h3.c](https://github.com/antirez/h3.c).
 The Linux build uses the HIP backend (`backends/h3_gpu_hip.c`,
-`kernels/h3_kernels.hip`, `kernels/h3_kernels_extra.hip`). Apple Metal sources
-(`h3_gpu.m`, `h3_shaders.metal`) remain for reference against the original
-project and are not the HIP build path. User-facing extra docs are under
-`docs/PERFORMANCE.md` and `docs/KNOWN_ISSUES.md`.
+`kernels/h3_kernels.hip`, `kernels/h3_kernels_extra.hip`). Pass `HIP_ARCH`
+explicitly (`gfx1151` or `gfx90a`). Apple Metal sources (`h3_gpu.m`,
+`h3_shaders.metal`) remain for reference against the original project and are
+not the HIP build path. User-facing extra docs are under `docs/wiki/`,
+`docs/PERFORMANCE.md`, and `docs/KNOWN_ISSUES.md`.
 
 ## License
 

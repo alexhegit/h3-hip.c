@@ -13,7 +13,14 @@ ifeq ($(H3_BACKEND),hip)
   CC := gcc
   HIPCC := hipcc
   ROCM_PATH ?= /opt/rocm
-  HIP_ARCH ?= gfx90a
+  # No hardware probe. Pass HIP_ARCH to match the GPU you are building for:
+  #   gfx1151  Strix Halo (RDNA)
+  #   gfx90a   MI210 (CDNA)
+  ifneq ($(MAKECMDGOALS),clean)
+    ifndef HIP_ARCH
+      $(error HIP_ARCH is required. Supported: gfx1151 (Strix Halo) or gfx90a (MI210). Example: make HIP_ARCH=gfx90a)
+    endif
+  endif
   CFLAGS := -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow \
 	-Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE \
 	-D__HIP_PLATFORM_AMD__ -I. -Ikernels \

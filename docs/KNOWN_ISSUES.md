@@ -1,11 +1,13 @@
 # Known issues (HIP)
 
-Tracked gaps that do **not** block the default `./h3` T2VA generate path on
-Strix Halo (`gfx1151`). The `mi210` branch is a CDNA / MI210 port in progress:
-default kernels skip RDNA rocWMMA and keep 32-lane wave launch + hipBLAS INT8.
+Tracked gaps that do **not** block the default `./h3` T2VA generate path.
 
-Production DiT uses BF16 activations and INT8 weights (hipBLAS) on the default
-path.
+Build with an explicit `HIP_ARCH` (`gfx1151` or `gfx90a`); the Makefile does
+not probe the GPU. Runtime then selects kernels for that ISA:
+
+- **gfx1151:** BF16 activations, INT8 DiT weights (hipBLAS), wave32 rocWMMA SDPA.
+- **gfx90a:** BF16 activations and DiT weights (hipBLAS BF16 GEMM), wave64 MFMA
+  flash SDPA. Restore INT8 with `H3_INT8_MLP=1`.
 
 ## KI-001: CPU Euler sampler
 
@@ -51,7 +53,7 @@ tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 
 | ID | Topic | Status |
 |----|-------|--------|
-| P | Remaining E2E vs Metal | GPU kernels are no longer the fox-s2 bottleneck; wall is mostly NVMe weight I/O. Headlines: [`PERFORMANCE.md`](PERFORMANCE.md) |
+| P | Remaining E2E vs Metal | gfx1151 fox-s2 wall is mostly NVMe I/O. gfx90a long T2VA is still DiT SDPA. Headlines: [`PERFORMANCE.md`](PERFORMANCE.md) |
 | V | `--ref-video-audio VIDEO AUDIO` E2E clip | Same kernels as `--ref-video`; not separately showcased |
 
 ### Profiling notes (HIP)

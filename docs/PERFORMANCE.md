@@ -1,14 +1,17 @@
-# Performance (gfx1151)
+# Performance
 
-Headline numbers for tagged releases. Reproduced on an AMD Ryzen AI MAX+ 395 /
-Radeon 8060S with the official MiniMax-H3 checkpoint. Wall time on this
-machine moves with page-cache state; treat E2E as a band, denoise GPU time as
-the stable GPU figure.
+Headline numbers. Two HIP ISAs share this tree; build with an explicit
+`HIP_ARCH` ([Getting started](wiki/Getting-started.md)). Wall time moves with
+page-cache state; treat E2E as a band, denoise GPU time as the stable GPU
+figure.
 
-Engineering logs (phase tables, rejected experiments, Metal A/B detail) live
-under [`perf/`](perf/README.md) and are **not** part of the user-facing docs.
+Engineering logs (phase tables, rejected experiments) live under
+[`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
+**not** part of the GitHub release body.
 
-## Current release — v0.9.0 (2026-08-26)
+## Current release — v0.9.0 gfx1151 (2026-08-26)
+
+AMD Ryzen AI MAX+ 395 / Radeon 8060S. Build: `make HIP_ARCH=gfx1151`.
 
 | Preset | Command knobs | E2E | Denoise GPU |
 |--------|---------------|----:|------------:|
@@ -43,15 +46,35 @@ runs still miss the page cache: host RAM on this box is ~31 GiB.
 | 2026-08-22 | — | ~213 s | fox-fast measured; denoise still ~105 s |
 | **v0.9.0** | **83–87 s** | **95 s** | WMMA attention/linear/conv; weights in the VRAM carveout; AdaLN and VAE load overlap |
 
-The remaining E2E is mostly NVMe weight I/O. Denoise is a small slice of fox-s2
-and about a third of fox-fast.
+The remaining E2E on Halo is mostly NVMe weight I/O. Denoise is a small slice of
+fox-s2 and about a third of fox-fast.
 
 Upstream [antirez/h3.c](https://github.com/antirez/h3.c) publishes **denoise
 wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
 figure is 16.7 s; HIP denoise wall here is 35 s. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
+## This branch — gfx90a / MI210
+
+Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
+**BF16 hipBLAS** (not INT8). Measured on a four-GPU MI210 box (`H3_HIP_DEVICE=1`
+for the fox gates below).
+
+| Preset | Command knobs | E2E | Notes |
+|--------|---------------|----:|-------|
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~10.5 s** | 2026-09-01 at `6fe5c0d` |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~18 s** | denoise ~8.2 s (linear 6.6 · sdpa 1.08) |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 33 s** | denoise 10 min 48 s; vs 45 min on gfx1151 |
+
+Commands are the same as the gfx1151 block above. 15 s reproduce:
+[`wiki/Long-video.md`](wiki/Long-video.md). Session log:
+[`perf-mi210/SUMMARY.md`](perf-mi210/SUMMARY.md).
+
+Long T2VA on MI210 is still DiT-SDPA bound (~63% of the 15 s E2E). fox-s2 is
+mostly weight I/O.
+
 ## How a GitHub Release should quote this
 
-Paste the **Current release** table and the two commands. Do not paste phase
-splits, KEEP/REJECT lists, or Metal ratio tables into the release body.
+Paste the **v0.9.0 gfx1151** table and, on this branch, the **gfx90a** table.
+Do not paste phase splits, KEEP/REJECT lists, or Metal ratio tables into the
+release body.

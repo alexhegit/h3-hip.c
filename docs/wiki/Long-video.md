@@ -1,21 +1,26 @@
 # Long T2VA (10 s and 15 s)
 
 MiniMax-H3 on h3-hip.c supports up to **362 aligned frames** (~15 s at 24 fps).
-On gfx1151 (Strix Halo), long clips are dominated by **DiT denoise wall time**, not
-the short fox presets.
+Long clips are dominated by **DiT denoise wall time**, not the short fox
+presets. Same knobs on both ISAs: `--steps 20 --layers 45 --reuse 2`
+(11 DiT evaluations), 864×480, T2VA, no references.
+
+Build with `HIP_ARCH=gfx1151` or `HIP_ARCH=gfx90a`
+([Getting started](Getting-started.md)).
 
 ## Showcase clips
 
-| Clip | Duration | E2E wall | Denoise wall | File |
-|------|----------|----------|--------------|------|
-| 10 s cinematic office | 10.1 s (243 f) | **24.7 min** | 21.2 min | [`long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
-| **15 s cinematic office** | **15.1 s (362 f)** | **45.0 min** | **40.4 min** | [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
+| Clip | GPU | Duration | E2E wall | Denoise wall | File |
+|------|-----|----------|----------|--------------|------|
+| 10 s cinematic office | gfx1151 | 10.1 s (243 f) | **24.7 min** | 21.2 min | [`long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
+| **15 s cinematic office** | gfx1151 | **15.1 s (362 f)** | **45.0 min** | **40.4 min** | [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
+| **15 s cinematic office** | gfx90a | **15.1 s (362 f)** | **12 min 33 s** | **10 min 48 s** | same prompt / knobs / seed 42 |
 
 Posters: `assets/showcase/long-*-cinematic.jpg`  
-Phase splits and logs: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)
+Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
+MI210 session: [`docs/perf-mi210/STATUS.md`](../perf-mi210/STATUS.md)
 
-Shared knobs (same as fox-fast quality): `--steps 20 --layers 45 --reuse 2`
-(11 DiT evaluations), 864×480, T2VA, no references.
+10 s was not re-timed on MI210.
 
 ## Reproduce the 15 s clip
 
@@ -54,5 +59,6 @@ nearest valid count at 24 fps (`--seconds 15` → 362 frames, 15.08 s).
 
 ## Project page
 
-Live clips and the reproduce block:
+Live clips and the reproduce block on GitHub Pages still quote **gfx1151**
+v0.9.0 numbers until this branch merges to `main`:
 [alexhegit.github.io/h3-hip.c/#long](https://alexhegit.github.io/h3-hip.c/#long)
