@@ -46,6 +46,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 ## Key gotchas
 
 - `H3_HIP_DEVICE=N` or `HIP_VISIBLE_DEVICES=N` selects GPU on multi-GPU boxes. Do not run two weight-streaming T2VA jobs simultaneously.
+- Multi-task parallelism is **not supported** on a single GPU (shared kernel state). Use `HIP_VISIBLE_DEVICES` for multi-process isolation. See `docs/DESIGN_MULTI_TASK.md`.
 - `H3_INT8_MLP=1` enables INT8 DiT on gfx90a/gfx942 (default is BF16 GEMM on CDNA).
 - `H3_INT8_VAE=1` enables INT8 Video VAE weights (69% VRAM reduction, ~9% slower).
 - `H3_GPU_SAMPLER=1` keeps latents on GPU during Euler denoise (57% faster fox-s2).
@@ -63,4 +64,5 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 
 - `docs/PERFORMANCE.md` — scoreboard numbers for all ISAs
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
+- `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/wiki/` — Getting started, T2VA pipeline, Long video

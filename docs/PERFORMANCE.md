@@ -136,6 +136,30 @@ MI300X profile breakdown (15 s cinematic, BF16):
 - **Linear GEMM (hipBLAS)**: 34.4 s — 18%
 - **Other (norms, activations,)**: 7 s — 4%
 
+### 15 s cinematic: BF16 vs INT8 comparison (MI300X)
+
+| Metric | BF16 | INT8 DiT | All Opts | Δ BF16→All |
+|--------|-----:|---------:|---------:|-----------:|
+| **DiT denoise wall** | 186.3 s | 180.0 s | 112.9 s | **−39%** |
+| DiT denoise linear | 34.6 s | 28.5 s | 20.9 s | −40% |
+| DiT denoise sdpa | 144.1 s | 143.7 s | 85.7 s | −41% |
+| DiT denoise other | 7.0 s | 7.1 s | 6.2 s | −11% |
+| DiT weight-load | 1.9 s | 2.3 s | 2.1 s | +11% |
+| **DiT peak VRAM** | **41.1 GiB** | **27.8 GiB** | **27.8 GiB** | **−32%** |
+| **Video VAE wall** | 29.1 s | 29.0 s | 28.1 s | −3% |
+| Video VAE linear | 17.8 s | 17.8 s | 0.14 s | −99% |
+| Video VAE other | 3.9 s | 3.9 s | 21.0 s | +438% |
+| **Video VAE peak** | **9.4 GiB** | **9.4 GiB** | **2.9 GiB** | **−69%** |
+| Text encoder | 2.5 s | 2.5 s | 2.5 s | — |
+| Audio VAE | 0.8 s | 0.8 s | 0.8 s | — |
+| **E2E total** | **~219 s** | **~212 s** | **~145 s** | **−34%** |
+
+All Opts = `H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1`
+
+INT8 DiT linear GEMM: 34.6 s → 28.5 s (−18%). GPU sampler eliminates CPU-GPU
+latent round-trips: sdpa 144.1 s → 85.7 s (−41%). INT8 VAE linear: 17.8 s →
+0.14 s (99× faster), but per-tile input quantize overhead adds 21 s to "other".
+
 ### Optimization: INT8 DiT (`H3_INT8_MLP=1`)
 
 Pre-allocated INT8 workspace eliminates 2497 GiB of per-block allocation churn.
@@ -181,6 +205,7 @@ pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 |--|--:|--:|
 | gfx1151 15 s E2E | 45.0 min | **28.2 min** (−37%); [perf-runs/TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
 | gfx90a 15 s E2E | 12 min 33 s | **8 min 21 s** (−34%); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
+| gfx942 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
 
 gfx1151 fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 
