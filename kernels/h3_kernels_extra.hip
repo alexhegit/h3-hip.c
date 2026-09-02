@@ -4148,42 +4148,65 @@ extern "C" int h3_launch_linear_int8_grouped_nax_r128x64(
 
 /* ── F32→INT8 weight quantization (per-row symmetric) ─────────────────── */
 
-__global__ void h3_quantize_f32_int8_rows_kernel(
+__global__ void __launch_bounds__(256)
+h3_quantize_f32_int8_rows_kernel(
     const float *input, int8_t *output, float *scales,
     h3_int8_quant_args args) {
     uint32_t row = blockIdx.x;
     uint32_t columns = args.columns;
     float clip = args.clip;
-    extern __shared__ float smem_f32[];
+    const float *row_ptr = input + (size_t)row * columns;
+    int8_t *out_ptr = output + (size_t)row * columns;
+
+    /* Pass 1: find max abs using float4 vectorized loads */
     float local_max = 0.0f;
-    for (uint32_t i = threadIdx.x; i < columns; i += blockDim.x) {
-        float v = input[row * columns + i];
-        smem_f32[i] = v;
-        float a = fabsf(v);
+    uint32_t col4 = columns / 4u;
+    uint32_t tail_start = col4 * 4u;
+    const float4 *row4 = reinterpret_cast<const float4 *>(row_ptr);
+    for (uint32_t i = threadIdx.x; i < col4; i += blockDim.x) {
+        float4 v = row4[i];
+        float a0 = fabsf(v.x), a1 = fabsf(v.y);
+        float a2 = fabsf(v.z), a3 = fabsf(v.w);
+        float m = fmaxf(fmaxf(a0, a1), fmaxf(a2, a3));
+        if (m > local_max) local_max = m;
+    }
+    for (uint32_t i = tail_start + threadIdx.x; i < columns; i += blockDim.x) {
+        float a = fabsf(row_ptr[i]);
         if (a > local_max) local_max = a;
     }
-    __syncthreads();
+    /* Wave-level max reduction */
     for (int offset = 16; offset > 0; offset >>= 1)
         local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
-    if ((threadIdx.x & 31u) == 0u) smem_f32[columns + (threadIdx.x >> 5)] = local_max;
+    /* Shared-mem only for cross-wave reduction (tiny: blockDim.x/32 floats) */
+    __shared__ float smax[16];
+    if ((threadIdx.x & 31u) == 0u) smax[threadIdx.x >> 5] = local_max;
     __syncthreads();
     if (threadIdx.x < 16u) {
-        float v = (threadIdx.x < (blockDim.x >> 5)) ?
-            smem_f32[columns + threadIdx.x] : 0.0f;
+        float v = (threadIdx.x < (blockDim.x >> 5)) ? smax[threadIdx.x] : 0.0f;
         for (int offset = 8; offset > 0; offset >>= 1)
             v = fmaxf(v, h3_shfl_xor32(v, offset));
-        if (threadIdx.x == 0) smem_f32[columns] = v;
+        if (threadIdx.x == 0) smax[0] = v;
     }
     __syncthreads();
-    float clipped_max = smem_f32[columns] * clip;
+    float clipped_max = smax[0] * clip;
     float scale = clipped_max > 0.0f ? clipped_max / 127.0f : 1.0f / 127.0f;
     float inverse = clipped_max > 0.0f ? 127.0f / clipped_max : 127.0f;
     if (threadIdx.x == 0) scales[row] = scale;
-    for (uint32_t col = threadIdx.x; col < columns; col += blockDim.x) {
-        int q = (int)rintf(smem_f32[col] * inverse);
-        if (q > 127) q = 127;
-        if (q < -127) q = -127;
-        output[row * columns + col] = (int8_t)q;
+
+    /* Pass 2: quantize with float4 loads + int32 stores (4 int8 at once) */
+    int32_t *out4 = reinterpret_cast<int32_t *>(out_ptr);
+    for (uint32_t i = threadIdx.x; i < col4; i += blockDim.x) {
+        float4 v = row4[i];
+        int q0 = max(-127, min(127, (int)rintf(v.x * inverse)));
+        int q1 = max(-127, min(127, (int)rintf(v.y * inverse)));
+        int q2 = max(-127, min(127, (int)rintf(v.z * inverse)));
+        int q3 = max(-127, min(127, (int)rintf(v.w * inverse)));
+        out4[i] = (uint32_t)(uint8_t)q0 | ((uint32_t)(uint8_t)q1 << 8) |
+                  ((uint32_t)(uint8_t)q2 << 16) | ((uint32_t)(uint8_t)q3 << 24);
+    }
+    for (uint32_t i = tail_start + threadIdx.x; i < columns; i += blockDim.x) {
+        int q = max(-127, min(127, (int)rintf(row_ptr[i] * inverse)));
+        out_ptr[i] = (int8_t)q;
     }
 }
 
@@ -4193,13 +4216,11 @@ extern "C" int h3_launch_quantize_f32_int8_rows(
     hipStream_t stream) {
     h3_int8_quant_args host_args = *args;
     void *kernel_args[] = {&input, &output, &scales, &host_args};
-    uint32_t threads = host_args.columns >= 4096u ? 512u : 256u;
-    dim3 block(threads, 1, 1);
+    dim3 block(256, 1, 1);
     dim3 grid(dispatch_rows, 1, 1);
-    size_t smem = (host_args.columns + 32u) * sizeof(float);
     return hipLaunchKernel(
         reinterpret_cast<const void *>(h3_quantize_f32_int8_rows_kernel),
-        grid, block, kernel_args, smem, stream) == hipSuccess;
+        grid, block, kernel_args, 0, stream) == hipSuccess;
 }
 
 /* ── INT8 GEMM with F32 input, F32 output ──────────────────────────── */

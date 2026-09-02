@@ -97,6 +97,8 @@ typedef struct {
     int latent_t;
     int output_frames;
     int int8_vae;
+    h3_gpu_tensor *quant_ws;
+    h3_gpu_tensor *scale_ws;
 } vae_context;
 
 typedef struct vae_loader vae_loader;
@@ -178,6 +180,7 @@ static void cleanup(vae_context *vae) {
     free_tensor(&vae->branch); free_tensor(&vae->ff1);
     free_tensor(&vae->activated); free_tensor(&vae->rope_cos);
     free_tensor(&vae->rope_sin); free_tensor(&vae->projected);
+    free_tensor(&vae->quant_ws); free_tensor(&vae->scale_ws);
     h3_gpu_free(vae->gpu);
     h3_weight_store_free(vae->weights);
     memset(vae, 0, sizeof(*vae));
@@ -495,6 +498,17 @@ static int allocate_activations(vae_context *vae, char *error,
                  h3_gpu_error(vae->gpu));
             return 0;
         }
+    if (vae->int8_vae) {
+        vae->quant_ws = h3_gpu_tensor_new_i8_device(
+            vae->gpu, (size_t)sequence * FFN);
+        vae->scale_ws = h3_gpu_tensor_new_f32_device(vae->gpu, sequence);
+        if (!vae->quant_ws || !vae->scale_ws) {
+            fail(error, error_size,
+                 "cannot allocate video VAE INT8 workspace: %s",
+                 h3_gpu_error(vae->gpu));
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -552,6 +566,7 @@ static int run_block(vae_context *vae, int index, char *error,
     if (vae->int8_vae && weight->qkv_int8) {
         OP(h3_gpu_linear_f32_int8(vae->gpu, vae->qkv, vae->norm,
             weight->qkv_int8, weight->qkv_scales, weight->qkv_b,
+            vae->quant_ws, vae->scale_ws,
             rows, HIDDEN, INNER * 3), "video VAE QKV int8");
     } else {
         OP(h3_gpu_linear_f32(vae->gpu, vae->qkv, vae->norm, weight->qkv_w,
@@ -566,6 +581,7 @@ static int run_block(vae_context *vae, int index, char *error,
     if (vae->int8_vae && weight->out_int8) {
         OP(h3_gpu_linear_f32_int8(vae->gpu, vae->branch, vae->heads,
             weight->out_int8, weight->out_scales, weight->out_b,
+            vae->quant_ws, vae->scale_ws,
             rows, INNER, HIDDEN), "video VAE attention output int8");
     } else {
         OP(h3_gpu_linear_f32(vae->gpu, vae->branch, vae->heads, weight->out_w,
@@ -578,6 +594,7 @@ static int run_block(vae_context *vae, int index, char *error,
     if (vae->int8_vae && weight->w1_int8) {
         OP(h3_gpu_linear_f32_int8(vae->gpu, vae->ff1, vae->norm,
             weight->w1_int8, weight->w1_scales, weight->w1_b,
+            vae->quant_ws, vae->scale_ws,
             rows, HIDDEN, FFN * 2), "video VAE MLP input int8");
     } else {
         OP(h3_gpu_linear_f32(vae->gpu, vae->ff1, vae->norm, weight->w1,
@@ -588,6 +605,7 @@ static int run_block(vae_context *vae, int index, char *error,
     if (vae->int8_vae && weight->w2_int8) {
         OP(h3_gpu_linear_f32_int8(vae->gpu, vae->branch, vae->activated,
             weight->w2_int8, weight->w2_scales, weight->w2_b,
+            vae->quant_ws, vae->scale_ws,
             rows, FFN, HIDDEN), "video VAE MLP output int8");
     } else {
         OP(h3_gpu_linear_f32(vae->gpu, vae->branch, vae->activated, weight->w2,

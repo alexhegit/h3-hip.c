@@ -3457,6 +3457,8 @@ int h3_gpu_linear_f32_int8(h3_gpu *gpu, h3_gpu_tensor *output,
                            const h3_gpu_tensor *weight,
                            const h3_gpu_tensor *weight_scales,
                            const h3_gpu_tensor *bias,
+                           h3_gpu_tensor *quantized_input_ws,
+                           h3_gpu_tensor *input_scales_ws,
                            uint32_t rows, uint32_t input_dim,
                            uint32_t output_dim) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
@@ -3474,14 +3476,19 @@ int h3_gpu_linear_f32_int8(h3_gpu *gpu, h3_gpu_tensor *output,
                                      "int8-f32 linear bias"))) {
         return 0;
     }
-    /* Quantize input activations on-the-fly */
-    h3_gpu_tensor *quantized_input = h3_gpu_tensor_new_i8_device(
-        gpu, input_count);
-    h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32_device(
-        gpu, (size_t)rows);
+    int owns_ws = 0;
+    h3_gpu_tensor *quantized_input = quantized_input_ws;
+    h3_gpu_tensor *input_scales = input_scales_ws;
     if (!quantized_input || !input_scales) {
-        h3_gpu_tensor_free(quantized_input);
-        h3_gpu_tensor_free(input_scales);
+        quantized_input = h3_gpu_tensor_new_i8_device(gpu, input_count);
+        input_scales = h3_gpu_tensor_new_f32_device(gpu, (size_t)rows);
+        owns_ws = 1;
+    }
+    if (!quantized_input || !input_scales) {
+        if (owns_ws) {
+            h3_gpu_tensor_free(quantized_input);
+            h3_gpu_tensor_free(input_scales);
+        }
         h3_hip_set_error(ctx, "int8-f32 linear activation allocation failed");
         return 0;
     }
@@ -3497,8 +3504,10 @@ int h3_gpu_linear_f32_int8(h3_gpu *gpu, h3_gpu_tensor *output,
             (float *)tensor_ptr(output)->data, &args, ctx->stream),
             "h3_linear_int8_f32");
     }
-    h3_gpu_tensor_free(quantized_input);
-    h3_gpu_tensor_free(input_scales);
+    if (owns_ws) {
+        h3_gpu_tensor_free(quantized_input);
+        h3_gpu_tensor_free(input_scales);
+    }
     return ok;
 }
 
