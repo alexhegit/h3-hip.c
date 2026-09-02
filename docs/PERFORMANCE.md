@@ -125,6 +125,10 @@ Euler steps, eliminating CPU-GPU round-trips. fox-s2 denoise: 1.95 s → 0.84 s
 (57% faster). fox-fast denoise: 2.89 s → 2.76 s (4.5% faster). Enable with
 `H3_GPU_SAMPLER=1`.
 
+**Token reduction** (`H3_TOKEN_REDUCTION=1`): drops half spatial width in
+middle layers (blocks 4–30). 15 s cinematic denoise: 185.7 s → 116.8 s
+(37% faster). Quality impact: slight detail loss in fine textures.
+
 ## How a GitHub Release should quote this
 
 Paste the **current** summary table (all three ISAs). Do not paste phase splits,
