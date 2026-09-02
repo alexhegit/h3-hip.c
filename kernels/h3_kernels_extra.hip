@@ -4145,3 +4145,185 @@ extern "C" int h3_launch_linear_int8_grouped_nax_r128x64(
                grid, block, kernel_args, sizeof(kernel_args), stream) ==
            hipSuccess;
 }
+
+/* ── F32→INT8 weight quantization (per-row symmetric) ─────────────────── */
+
+__global__ void h3_quantize_f32_int8_rows_kernel(
+    const float *input, int8_t *output, float *scales,
+    h3_int8_quant_args args) {
+    uint32_t row = blockIdx.x;
+    uint32_t columns = args.columns;
+    float clip = args.clip;
+    extern __shared__ float smem_f32[];
+    float local_max = 0.0f;
+    for (uint32_t i = threadIdx.x; i < columns; i += blockDim.x) {
+        float v = input[row * columns + i];
+        smem_f32[i] = v;
+        float a = fabsf(v);
+        if (a > local_max) local_max = a;
+    }
+    __syncthreads();
+    for (int offset = 16; offset > 0; offset >>= 1)
+        local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
+    if ((threadIdx.x & 31u) == 0u) smem_f32[columns + (threadIdx.x >> 5)] = local_max;
+    __syncthreads();
+    if (threadIdx.x < 16u) {
+        float v = (threadIdx.x < (blockDim.x >> 5)) ?
+            smem_f32[columns + threadIdx.x] : 0.0f;
+        for (int offset = 8; offset > 0; offset >>= 1)
+            v = fmaxf(v, h3_shfl_xor32(v, offset));
+        if (threadIdx.x == 0) smem_f32[columns] = v;
+    }
+    __syncthreads();
+    float clipped_max = smem_f32[columns] * clip;
+    float scale = clipped_max > 0.0f ? clipped_max / 127.0f : 1.0f / 127.0f;
+    float inverse = clipped_max > 0.0f ? 127.0f / clipped_max : 127.0f;
+    if (threadIdx.x == 0) scales[row] = scale;
+    for (uint32_t col = threadIdx.x; col < columns; col += blockDim.x) {
+        int q = (int)rintf(smem_f32[col] * inverse);
+        if (q > 127) q = 127;
+        if (q < -127) q = -127;
+        output[row * columns + col] = (int8_t)q;
+    }
+}
+
+extern "C" int h3_launch_quantize_f32_int8_rows(
+    const float *input, int8_t *output, float *scales,
+    const h3_int8_quant_args *args, uint32_t dispatch_rows,
+    hipStream_t stream) {
+    h3_int8_quant_args host_args = *args;
+    void *kernel_args[] = {&input, &output, &scales, &host_args};
+    uint32_t threads = host_args.columns >= 4096u ? 512u : 256u;
+    dim3 block(threads, 1, 1);
+    dim3 grid(dispatch_rows, 1, 1);
+    size_t smem = (host_args.columns + 32u) * sizeof(float);
+    return hipLaunchKernel(
+        reinterpret_cast<const void *>(h3_quantize_f32_int8_rows_kernel),
+        grid, block, kernel_args, smem, stream) == hipSuccess;
+}
+
+/* ── INT8 GEMM with F32 input, F32 output ──────────────────────────── */
+
+template <int K_CONST, int BK>
+__global__ void __launch_bounds__(256, 2)
+h3_linear_int8_f32_t128_kernel(const int8_t *input, const int8_t *weight,
+                               const float *input_scales,
+                               const float *weight_scales, float *output,
+                               h3_linear_args args) {
+    constexpr int BM = 128, BN = 128, TM = 8, TN = 8;
+    static_assert(BK == 32 || BK == 64 || BK == 128, "INT8 BK 32/64/128");
+    constexpr int LDS_K = BK + 4;
+    __shared__ int8_t As[BM][LDS_K];
+    __shared__ int8_t Bs[BN][LDS_K];
+    __shared__ float scale_a[BM];
+    __shared__ float scale_b[BN];
+    uint32_t block_row = blockIdx.y * (uint32_t)BM;
+    uint32_t block_col = blockIdx.x * (uint32_t)BN;
+    uint32_t tx = threadIdx.x;
+    uint32_t ty = threadIdx.y;
+    uint32_t tid = ty * 16u + tx;
+    uint32_t input_dim = K_CONST ? (uint32_t)K_CONST : args.input_dim;
+    uint32_t k_tiles = input_dim / (uint32_t)BK;
+    if (tid < (uint32_t)BM) {
+        uint32_t row = block_row + tid;
+        scale_a[tid] = row < args.rows ? input_scales[row] : 0.0f;
+    }
+    if (tid < (uint32_t)BN) {
+        uint32_t column = block_col + tid;
+        scale_b[tid] =
+            column < args.output_dim ? weight_scales[column] : 0.0f;
+    }
+    int32_t acc[TM][TN];
+#pragma unroll
+    for (int i = 0; i < TM; i++)
+#pragma unroll
+        for (int j = 0; j < TN; j++) acc[i][j] = 0;
+    for (uint32_t kt = 0; kt < k_tiles; kt++) {
+        uint32_t k0 = kt * (uint32_t)BK;
+        h3_load_i8_tile_bmxk<BM, LDS_K, BK>(As, input, block_row, k0, args.rows,
+                                             input_dim, tid);
+        h3_load_i8_tile_bmxk<BN, LDS_K, BK>(Bs, weight, block_col, k0,
+                                             args.output_dim, input_dim, tid);
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < BK; k += 16) {
+            int32_t av0[TM], av1[TM], av2[TM], av3[TM];
+            int32_t bv0[TN], bv1[TN], bv2[TN], bv3[TN];
+#pragma unroll
+            for (int i = 0; i < TM; i++) {
+                uint64_t p0 = *reinterpret_cast<const uint64_t *>(
+                    &As[ty * (uint32_t)TM + (uint32_t)i][k]);
+                uint64_t p1 = *reinterpret_cast<const uint64_t *>(
+                    &As[ty * (uint32_t)TM + (uint32_t)i][k + 8]);
+                av0[i] = (int32_t)p0;
+                av1[i] = (int32_t)(p0 >> 32);
+                av2[i] = (int32_t)p1;
+                av3[i] = (int32_t)(p1 >> 32);
+            }
+#pragma unroll
+            for (int j = 0; j < TN; j++) {
+                uint64_t p0 = *reinterpret_cast<const uint64_t *>(
+                    &Bs[tx * (uint32_t)TN + (uint32_t)j][k]);
+                uint64_t p1 = *reinterpret_cast<const uint64_t *>(
+                    &Bs[tx * (uint32_t)TN + (uint32_t)j][k + 8]);
+                bv0[j] = (int32_t)p0;
+                bv1[j] = (int32_t)(p0 >> 32);
+                bv2[j] = (int32_t)p1;
+                bv3[j] = (int32_t)(p1 >> 32);
+            }
+#pragma unroll
+            for (int i = 0; i < TM; i++)
+#pragma unroll
+                for (int j = 0; j < TN; j++) {
+                    acc[i][j] = h3_i8dot4(av0[i], bv0[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av1[i], bv1[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av2[i], bv2[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av3[i], bv3[j], acc[i][j]);
+                }
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < TM; i++) {
+        uint32_t row = block_row + ty * (uint32_t)TM + (uint32_t)i;
+        if (row >= args.rows) continue;
+        uint32_t column0 = block_col + tx * (uint32_t)TN;
+        float sa = scale_a[ty * (uint32_t)TM + (uint32_t)i];
+        for (int j = 0; j < TN; j++) {
+            uint32_t column = column0 + (uint32_t)j;
+            if (column >= args.output_dim) continue;
+            float value = (float)acc[i][j] * sa *
+                          scale_b[tx * (uint32_t)TN + (uint32_t)j];
+            output[row * args.output_dim + column] = value;
+        }
+    }
+}
+
+extern "C" int h3_launch_linear_int8_f32(
+    const int8_t *input, const int8_t *weight, const float *input_scales,
+    const float *weight_scales, float *output, const h3_linear_args *args,
+    hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &input_scales, &weight_scales,
+                           &output, &host_args};
+    constexpr int BM = 128, BN = 128;
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.output_dim + BN - 1u) / BN,
+              (host_args.rows + BM - 1u) / BM, 1);
+    uint32_t input_dim = host_args.input_dim;
+    const void *kernel = nullptr;
+    if (input_dim % 128 == 0)
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_t128_kernel<0, 128>);
+    else if (input_dim % 64 == 0)
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_t128_kernel<0, 64>);
+    else if (input_dim % 32 == 0)
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_t128_kernel<0, 32>);
+    else
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_t128_kernel<0, 32>);
+    return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
+           hipSuccess;
+}
