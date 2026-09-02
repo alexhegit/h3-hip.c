@@ -85,7 +85,8 @@ typedef struct {
     int core_reuse;
     /* Pair adjacent horizontal video tokens through middle DiT blocks while
      * preserving their full-resolution residual. Early noisy evaluations use
-     * a deeper reduced interval. This is a validated aggressive speed mode. */
+     * a deeper reduced interval. Opt-in speed mode (same CLI as
+     * antirez/h3.c and h3-spark.c): visible quality loss. Off by default. */
     int token_reduction;
     /* Use one int8 activation scale per FC2 row and the M5 full-K kernel.
      * Faster, but more numerically aggressive than grouped int8. */

@@ -14,13 +14,15 @@ Build with `HIP_ARCH=gfx1151` or `HIP_ARCH=gfx90a`
 |------|-----|----------|----------|--------------|------|
 | 10 s cinematic office | gfx1151 | 10.1 s (243 f) | **24.7 min** | 21.2 min | [`long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
 | **15 s cinematic office** | gfx1151 | **15.1 s (362 f)** | **45.0 min** | **40.4 min** | [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
+| **15 s + `--token-reduction`** | gfx1151 | **15.1 s (362 f)** | **28.2 min** | **23.3 min** | opt-in; [`TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) |
 | **15 s cinematic office** | gfx90a | **15.1 s (362 f)** | **12 min 33 s** | **10 min 48 s** | same prompt / knobs / seed 42 |
+| **15 s + `--token-reduction`** | gfx90a | **15.1 s (362 f)** | **8 min 21 s** | **6 min 50 s** | opt-in; [`TOKEN_REDUCTION.md`](../perf-mi210/TOKEN_REDUCTION.md) |
 
 Posters: `assets/showcase/long-*-cinematic.jpg`  
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
 MI210 session: [`docs/perf-mi210/STATUS.md`](../perf-mi210/STATUS.md)
 
-10 s was not re-timed on MI210.
+10 s was not re-timed on MI210. The gallery MP4 is the **quality path** (no TR).
 
 ## Reproduce the 15 s clip
 
@@ -45,6 +47,15 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   --steps 20 --layers 45 --reuse 2 --seed 42 \
   -o outputs/long-15s-cinematic.mp4
 ```
+
+Add `--token-reduction` only when you want wall clock over the quality path.
+Same flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c). Off by
+default; not the showcase / md5 path.
+
+| | quality path | **`--token-reduction`** |
+|--|--:|--:|
+| gfx1151 15 s E2E | 45.0 min | **28.2 min** (denoise 23.3 min) |
+| gfx90a 15 s E2E | 12 min 33 s | **8 min 21 s** (denoise 6 min 50 s) |
 
 ## Reproduce the 10 s clip
 

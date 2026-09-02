@@ -31,6 +31,7 @@ AMD Ryzen AI MAX+ 395 / Radeon 8060S. Build: `make HIP_ARCH=gfx1151`.
 | **fox-s2** | 512² · 22 frames · `--steps 2 --layers 35 --reuse 1` | **83–87 s** | **6.3–6.5 s** |
 | **fox-fast** | 512² · 22 frames · `--steps 20 --layers 45 --reuse 2` | **95 s** | **28 s** (11 evals) |
 | **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **45.0 min** | **40.4 min** denoise wall |
+| **15 s + `--token-reduction`** | same + opt-in flag | **28.2 min** | denoise 23.3 min; quality trade; [TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
 
 fox-s2 and fox-fast are complete T2VA MP4s (~0.9 s of picture+sound at 24 fps),
 not truncated previews. fox-fast matches upstream’s “first fast video”
@@ -85,6 +86,7 @@ for the fox gates below).
 | **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~10.5 s** | 2026-09-01 at `6fe5c0d` |
 | **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~18 s** | denoise ~8.2 s (linear 6.6 · sdpa 1.08) |
 | **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 33 s** | denoise 10 min 48 s; vs 45 min on gfx1151 |
+| **15 s + `--token-reduction`** | same + opt-in flag | **8 min 21 s** | denoise 6 min 50 s; quality trade; [TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
 
 Commands are the same as the gfx1151 block above. 15 s reproduce:
 [`wiki/Long-video.md`](wiki/Long-video.md). Session log:
@@ -128,6 +130,17 @@ Euler steps, eliminating CPU-GPU round-trips. fox-s2 denoise: 1.95 s → 0.84 s
 **Token reduction** (`H3_TOKEN_REDUCTION=1`): drops half spatial width in
 middle layers (blocks 4–30). 15 s cinematic denoise: 185.7 s → 116.8 s
 (37% faster). Quality impact: slight detail loss in fine textures.
+
+Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
+pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
+**tagged** quality-path row (45.0 min / 12 min 33 s) with these numbers.
+
+| | quality path | **`--token-reduction`** |
+|--|--:|--:|
+| gfx1151 15 s E2E | 45.0 min | **28.2 min** (−37%); [perf-runs/TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
+| gfx90a 15 s E2E | 12 min 33 s | **8 min 21 s** (−34%); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
+
+gfx1151 fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 
 ## How a GitHub Release should quote this
 

@@ -75,6 +75,10 @@ Three fox presets (all complete MP4s, not stubs):
 For a ~15 s clip, keep fox-fast knobs and raise `--seconds 15` at 864×480
 ([Long video](Long-video.md)). Timings: [`docs/PERFORMANCE.md`](../PERFORMANCE.md).
 
+Optional **`--token-reduction`** (off by default, same flag as h3-spark.c):
+pairs video tokens in middle DiT blocks. Faster long T2VA; **visible quality
+loss**; fox-s2 md5 gate does not apply. Generate prints a warning when on.
+
 On a multi-GPU box bind one card: `H3_HIP_DEVICE=N` (default 0). Do not run two
 weight-streaming T2VA jobs against the same NVMe at once.
 

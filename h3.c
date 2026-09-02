@@ -894,6 +894,10 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         return NULL;
     }
     if (!h3_valid_params(ctx, params)) return NULL;
+    if (params->token_reduction)
+        fprintf(stderr,
+                "h3: --token-reduction is on: faster DiT, visible quality "
+                "loss (off by default)\n");
     int render_width = params->render_width ? params->render_width :
                                                params->width;
     int render_height = params->render_height ? params->render_height :

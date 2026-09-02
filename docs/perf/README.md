@@ -24,6 +24,7 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/FOX_S2.md`](../perf-runs/FOX_S2.md) | fox-s2 ledger (A/B/C; v0.9.0 is a pointer) |
 | [`../perf-runs/FOX_FAST.md`](../perf-runs/FOX_FAST.md) | fox-fast ledger (day-5 run; v0.9.0 is a pointer) |
 | [`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md) | Full v0.9.0 timed tables |
+| [`../perf-runs/TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) | gfx1151 15 s + `--token-reduction` (2026-09-02) |
 | [`../perf-runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md) | What antirez/h3.c publishes vs HIP reruns |
 | `docs/perf-day*/STATUS.md` | Session logs |
 | [`../deprecated/`](../deprecated/README.md) | Superseded whole docs (e.g. the pre-port plan) |

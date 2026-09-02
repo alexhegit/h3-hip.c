@@ -35,12 +35,17 @@ Exact prompt and knobs from `https://alexhegit.github.io/h3-hip.c/`:
 
 | Hardware | E2E | DiT denoise | Video VAE |
 |----------|-----|-------------|-----------|
-| Strix Halo gfx1151, v0.9.0 | 45.0 min | 40.4 min | not reported |
+| Strix Halo gfx1151, v0.9.0 | 45.0 min | 40.4 min | 3.5 min |
+| Strix Halo gfx1151, v0.10.1 + `--token-reduction` | **28.2 min** (1694 s) | **23.3 min** (1401 s) | 3.5 min |
 | MI210 gfx90a, pre-flash | 50 min 14.58 s | 48 min 22.17 s | 1 min 37.28 s |
 | MI210 gfx90a, CDNA MFMA flash | **12 min 33.29 s** | **10 min 48.29 s** | **1 min 32.75 s** |
+| MI210 gfx90a, flash + `--token-reduction` | **8 min 20.81 s** | **6 min 49.81 s** | **1 min 18.94 s** |
 
 The pre-flash MI210 result was 1.116x the Halo wall time. The final result is
-**4.00x faster than the MI210 baseline and 3.58x faster than Halo**. Output
+**4.00x faster than the MI210 baseline and 3.58x faster than Halo**. Opt-in
+`--token-reduction` on the same 15 s clip is another **1.50×** on E2E
+(753.29 → 500.81 s) with a visible quality trade; ledger
+[`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md). Output
 verification: 864x480, 362 frames, 24 fps, 15.084 s. Sampled early/middle/late
 frames preserve the requested office, typing close-up, monitor fox, warm
 lighting, and pullback composition.

@@ -167,7 +167,7 @@ static void print_help(void) {
     puts("  !reuse [N]               Set or show denoiser reuse");
     puts("  !layers [N]              Set or show active DiT blocks");
     puts("  !core-reuse [N]          Set or show core reuse");
-    puts("  !token-reduction [on|off]  Toggle token reduction");
+    puts("  !token-reduction [on|off]  Toggle token reduction (quality trade)");
     puts("  !ssd-streaming [on|off]   Toggle original-BF16 SSD streaming");
     puts("  !int8-row-fc2 [on|off]    Toggle faster one-scale FC2");
     puts("  !reference-rope [on|off]  Toggle released spatial RoPE");
@@ -592,6 +592,10 @@ static int process_command(h3_cli_state *state, char *line, int *repeat) {
         else {
             state->params.token_reduction = value;
             printf("Token reduction: %s\n", value ? "on" : "off");
+            if (value)
+                fprintf(stderr,
+                        "h3: faster DiT, visible quality loss "
+                        "(same as h3-spark.c --token-reduction)\n");
         }
     } else if (!strcasecmp(command, "ssd-streaming")) {
         int value;

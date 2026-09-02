@@ -65,6 +65,8 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E ~45 min**
 and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 33 s** on MI210.
+Opt-in `--token-reduction` on the same 15 s clip: **28.2 min** (gfx1151) /
+**8 min 21 s** (gfx90a); quality trade, not the showcase path.
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
 [Wiki: Long video](docs/wiki/Long-video.md) ·
@@ -120,7 +122,8 @@ MODEL=/path/to/MiniMax-H3
   -o assets/showcase/amd-developer-community-raw.mp4
 
 # Long T2VA — 15 s cinematic office (864×480, 362 frames;
-# E2E ~45 min gfx1151 / 12 min 33 s gfx90a)
+# E2E ~45 min gfx1151 / 12 min 33 s gfx90a; add --token-reduction
+# for 28.2 min / 8 min 21 s with a visible quality trade)
 ./h3 --profile -d "$MODEL" \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
 
@@ -151,7 +154,8 @@ Current tagged line is **v0.10.1**.
 | FL2VA (`--first-frame` / `--last-frame`) | ✅ |
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
 | Runtime INT8 DiT (hipBLAS) | ✅ gfx1151 default; gfx90a via `H3_INT8_MLP=1` |
-| `--frames-dir` / `--ssd-streaming` / `--token-reduction` | ✅ |
+| `--frames-dir` / `--ssd-streaming` | ✅ |
+| `--token-reduction` | ✅ opt-in; off by default; visible quality trade |
 
 ## Documentation
 
@@ -162,6 +166,17 @@ Current tagged line is **v0.10.1**.
   [Long video](docs/wiki/Long-video.md)
 - **Timings** (gfx1151 and gfx90a): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
+
+The fox showcase uses `--steps 20 --layers 50 --reuse 1`. Tagged scoreboard
+commands are in PERFORMANCE.md. **`--token-reduction`** is the same opt-in
+speed flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c) (pair
+video tokens in middle DiT blocks). It is **off by default**. Use it when
+wall clock matters more than fox-s2 bit identity — long T2VA is DiT-SDPA
+bound on both ISAs. gfx1151 fox-fast denoise with the flag was 34.6 s →
+25.8 s (v0.9.0). Same 15 s cinematic + TR: gfx1151 **28.2 min** (vs 45.0 min),
+gfx90a **8 min 21 s** (vs 12 min 33 s).
+Tagged scoreboard stays without TR. Generate prints a stderr warning when
+the flag is on.
 
 Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
 Known issues) live only on GitHub wiki. In-tree copies of Getting started,
