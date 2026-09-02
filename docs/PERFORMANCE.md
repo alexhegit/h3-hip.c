@@ -124,8 +124,8 @@ H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 
 | Preset | E2E | Denoise GPU | Video VAE | Peak VRAM |
 |--------|----:|------------:|----------:|----------:|
-| **fox-s2** | **~8 s** | **0.34 s** | **~2 s** | **~30 GiB** |
-| **15 s cinematic** | **~2.5 min** | **113 s** | **28 s** | **28 GiB** |
+| **fox-s2** | **~8 s** | **0.34 s** | **~1.3 s** | **~30 GiB** |
+| **15 s cinematic** | **~2.4 min** | **113 s** | **24.6 s** | **~32 GiB** |
 
 Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA
 (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise is ~3x faster than
