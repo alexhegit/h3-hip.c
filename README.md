@@ -64,6 +64,8 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E ~45 min**
 and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 33 s** on MI210.
+Opt-in `--token-reduction` on the same 15 s clip: **28.2 min** (gfx1151) /
+**8 min 21 s** (gfx90a); quality trade, not the showcase path.
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
 [Wiki: Long video](docs/wiki/Long-video.md) ·
@@ -119,7 +121,8 @@ MODEL=/path/to/MiniMax-H3
   -o assets/showcase/amd-developer-community-raw.mp4
 
 # Long T2VA — 15 s cinematic office (864×480, 362 frames;
-# E2E ~45 min gfx1151 / 12 min 33 s gfx90a)
+# E2E ~45 min gfx1151 / 12 min 33 s gfx90a; add --token-reduction
+# for 28.2 min / 8 min 21 s with a visible quality trade)
 ./h3 --profile -d "$MODEL" \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
 
@@ -169,7 +172,8 @@ speed flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c) (pair
 video tokens in middle DiT blocks). It is **off by default**. Use it when
 wall clock matters more than fox-s2 bit identity — long T2VA is DiT-SDPA
 bound on both ISAs. gfx1151 fox-fast denoise with the flag was 34.6 s →
-25.8 s (v0.9.0). gfx90a 15 s + TR E2E **8 min 21 s** (vs 12 min 33 s).
+25.8 s (v0.9.0). Same 15 s cinematic + TR: gfx1151 **28.2 min** (vs 45.0 min),
+gfx90a **8 min 21 s** (vs 12 min 33 s).
 Tagged scoreboard stays without TR. Generate prints a stderr warning when
 the flag is on.
 

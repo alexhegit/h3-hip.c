@@ -22,7 +22,7 @@ Posters: `assets/showcase/long-*-cinematic.jpg`
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
 MI210 session: [`docs/perf-mi210/STATUS.md`](../perf-mi210/STATUS.md)
 
-10 s was not re-timed on MI210.
+10 s was not re-timed on MI210. The gallery MP4 is the **quality path** (no TR).
 
 ## Reproduce the 15 s clip
 
