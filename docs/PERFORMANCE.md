@@ -146,19 +146,20 @@ MI300X profile breakdown (15 s cinematic, BF16):
 | DiT denoise other | 7.0 s | 7.1 s | 6.2 s | −11% |
 | DiT weight-load | 1.9 s | 2.3 s | 2.1 s | +11% |
 | **DiT peak VRAM** | **41.1 GiB** | **27.8 GiB** | **27.8 GiB** | **−32%** |
-| **Video VAE wall** | 29.1 s | 29.0 s | 28.1 s | −3% |
-| Video VAE linear | 17.8 s | 17.8 s | 0.14 s | −99% |
-| Video VAE other | 3.9 s | 3.9 s | 21.0 s | +438% |
-| **Video VAE peak** | **9.4 GiB** | **9.4 GiB** | **2.9 GiB** | **−69%** |
+| **Video VAE wall** | 29.1 s | 29.0 s | **24.6 s** | **−15%** |
+| Video VAE linear | 17.8 s | 17.8 s | 0.10 s | −99% |
+| Video VAE other | 3.9 s | 3.9 s | 15.9 s | +308% |
+| **Video VAE peak** | **9.4 GiB** | **9.4 GiB** | **3.7 GiB** | **−61%** |
 | Text encoder | 2.5 s | 2.5 s | 2.5 s | — |
 | Audio VAE | 0.8 s | 0.8 s | 0.8 s | — |
-| **E2E total** | **~219 s** | **~212 s** | **~145 s** | **−34%** |
+| **E2E total** | **~219 s** | **~212 s** | **~142 s** | **−35%** |
 
 All Opts = `H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1`
 
 INT8 DiT linear GEMM: 34.6 s → 28.5 s (−18%). GPU sampler eliminates CPU-GPU
 latent round-trips: sdpa 144.1 s → 85.7 s (−41%). INT8 VAE linear: 17.8 s →
-0.14 s (99× faster), but per-tile input quantize overhead adds 21 s to "other".
+0.10 s (99× faster). VAE tile size 480 px (4→2 tiles/chunk) reduces VAE
+"other" from 21.0 s to 15.9 s (−24%).
 
 ### Optimization: INT8 DiT (`H3_INT8_MLP=1`)
 
@@ -216,6 +217,27 @@ extra bandwidth cost outweighs the kernel-launch savings:
 (9.4 GiB for fox-s2) cannot be afforded. The fused path reduces VAE peak from
 9.4→2.9 GiB (−69%) at the cost of slower execution.
 
+### VAE tile size optimisation (default 480 px on MI300X)
+
+`configured_tile_pixels()` scans tile sizes from 256 to 512 px (step 16) and
+picks the size that minimises `tiles × pixels²`. The extended scan range
+(previously capped at 320 px) allows the optimizer to select larger tiles
+that reduce per-chunk tile count.
+
+| Resolution | Old tile | New tile | Tiles Δ | VAE Δ |
+|------------|---------|---------|---------|-------|
+| 512×512 (fox-s2) | 288 (2×2=4) | **512** (1×1=1) | −75% | ~same |
+| 864×480 (15 s cinematic) | 272 (2×4=8) | **480** (1×2=2) | −75% | **−12%** |
+
+15 s cinematic impact (MI300X, all-opts):
+- VAE total: 28.1 s → **24.6 s** (−12%)
+- VAE other: 21.0 s → 15.9 s (−24%); fewer tiles = less per-tile quantize
+- VAE sdpa: 1.9 s → 4.5 s (+137%); longer per-tile sequences (2028→6305)
+- Submissions: 168 → 42 (−75%)
+- VAE peak VRAM: 2.9 GiB → **3.7 GiB** (+29%, still << 192 GiB)
+
+Override at runtime: `H3_VAE_TILE_PIXELS=272` restores old behaviour.
+
 Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
 pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 **tagged** quality-path row (45.0 min / 12 min 33 s) with these numbers.
@@ -235,13 +257,14 @@ gfx1151 fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 | DiT weights | 62 GiB | **28 GiB** | **−55%** | INT8 weight quantization |
 | DiT activations | 14 GiB | **8 GiB** | **−43%** | Token reduction (middle layers) |
 | DiT peak | 41 GiB | **28 GiB** | **−32%** | Combined INT8 + token reduction |
-| Video VAE weights | 9.4 GiB | **2.9 GiB** | **−69%** | INT8 weight quantization |
+| Video VAE weights | 9.4 GiB | **3.7 GiB** | **−61%** | INT8 weight quantization + 480 px tiles |
 | Video VAE alloc churn | 175.6 GiB | **11.7 GiB** | **−93%** | Persistent workspace buffers |
-| **Pipeline peak** | **~50 GiB** | **~28 GiB** | **−44%** | All opts combined |
+| **Pipeline peak** | **~50 GiB** | **~32 GiB** | **−36%** | All opts combined |
 
 The VRAM reductions enable running 15 s cinematic on GPUs with 32 GiB VRAM,
 which was previously impossible (required ~50 GiB). The INT8 VAE path
-(`H3_INT8_VAE=1`) is the single largest VRAM saver at −6.5 GiB.
+(`H3_INT8_VAE=1`) combined with 480 px tiles reduces VAE peak from 9.4 to
+3.7 GiB (−61%).
 
 ## How a GitHub Release should quote this
 
