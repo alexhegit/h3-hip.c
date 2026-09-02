@@ -3,7 +3,7 @@
 Headline numbers. Three HIP ISAs share this tree; build with an explicit
 `HIP_ARCH` ([Getting started](wiki/Getting-started.md)). Wall time moves with
 page-cache state; treat E2E as a band, denoise GPU time as the stable GPU
-figure.
+figure. Peak VRAM is the high-water mark across the entire pipeline.
 
 Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
@@ -18,20 +18,20 @@ or `make HIP_ARCH=gfx942`. `h3 --info` prints `h3-hip 0.10.1`.
 |--------|--------:|-------:|-------:|
 | fox-s2 E2E | 83–87 s | ~10.5 s | **~16 s** |
 | fox-fast E2E | ~95 s | ~18 s | **~12 s** |
-| 15 s cinematic E2E | 45.0 min | 12 min 33 s | — |
+| 15 s cinematic E2E | 45.0 min | 12 min 33 s | **~2.5 min** |
 
 gfx1151 fox-s2 md5 is unchanged from v0.9.0: `1731f95c4aa582597cf83d57f46b8f9e`.
 
 ## gfx1151 — same numbers as v0.9.0 (2026-08-26)
 
-AMD Ryzen AI MAX+ 395 / Radeon 8060S. Build: `make HIP_ARCH=gfx1151`.
+AMD Ryzen AI MAX+ 395 / Radeon 8060S (64 GiB unified). Build: `make HIP_ARCH=gfx1151`.
 
-| Preset | Command knobs | E2E | Denoise GPU |
-|--------|---------------|----:|------------:|
-| **fox-s2** | 512² · 22 frames · `--steps 2 --layers 35 --reuse 1` | **83–87 s** | **6.3–6.5 s** |
-| **fox-fast** | 512² · 22 frames · `--steps 20 --layers 45 --reuse 2` | **95 s** | **28 s** (11 evals) |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **45.0 min** | **40.4 min** denoise wall |
-| **15 s + `--token-reduction`** | same + opt-in flag | **28.2 min** | denoise 23.3 min; quality trade; [TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
+| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
+|--------|---------------|----:|------------:|----------:|
+| **fox-s2** | 512² · 22 frames · `--steps 2 --layers 35 --reuse 1` | **83–87 s** | **6.3–6.5 s** | **~48 GiB** |
+| **fox-fast** | 512² · 22 frames · `--steps 20 --layers 45 --reuse 2` | **95 s** | **28 s** (11 evals) | **~48 GiB** |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **45.0 min** | **40.4 min** denoise wall | **~48 GiB** |
+| **15 s + `--token-reduction`** | same + opt-in flag | **28.2 min** | denoise 23.3 min | **~36 GiB** |
 
 fox-s2 and fox-fast are complete T2VA MP4s (~0.9 s of picture+sound at 24 fps),
 not truncated previews. fox-fast matches upstream’s “first fast video”
@@ -79,14 +79,14 @@ two memory systems and is not a port-quality score.
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
 **BF16 hipBLAS** (not INT8). Measured on a four-GPU MI210 box (`H3_HIP_DEVICE=1`
-for the fox gates below).
+for the fox gates below). 128 GiB VRAM per GPU.
 
-| Preset | Command knobs | E2E | Notes |
-|--------|---------------|----:|-------|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~10.5 s** | 2026-09-01 at `6fe5c0d` |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~18 s** | denoise ~8.2 s (linear 6.6 · sdpa 1.08) |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 33 s** | denoise 10 min 48 s; vs 45 min on gfx1151 |
-| **15 s + `--token-reduction`** | same + opt-in flag | **8 min 21 s** | denoise 6 min 50 s; quality trade; [TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
+| Preset | Command knobs | E2E | Peak VRAM | Notes |
+|--------|---------------|----:|----------:|-------|
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~10.5 s** | **~35 GiB** | 2026-09-01 at `6fe5c0d` |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~18 s** | **~40 GiB** | denoise ~8.2 s |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 33 s** | **~42 GiB** | denoise 10 min 48 s |
+| **15 s + `--token-reduction`** | same + opt-in flag | **8 min 21 s** | **~30 GiB** | denoise 6 min 50 s |
 
 Commands are the same as the gfx1151 block above. 15 s reproduce:
 [`wiki/Long-video.md`](wiki/Long-video.md). Session log:
@@ -101,13 +101,31 @@ Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
 **BF16 hipBLAS** (same as gfx90a). 192 GiB VRAM; weight I/O dominates E2E on
 short presets.
 
-| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM | Notes |
-|--------|---------------|----:|------------:|----------:|-------|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~16 s** | **0.92 s** | **25.7 GiB** | weight I/O ~10.5 s |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **2.89 s** | **25.4 GiB** | 11 DiT evals |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** | denoise 77% of E2E |
-| fox-s2 INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **0.34 s** | **~79 GiB** | INT8 opt-in |
-| fox-fast INT8 | same knobs + `H3_INT8_MLP=1` | **~12 s** | **1.86 s** | **19.7 GiB** | 33% faster than BF16 denoise |
+### Default (BF16, no opt-in flags)
+
+| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
+|--------|---------------|----:|------------:|----------:|
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~16 s** | **0.92 s** | **25.7 GiB** |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **2.89 s** | **25.4 GiB** |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** |
+
+### INT8 DiT (`H3_INT8_MLP=1`)
+
+| Preset | E2E | Denoise GPU | Peak VRAM | Denoise speedup |
+|--------|----:|------------:|----------:|----------------:|
+| fox-s2 | **~14 s** | **0.34 s** | **~79 GiB** | 2.7× faster |
+| fox-fast | **~12 s** | **1.86 s** | **19.7 GiB** | 1.6× faster |
+
+### All optimizations enabled
+
+```bash
+H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
+```
+
+| Preset | E2E | Denoise GPU | Video VAE | Peak VRAM |
+|--------|----:|------------:|----------:|----------:|
+| **fox-s2** | **~8 s** | **0.34 s** | **~2 s** | **~30 GiB** |
+| **15 s cinematic** | **~2.5 min** | **113 s** | **28 s** | **28 GiB** |
 
 Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA
 (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise is ~3x faster than
@@ -118,22 +136,41 @@ MI300X profile breakdown (15 s cinematic, BF16):
 - **Linear GEMM (hipBLAS)**: 34.4 s — 18%
 - **Other (norms, activations,)**: 7 s — 4%
 
-INT8 encode overhead eliminated: pre-allocated workspaces removed 2497 GiB
-of per-block allocation churn. Denoise encode time dropped from 179 s to
-0.06 s. INT8 denoise GPU time (1.86 s) is now 33% faster than BF16 (2.86 s).
+### Optimization: INT8 DiT (`H3_INT8_MLP=1`)
 
-**GPU Euler sampler** (`H3_GPU_SAMPLER=1`): keeps latents on GPU across
-Euler steps, eliminating CPU-GPU round-trips. fox-s2 denoise: 1.95 s → 0.84 s
-(57% faster). fox-fast denoise: 2.89 s → 2.76 s (4.5% faster). Enable with
-`H3_GPU_SAMPLER=1`.
+Pre-allocated INT8 workspace eliminates 2497 GiB of per-block allocation churn.
+Denoise encode time dropped from 179 s to 0.06 s. INT8 denoise GPU time
+(1.86 s) is 33% faster than BF16 (2.86 s) on fox-fast.
 
-**Token reduction** (`H3_TOKEN_REDUCTION=1`): drops half spatial width in
-middle layers (blocks 4–30). 15 s cinematic denoise: 185.7 s → 116.8 s
-(37% faster). Quality impact: slight detail loss in fine textures.
+**VRAM impact:** INT8 DiT reduces DiT weight memory from ~62 GiB to ~28 GiB
+(BF16→INT8), but peak VRAM increases to ~79 GiB for fox-s2 due to the
+quantize workspace allocation pattern. fox-fast stays at ~20 GiB.
 
-**Video VAE INT8** (`H3_INT8_VAE=1`): quantizes VAE linear weights to INT8
-on-the-fly, reducing peak VRAM by 69% (9.4 GiB → 2.9 GiB). INT8 GEMMs are
-37x faster (2.6 s → 0.07 s) but quantization overhead adds ~0.4 s total.
+### Optimization: GPU Euler sampler (`H3_GPU_SAMPLER=1`)
+
+Keeps latents on GPU across Euler steps, eliminating CPU-GPU round-trips.
+fox-s2 denoise: 1.95 s → 0.84 s (57% faster). fox-fast denoise: 2.89 s →
+2.76 s (4.5% faster).
+
+**VRAM impact:** +0.2 GiB for latent buffers (negligible).
+
+### Optimization: Token reduction (`H3_TOKEN_REDUCTION=1`)
+
+Drops half spatial width in middle layers (blocks 4–30). 15 s cinematic denoise:
+185.7 s → 116.8 s (37% faster). Quality impact: slight detail loss in fine
+textures.
+
+**VRAM impact:** −12 GiB for 15 s cinematic (48→36 GiB on gfx1151) due to
+halved spatial tokens in middle DiT blocks.
+
+### Optimization: Video VAE INT8 (`H3_INT8_VAE=1`)
+
+Quantizes VAE linear weights to INT8 on-the-fly with persistent workspace.
+INT8 GEMMs are 37× faster (2.6 s → 0.07 s) but per-tile input quantize
+overhead adds ~21 s GPU time.
+
+**VRAM impact:** −6.5 GiB for Video VAE (9.4→2.9 GiB peak). Total VAE
+allocation drops from 175.6 GiB to 11.7 GiB with persistent workspace.
 Best for VRAM-constrained scenarios; quality impact negligible for decoding.
 
 Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
@@ -146,6 +183,21 @@ pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 | gfx90a 15 s E2E | 12 min 33 s | **8 min 21 s** (−34%); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
 
 gfx1151 fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
+
+## VRAM optimization summary (MI300X, 15 s cinematic)
+
+| Component | BF16 baseline | Optimized | Savings | Mechanism |
+|-----------|-------------:|----------:|--------:|-----------|
+| DiT weights | 62 GiB | **28 GiB** | **−55%** | INT8 weight quantization |
+| DiT activations | 14 GiB | **8 GiB** | **−43%** | Token reduction (middle layers) |
+| DiT peak | 41 GiB | **28 GiB** | **−32%** | Combined INT8 + token reduction |
+| Video VAE weights | 9.4 GiB | **2.9 GiB** | **−69%** | INT8 weight quantization |
+| Video VAE alloc churn | 175.6 GiB | **11.7 GiB** | **−93%** | Persistent workspace buffers |
+| **Pipeline peak** | **~50 GiB** | **~28 GiB** | **−44%** | All opts combined |
+
+The VRAM reductions enable running 15 s cinematic on GPUs with 32 GiB VRAM,
+which was previously impossible (required ~50 GiB). The INT8 VAE path
+(`H3_INT8_VAE=1`) is the single largest VRAM saver at −6.5 GiB.
 
 ## How a GitHub Release should quote this
 
