@@ -150,7 +150,8 @@ Current tagged line is **v0.10.1**.
 | FL2VA (`--first-frame` / `--last-frame`) | ✅ |
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
 | Runtime INT8 DiT (hipBLAS) | ✅ gfx1151 default; gfx90a via `H3_INT8_MLP=1` |
-| `--frames-dir` / `--ssd-streaming` / `--token-reduction` | ✅ |
+| `--frames-dir` / `--ssd-streaming` | ✅ |
+| `--token-reduction` | ✅ opt-in; off by default; visible quality trade |
 
 ## Documentation
 
@@ -161,6 +162,16 @@ Current tagged line is **v0.10.1**.
   [Long video](docs/wiki/Long-video.md)
 - **Timings** (gfx1151 and gfx90a): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
+
+The fox showcase uses `--steps 20 --layers 50 --reuse 1`. Tagged scoreboard
+commands are in PERFORMANCE.md. **`--token-reduction`** is the same opt-in
+speed flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c) (pair
+video tokens in middle DiT blocks). It is **off by default**. Use it when
+wall clock matters more than fox-s2 bit identity — long T2VA is DiT-SDPA
+bound on both ISAs. gfx1151 fox-fast denoise with the flag was 34.6 s →
+25.8 s (v0.9.0). gfx90a 15 s + TR E2E **8 min 21 s** (vs 12 min 33 s).
+Tagged scoreboard stays without TR. Generate prints a stderr warning when
+the flag is on.
 
 Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
 Known issues) live only on GitHub wiki. In-tree copies of Getting started,

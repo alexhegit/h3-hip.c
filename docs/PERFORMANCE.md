@@ -94,6 +94,17 @@ Commands are the same as the gfx1151 block above. 15 s reproduce:
 Long T2VA on MI210 is still DiT-SDPA bound (~63% of the 15 s E2E). fox-s2 is
 mostly weight I/O.
 
+Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
+pairs middle-block video tokens so long-N SDPA shrinks. gfx1151 fox-fast
+denoise 34.6 s → 25.8 s (v0.9.0). Do not put it on the tagged scoreboard;
+quality is not close to off.
+
+gfx90a 15 s cinematic + TR (GPU2, 2026-09-02, seed 42, same prompt/knobs as
+the 12 min 33 s run): **E2E 500.8 s (8 min 21 s)**, denoise wall **409.8 s**
+(sdpa 284.6 · linear 114.5), video VAE 78.9 s. vs no-TR: E2E **−33.5%**,
+denoise **−37%**. Output `/tmp/h3-mi210/long-15s-tr.mp4`. gfx1151 15 s + TR
+is not measured on this branch yet.
+
 ## How a GitHub Release should quote this
 
 Paste the **current** summary table (both ISAs). Do not paste phase splits,

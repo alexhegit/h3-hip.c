@@ -46,6 +46,12 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   -o outputs/long-15s-cinematic.mp4
 ```
 
+Add `--token-reduction` only when you want wall clock over the quality path.
+Same flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c). Off by
+default; not the showcase / md5 path. gfx90a 15 s + TR: **E2E 8 min 21 s**
+(denoise 6 min 50 s) vs 12 min 33 s without the flag. gfx1151 15 s + TR is
+the measurement this branch is for.
+
 ## Reproduce the 10 s clip
 
 Same prompt structure with `[0–3]` … `[8–10]` blocks and `--seconds 10`.
