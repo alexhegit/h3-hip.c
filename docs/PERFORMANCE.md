@@ -131,6 +131,11 @@ Euler steps, eliminating CPU-GPU round-trips. fox-s2 denoise: 1.95 s → 0.84 s
 middle layers (blocks 4–30). 15 s cinematic denoise: 185.7 s → 116.8 s
 (37% faster). Quality impact: slight detail loss in fine textures.
 
+**Video VAE INT8** (`H3_INT8_VAE=1`): quantizes VAE linear weights to INT8
+on-the-fly, reducing peak VRAM by 69% (9.4 GiB → 2.9 GiB). INT8 GEMMs are
+37x faster (2.6 s → 0.07 s) but quantization overhead adds ~0.4 s total.
+Best for VRAM-constrained scenarios; quality impact negligible for decoding.
+
 Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
 pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 **tagged** quality-path row (45.0 min / 12 min 33 s) with these numbers.
