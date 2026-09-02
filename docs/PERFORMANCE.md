@@ -93,22 +93,32 @@ Commands are the same as the gfx1151 block above. 15 s reproduce:
 Long T2VA on MI210 is still DiT-SDPA bound (~63% of the 15 s E2E). fox-s2 is
 mostly weight I/O.
 
-## gfx942 / MI300X — initial (2026-09-02)
+## gfx942 / MI300X — v0.10.1 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
 **BF16 hipBLAS** (same as gfx90a). 192 GiB VRAM; weight I/O dominates E2E on
 short presets.
 
-| Preset | Command knobs | E2E | Denoise GPU | Notes |
-|--------|---------------|----:|------------:|-------|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~16 s** | **0.92 s** | first run; weight I/O ~10.5 s |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **2.89 s** | 11 DiT evals |
-| fox-s2 INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **0.34 s** | peak VRAM ~79 GiB |
-| fox-fast INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **2.19 s** | peak VRAM ~181 GiB (tight) |
+| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM | Notes |
+|--------|---------------|----:|------------:|----------:|-------|
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~16 s** | **0.92 s** | **25.7 GiB** | weight I/O ~10.5 s |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **2.89 s** | **25.4 GiB** | 11 DiT evals |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** | denoise 77% of E2E |
+| fox-s2 INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **0.34 s** | **~79 GiB** | INT8 opt-in |
+| fox-fast INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **2.19 s** | **180.5 GiB** | tight on 192 GiB |
 
 Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA
 (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise is ~3x faster than
 MI210 on the same BF16 path. fox-fast E2E is I/O-bound on both CDNA cards.
+
+MI300X profile breakdown (15 s cinematic, BF16):
+- **SDPA (flash MFMA)**: 144.5 s — **77%** of denoise
+- **Linear GEMM (hipBLAS)**: 34.4 s — 18%
+- **Other (norms, activations,)**: 7 s — 4%
+
+INT8 encode overhead: 179 s CPU time launching 6061 direct dispatches
+vs BF16's 0.03 s (6556 dispatches via MPS batching). INT8 kernels
+bypass hipBLAS MPS, causing per-kernel CPU launch overhead.
 
 ## How a GitHub Release should quote this
 
