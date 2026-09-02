@@ -976,7 +976,7 @@ static int configured_tile_pixels(int pixel_height, int pixel_width) {
     }
     int best = TILE_PIXELS;
     uint64_t best_score = UINT64_MAX;
-    for (int pixels = TILE_PIXELS; pixels <= 320;
+    for (int pixels = TILE_PIXELS; pixels <= 512;
          pixels += SPATIAL_RATIO) {
         uint64_t tiles = (uint64_t)tile_count_for_extent(pixel_height, pixels) *
             (uint64_t)tile_count_for_extent(pixel_width, pixels);
