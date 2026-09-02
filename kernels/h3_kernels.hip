@@ -4220,9 +4220,11 @@ static int h3_hip_gfx90a(void) {
     if (cached >= 0) return cached;
     int device = 0;
     hipDeviceProp_t props;
+    /* Match all CDNA ISAs: gfx90a (MI210/MI250X) and gfx942 (MI300X). */
     cached = hipGetDevice(&device) == hipSuccess &&
              hipGetDeviceProperties(&props, device) == hipSuccess &&
-             strncmp(props.gcnArchName, "gfx90a", 6) == 0;
+             (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
+              strncmp(props.gcnArchName, "gfx942", 6) == 0);
     return cached;
 }
 

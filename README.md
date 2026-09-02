@@ -1,12 +1,13 @@
 # h3-hip.c
 
 HIP port of [antirez/h3.c](https://github.com/antirez/h3.c) for **AMD GPUs**.
-One tree, two supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
+One tree, three supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
 
 | ISA | GPU | Default DiT | SDPA |
 |-----|-----|-------------|------|
 | `gfx1151` | Strix Halo (RDNA) | INT8 + BF16 activations | wave32 rocWMMA |
-| `gfx90a` | MI210 (CDNA) | BF16 GEMM | wave64 MFMA flash |
+| `gfx90a` | MI210 / MI250X (CDNA2) | BF16 GEMM | wave64 MFMA flash |
+| `gfx942` | MI300X (CDNA3) | BF16 GEMM | wave64 MFMA flash |
 
 Tagged **v0.10.1** on `main` is the dual-ISA line (`gfx1151` and `gfx90a`).
 v0.10.0 is the same kernels; 0.10.1 adds preset/docs clarifications.
@@ -190,8 +191,11 @@ git checkout v0.10.1
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
 
-# MI210
+# MI210 / MI250X
 make HIP_ARCH=gfx90a -j$(nproc) h3
+
+# MI300X
+make HIP_ARCH=gfx942 -j$(nproc) h3
 
 ./h3 --info -d /path/to/MiniMax-H3
 ```

@@ -2,12 +2,14 @@
 
 Tracked gaps that do **not** block the default `./h3` T2VA generate path.
 
-Build with an explicit `HIP_ARCH` (`gfx1151` or `gfx90a`); the Makefile does
-not probe the GPU. Runtime then selects kernels for that ISA:
+Build with an explicit `HIP_ARCH` (`gfx1151`, `gfx90a`, or `gfx942`); the
+Makefile does not probe the GPU. Runtime then selects kernels for that ISA:
 
 - **gfx1151:** BF16 activations, INT8 DiT weights (hipBLAS), wave32 rocWMMA SDPA.
 - **gfx90a:** BF16 activations and DiT weights (hipBLAS BF16 GEMM), wave64 MFMA
   flash SDPA. Restore INT8 with `H3_INT8_MLP=1`.
+- **gfx942:** Same kernel paths as gfx90a (CDNA wave64 MFMA). INT8 opt-in via
+  `H3_INT8_MLP=1`; peak VRAM ~181 GiB on fox-fast (192 GiB card, tight).
 
 ## KI-001: CPU Euler sampler
 

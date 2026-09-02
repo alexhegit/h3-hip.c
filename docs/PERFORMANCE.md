@@ -1,6 +1,6 @@
 # Performance
 
-Headline numbers. Two HIP ISAs share this tree; build with an explicit
+Headline numbers. Three HIP ISAs share this tree; build with an explicit
 `HIP_ARCH` ([Getting started](wiki/Getting-started.md)). Wall time moves with
 page-cache state; treat E2E as a band, denoise GPU time as the stable GPU
 figure.
@@ -11,15 +11,14 @@ Engineering logs (phase tables, rejected experiments) live under
 
 ## Current release — v0.10.1 (2026-09-01)
 
-One tree, two ISAs. Build with `make HIP_ARCH=gfx1151` or `make HIP_ARCH=gfx90a`.
-`h3 --info` prints `h3-hip 0.10.1`. Scoreboard numbers are unchanged from
-v0.10.0 (docs/preset clarifications only).
+One tree, three ISAs. Build with `make HIP_ARCH=gfx1151`, `make HIP_ARCH=gfx90a`,
+or `make HIP_ARCH=gfx942`. `h3 --info` prints `h3-hip 0.10.1`.
 
-| Preset | gfx1151 | gfx90a |
-|--------|--------:|-------:|
-| fox-s2 E2E | 83–87 s | **~10.5 s** |
-| fox-fast E2E | ~95 s | **~18 s** |
-| 15 s cinematic E2E | 45.0 min | **12 min 33 s** |
+| Preset | gfx1151 | gfx90a | gfx942 |
+|--------|--------:|-------:|-------:|
+| fox-s2 E2E | 83–87 s | ~10.5 s | **~16 s** |
+| fox-fast E2E | ~95 s | ~18 s | **~12 s** |
+| 15 s cinematic E2E | 45.0 min | 12 min 33 s | — |
 
 gfx1151 fox-s2 md5 is unchanged from v0.9.0: `1731f95c4aa582597cf83d57f46b8f9e`.
 
@@ -94,7 +93,24 @@ Commands are the same as the gfx1151 block above. 15 s reproduce:
 Long T2VA on MI210 is still DiT-SDPA bound (~63% of the 15 s E2E). fox-s2 is
 mostly weight I/O.
 
+## gfx942 / MI300X — initial (2026-09-02)
+
+Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
+**BF16 hipBLAS** (same as gfx90a). 192 GiB VRAM; weight I/O dominates E2E on
+short presets.
+
+| Preset | Command knobs | E2E | Denoise GPU | Notes |
+|--------|---------------|----:|------------:|-------|
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~16 s** | **0.92 s** | first run; weight I/O ~10.5 s |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **2.89 s** | 11 DiT evals |
+| fox-s2 INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **0.34 s** | peak VRAM ~79 GiB |
+| fox-fast INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **2.19 s** | peak VRAM ~181 GiB (tight) |
+
+Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA
+(`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise is ~3x faster than
+MI210 on the same BF16 path. fox-fast E2E is I/O-bound on both CDNA cards.
+
 ## How a GitHub Release should quote this
 
-Paste the **current** summary table (both ISAs). Do not paste phase splits,
+Paste the **current** summary table (all three ISAs). Do not paste phase splits,
 KEEP/REJECT lists, or Metal ratio tables into the release body.

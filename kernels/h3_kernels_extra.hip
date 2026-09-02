@@ -2953,7 +2953,8 @@ static int h3_sdpa_bf16_direct_on(void) {
     hipDeviceProp_t props;
     cached = hipGetDevice(&device) == hipSuccess &&
              hipGetDeviceProperties(&props, device) == hipSuccess &&
-             strncmp(props.gcnArchName, "gfx90a", 6) == 0;
+             (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
+              strncmp(props.gcnArchName, "gfx942", 6) == 0);
     return cached;
 }
 
