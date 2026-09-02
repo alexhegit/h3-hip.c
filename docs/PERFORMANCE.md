@@ -120,6 +120,11 @@ INT8 encode overhead eliminated: pre-allocated workspaces removed 2497 GiB
 of per-block allocation churn. Denoise encode time dropped from 179 s to
 0.06 s. INT8 denoise GPU time (1.86 s) is now 33% faster than BF16 (2.86 s).
 
+**GPU Euler sampler** (`H3_GPU_SAMPLER=1`): keeps latents on GPU across
+Euler steps, eliminating CPU-GPU round-trips. fox-s2 denoise: 1.95 s → 0.84 s
+(57% faster). fox-fast denoise: 2.89 s → 2.76 s (4.5% faster). Enable with
+`H3_GPU_SAMPLER=1`.
+
 ## How a GitHub Release should quote this
 
 Paste the **current** summary table (all three ISAs). Do not paste phase splits,
