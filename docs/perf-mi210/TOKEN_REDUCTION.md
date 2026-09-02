@@ -4,9 +4,11 @@ Measured 2026-09-02 on MI210 GPU 2 (`H3_HIP_DEVICE=2`), branch
 `token-reduction`, binary `h3-hip 0.10.1` rebuilt `HIP_ARCH=gfx90a`.
 Official MiniMax-H3 at `/home/alex/data/HF-MODELS/MiniMax-H3`.
 
-Same prompt / knobs / seed as the tagged 12 min 33 s run, plus
+Same prompt / knobs / seed as the then-tagged 12 min 33 s run, plus
 `--token-reduction` (off by default; visible quality trade). Not a fox-s2
-md5 path.
+md5 path. On later `main` (2026-09-02, 480 px VAE tiles) the quality-path
+15 s is **12 min 11 s**; all-opts / CLI TR is still **8 min 21 s**. This
+ledger is the pre-tile A/B (753.29 → 500.81 s).
 
 Log: [`long-15s-tr-2026-09-02.log`](long-15s-tr-2026-09-02.log)  
 Output: `/tmp/h3-mi210/long-15s-tr.mp4` (864×480, 362 frames, 15.084 s,

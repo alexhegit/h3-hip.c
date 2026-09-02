@@ -39,12 +39,15 @@ Exact prompt and knobs from `https://alexhegit.github.io/h3-hip.c/`:
 | Strix Halo gfx1151, v0.10.1 + `--token-reduction` | **28.2 min** (1694 s) | **23.3 min** (1401 s) | 3.5 min |
 | MI210 gfx90a, pre-flash | 50 min 14.58 s | 48 min 22.17 s | 1 min 37.28 s |
 | MI210 gfx90a, CDNA MFMA flash | **12 min 33.29 s** | **10 min 48.29 s** | **1 min 32.75 s** |
+| MI210 gfx90a, `main` 2026-09-02 BF16 (480 px VAE) | **12 min 11 s** | **10 min 47 s** | **1 min 12 s** |
 | MI210 gfx90a, flash + `--token-reduction` | **8 min 20.81 s** | **6 min 49.81 s** | **1 min 18.94 s** |
+| MI210 gfx90a, all-opts (`H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1`) | **8 min 21 s** | **6 min 56 s** | **1 min 12 s** |
 
-The pre-flash MI210 result was 1.116x the Halo wall time. The final result is
-**4.00x faster than the MI210 baseline and 3.58x faster than Halo**. Opt-in
-`--token-reduction` on the same 15 s clip is another **1.50×** on E2E
-(753.29 → 500.81 s) with a visible quality trade; ledger
+The pre-flash MI210 result was 1.116x the Halo wall time. The flash result is
+**4.00x faster than the MI210 baseline and 3.58x faster than Halo**. On
+`main` 2026-09-02 the quality path is **12 min 11 s** (480 px VAE tiles;
+peak **41.2 GiB** on a **64 GiB** card). Opt-in `--token-reduction` / all-opts
+is another **~1.46×** on E2E (731 → 501 s) with a visible quality trade; ledger
 [`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md). Output
 verification: 864x480, 362 frames, 24 fps, 15.084 s. Sampled early/middle/late
 frames preserve the requested office, typing close-up, monitor fox, warm

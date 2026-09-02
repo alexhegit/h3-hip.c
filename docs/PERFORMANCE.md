@@ -16,9 +16,9 @@ or `make HIP_ARCH=gfx942`. `h3 --info` prints `h3-hip 0.10.1`.
 
 | Preset | gfx1151 | gfx90a | gfx942 |
 |--------|--------:|-------:|-------:|
-| fox-s2 E2E | 83–87 s | ~10.5 s | **~16 s** |
-| fox-fast E2E | ~95 s | ~18 s | **~12 s** |
-| 15 s cinematic E2E | 45.0 min | 12 min 33 s | **~2.5 min** |
+| fox-s2 E2E | 83–87 s | **~10.8 s** | **~16 s** |
+| fox-fast E2E | ~95 s | **~18 s** | **~12 s** |
+| 15 s cinematic E2E | 45.0 min | **12 min 11 s** | **~2.5 min** |
 
 gfx1151 fox-s2 md5 is unchanged from v0.9.0: `1731f95c4aa582597cf83d57f46b8f9e`.
 
@@ -75,25 +75,90 @@ wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
 figure is 16.7 s; HIP denoise wall here is 35 s. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
-## gfx90a / MI210 — v0.10.0
+## gfx90a / MI210 — retimed on `main` (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
-**BF16 hipBLAS** (not INT8). Measured on a four-GPU MI210 box (`H3_HIP_DEVICE=1`
-for the fox gates below). 128 GiB VRAM per GPU.
+**BF16 hipBLAS** (not INT8). Four-GPU box: fox gates on `H3_HIP_DEVICE=1`,
+15 s on GPU 2. **64 GiB** VRAM per GPU (`h3 --info` max HIP buffer). Peak
+VRAM below is `--profile` `peak=` (live tensors), not `rocm-smi`.
 
-| Preset | Command knobs | E2E | Peak VRAM | Notes |
-|--------|---------------|----:|----------:|-------|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~10.5 s** | **~35 GiB** | 2026-09-01 at `6fe5c0d` |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~18 s** | **~40 GiB** | denoise ~8.2 s |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 33 s** | **~42 GiB** | denoise 10 min 48 s |
-| **15 s + `--token-reduction`** | same + opt-in flag | **8 min 21 s** | **~30 GiB** | denoise 6 min 50 s |
+VAE default tile on this tree is **480 px / 2×1** for 864×480 (was 272 px /
+4×2). That is why 15 s VAE wall is ~72 s vs the older 93 s flash run.
 
-Commands are the same as the gfx1151 block above. 15 s reproduce:
-[`wiki/Long-video.md`](wiki/Long-video.md). Session log:
-[`perf-mi210/SUMMARY.md`](perf-mi210/SUMMARY.md).
+### Default (BF16, no opt-in flags)
 
-Long T2VA on MI210 is still DiT-SDPA bound (~63% of the 15 s E2E). fox-s2 is
-mostly weight I/O.
+| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
+|--------|---------------|----:|------------:|----------:|
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **10.78 s** | **1.25 s** | **25.5 GiB** |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **18.24 s** | **8.14 s** | **33.0 GiB** |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 11 s** | **10 min 47 s** | **41.2 GiB** |
+
+15 s BF16 split: sdpa **476.9 s** (74% of denoise), linear 156.8 s, VAE
+72.2 s (peak 10.2 GiB). E2E **731.18 s**.
+
+### INT8 DiT (`H3_INT8_MLP=1`)
+
+On MI210 this is a **VRAM** knob, not a denoise win (unlike MI300X). No OOM
+on the 64 GiB card.
+
+| Preset | E2E | Denoise GPU | Peak VRAM | vs BF16 denoise |
+|--------|----:|------------:|----------:|----------------:|
+| fox-s2 | **11.13 s** | **1.33 s** | **15.1 GiB** | 0.93× (slower) |
+| fox-fast | **19.54 s** | **9.11 s** | **19.7 GiB** | 0.89× (slower) |
+| 15 s cinematic | **12 min 25 s** | **11 min 00 s** | **27.9 GiB** | 0.98× |
+
+### All optimizations enabled
+
+```bash
+H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
+```
+
+| Preset | E2E | Denoise GPU | Video VAE | Peak VRAM |
+|--------|----:|------------:|----------:|----------:|
+| **fox-s2** | **10.88 s** | **1.00 s** | **2.73 s** | **15.1 GiB** |
+| **15 s cinematic** | **8 min 21 s** | **416.3 s** | **72.0 s** | **27.9 GiB** |
+
+fox-s2 E2E stays I/O-bound. 15 s all-opts E2E matches CLI `--token-reduction`
+on the previous tree (500.8 s): TR does the wall-clock work. INT8 VAE drops
+VAE linear 46.0 s → **0.21 s** but VAE **other** goes 4.9 s → **51.1 s**
+(per-tile quantize), so VAE wall does not fall. VAE peak **10.2 → 3.7 GiB**.
+
+Logs: `/tmp/h3-mi210/main-perf/`. 15 s reproduce:
+[`wiki/Long-video.md`](wiki/Long-video.md).
+
+### 15 s cinematic: BF16 vs INT8 vs All (MI210)
+
+| Metric | BF16 | INT8 DiT | All Opts | Δ BF16→All |
+|--------|-----:|---------:|---------:|-----------:|
+| **DiT denoise wall** | 646.5 s | 660.0 s | 416.3 s | **−36%** |
+| DiT denoise linear | 156.8 s | 167.2 s | 119.8 s | −24% |
+| DiT denoise sdpa | 476.9 s | 479.3 s | 285.8 s | **−40%** |
+| DiT denoise other | 12.3 s | 12.8 s | 10.5 s | −14% |
+| **DiT peak VRAM** | **41.2 GiB** | **27.9 GiB** | **27.9 GiB** | **−32%** |
+| **Video VAE wall** | 72.2 s | 72.2 s | 72.0 s | ~0 |
+| Video VAE linear | 46.0 s | 46.1 s | 0.21 s | −99% |
+| Video VAE other | 4.9 s | 4.9 s | 51.1 s | +10× |
+| **Video VAE peak** | **10.2 GiB** | **10.2 GiB** | **3.7 GiB** | **−64%** |
+| Text encoder | 2.6 s | 2.7 s | 2.6 s | — |
+| Audio VAE | 2.6 s | 2.6 s | 2.6 s | — |
+| **E2E total** | **731.2 s** | **745.3 s** | **501.1 s** | **−31%** |
+
+All Opts = `H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1`
+
+INT8 DiT linear is slightly **slower** than BF16 hipBLAS on this CDNA2 card.
+Token reduction is the 15 s speed path. INT8 VAE is the VRAM path.
+
+### VRAM (MI210, 15 s cinematic)
+
+`--profile` `peak=` (live tensors). Each GPU is **64 GiB**, not 128 GiB.
+
+| | BF16 | INT8 DiT | All opts |
+|--|-----:|---------:|---------:|
+| Pipeline peak | **41.2 GiB** | **27.9 GiB** | **27.9 GiB** |
+| Video VAE peak | **10.2 GiB** | **10.2 GiB** | **3.7 GiB** |
+
+INT8 DiT is the pipeline-peak cut. INT8 VAE is the VAE-peak cut. Default 15 s
+already fits a 64 GiB card; all-opts is headroom, not an enablement story.
 
 ## gfx942 / MI300X — v0.10.1 (2026-09-02)
 
@@ -127,9 +192,9 @@ H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 | **fox-s2** | **~8 s** | **0.34 s** | **~1.3 s** | **~30 GiB** |
 | **15 s cinematic** | **~2.4 min** | **113 s** | **24.6 s** | **~32 GiB** |
 
-Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA
-(`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise is ~3x faster than
-MI210 on the same BF16 path. fox-fast E2E is I/O-bound on both CDNA cards.
+Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise
+is ~3× faster than MI210 on the same BF16 15 s path (186 s vs 647 s). fox-s2 /
+fox-fast E2E is I/O-bound on both CDNA cards.
 
 MI300X profile breakdown (15 s cinematic, BF16):
 - **SDPA (flash MFMA)**: 144.5 s — **77%** of denoise
@@ -240,12 +305,12 @@ Override at runtime: `H3_VAE_TILE_PIXELS=272` restores old behaviour.
 
 Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
 pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
-**tagged** quality-path row (45.0 min / 12 min 33 s) with these numbers.
+**tagged** quality-path row (45.0 min / 12 min 11 s) with these numbers.
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
 | gfx1151 15 s E2E | 45.0 min | **28.2 min** (−37%); [perf-runs/TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
-| gfx90a 15 s E2E | 12 min 33 s | **8 min 21 s** (−34%); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
+| gfx90a 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
 | gfx942 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
 
 gfx1151 fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.

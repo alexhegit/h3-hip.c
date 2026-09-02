@@ -29,11 +29,11 @@ Project ident, generated on gfx1151 (864×480, 56 frames, `--steps 20 --layers 5
 
 Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
 
-| Preset | gfx1151 (v0.9.0 numbers, still current) | gfx90a (v0.10.0) |
-|--------|----------------|------------------|
-| fox-s2 | 83–87 s | **~10.5 s** |
-| fox-fast | ~95 s | **~18 s** |
-| 15 s cinematic (864×480, 362 f) | 45.0 min | **12 min 33 s** |
+| Preset | gfx1151 (v0.9.0 numbers, still current) | gfx90a (`main` 2026-09-02) | gfx942 |
+|--------|----------------|------------------|-----:|
+| fox-s2 | 83–87 s | **10.8 s** | **~16 s** |
+| fox-fast | ~95 s | **18.2 s** | **~12 s** |
+| 15 s cinematic (864×480, 362 f) | 45.0 min | **12 min 11 s** | **~2.5 min** |
 
 These are **complete muxed MP4s** (video + audio), not stubs. fox-s2 and
 fox-fast are both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only
@@ -64,7 +64,7 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E ~45 min**
-and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 33 s** on MI210.
+and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 11 s** on MI210.
 Opt-in `--token-reduction` on the same 15 s clip: **28.2 min** (gfx1151) /
 **8 min 21 s** (gfx90a); quality trade, not the showcase path.
 Timings and reproduce commands:
@@ -122,7 +122,7 @@ MODEL=/path/to/MiniMax-H3
   -o assets/showcase/amd-developer-community-raw.mp4
 
 # Long T2VA — 15 s cinematic office (864×480, 362 frames;
-# E2E ~45 min gfx1151 / 12 min 33 s gfx90a; add --token-reduction
+# E2E ~45 min gfx1151 / 12 min 11 s gfx90a; add --token-reduction
 # for 28.2 min / 8 min 21 s with a visible quality trade)
 ./h3 --profile -d "$MODEL" \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
@@ -164,7 +164,7 @@ Current tagged line is **v0.10.1**.
   [Getting started](docs/wiki/Getting-started.md),
   [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
   [Long video](docs/wiki/Long-video.md)
-- **Timings** (gfx1151 and gfx90a): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
+- **Timings** (gfx1151 / gfx90a / gfx942): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
 The fox showcase uses `--steps 20 --layers 50 --reuse 1`. Tagged scoreboard
@@ -174,7 +174,7 @@ video tokens in middle DiT blocks). It is **off by default**. Use it when
 wall clock matters more than fox-s2 bit identity — long T2VA is DiT-SDPA
 bound on both ISAs. gfx1151 fox-fast denoise with the flag was 34.6 s →
 25.8 s (v0.9.0). Same 15 s cinematic + TR: gfx1151 **28.2 min** (vs 45.0 min),
-gfx90a **8 min 21 s** (vs 12 min 33 s).
+gfx90a **8 min 21 s** (vs 12 min 11 s).
 Tagged scoreboard stays without TR. Generate prints a stderr warning when
 the flag is on.
 
