@@ -197,6 +197,25 @@ overhead adds ~21 s GPU time.
 allocation drops from 175.6 GiB to 11.7 GiB with persistent workspace.
 Best for VRAM-constrained scenarios; quality impact negligible for decoding.
 
+### Fused quantize+GEMM kernel (experimental, not default)
+
+`h3_launch_linear_int8_f32_fused` combines F32→INT8 quantization and INT8 GEMM
+into a single kernel launch, eliminating the intermediate INT8 buffer. Available
+via `h3_gpu_linear_f32_int8_fused()` but **not called by default**.
+
+**Why not default:** the fused kernel reads F32 input twice (scales + quantize)
+vs non-fused reading F32 once + INT8 once (4× smaller). For long sequences the
+extra bandwidth cost outweighs the kernel-launch savings:
+
+| Scenario | Non-fused VAE | Fused VAE | Delta |
+|----------|-------------:|----------:|------:|
+| fox-s2 (22 f) | 1.21 s | 1.81 s | +50% |
+| 15 s cinematic (362 f) | 28.1 s | 58.0 s | +107% |
+
+**When to use:** VRAM-constrained scenarios where the INT8 intermediate buffer
+(9.4 GiB for fox-s2) cannot be afforded. The fused path reduces VAE peak from
+9.4→2.9 GiB (−69%) at the cost of slower execution.
+
 Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
 pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 **tagged** quality-path row (45.0 min / 12 min 33 s) with these numbers.
