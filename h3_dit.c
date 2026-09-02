@@ -181,6 +181,9 @@ struct h3_dit {
     h3_gpu_tensor *mlp_output;
     h3_gpu_tensor *int8_activation;
     h3_gpu_tensor *int8_activation_scales;
+    h3_gpu_tensor *int8_mlp_ws;
+    h3_gpu_tensor *int8_qkv_ws;
+    h3_gpu_tensor *int8_adaln_ws;
     h3_gpu_tensor *final_audio_input;
     h3_gpu_tensor *final_video_input;
     h3_gpu_tensor *final_audio_inverse;
@@ -1641,6 +1644,36 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             return 0;
         }
     }
+    if (dit->int8_mlp) {
+        dit->int8_mlp_ws = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, (size_t)sequence * FFN * 2);
+        if (!dit->int8_mlp_ws) {
+            fail(error, error_size,
+                 "cannot allocate int8 MLP workspace: %s",
+                 h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
+    if (dit->int8_qkv) {
+        dit->int8_qkv_ws = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, (size_t)sequence * INNER * 3);
+        if (!dit->int8_qkv_ws) {
+            fail(error, error_size,
+                 "cannot allocate int8 QKV workspace: %s",
+                 h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
+    if (dit->int8_qkv || dit->int8_mlp || dit->int8_attention_out) {
+        dit->int8_adaln_ws = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, (size_t)sequence * HIDDEN);
+        if (!dit->int8_adaln_ws) {
+            fail(error, error_size,
+                 "cannot allocate int8 AdaLN workspace: %s",
+                 h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
     if (dit->token_reduction) {
         size_t full_elements = sequence * HIDDEN;
         size_t qkv_capacity = sequence * INNER * 3;
@@ -2065,7 +2098,8 @@ static int run_block(h3_dit *dit, unsigned index, int step,
             attention_input_quantized,
             dit->use_slower_unfused_qkv_rope,
             dit->use_slower_scalar_qkv_rms,
-            dit->use_slower_uncached_int8_scales),
+            dit->use_slower_uncached_int8_scales,
+            dit->int8_qkv_ws),
            "DiT int8 QKV projection/norm/RoPE");
     } else {
         OP(h3_gpu_grouped_qkv_linear_rope_bf16(
@@ -2119,7 +2153,8 @@ static int run_block(h3_dit *dit, unsigned index, int step,
             dit->gpu, dit->hidden, dit->int8_activation,
             dit->int8_activation_scales, dit->hidden,
             dit->attention_output, weight->norm2, modulation, modulation,
-            row_map, rows, padded_rows, HIDDEN, SLOTS, 2, 3, 4, 1e-5f),
+            row_map, rows, padded_rows, HIDDEN, SLOTS, 2, 3, 4, 1e-5f,
+            dit->int8_adaln_ws),
            "DiT fused attention gate, MLP AdaLN and int8 quantization");
     } else if (!getenv("H3_DISABLE_FUSED_GATE_ADALN")) {
         OP(h3_gpu_gate_adaln_bf16(
@@ -2151,7 +2186,7 @@ static int run_block(h3_dit *dit, unsigned index, int step,
             rows, HIDDEN, FFN, HIDDEN,
             dit->use_slower_grouped_quantizer,
             dit->use_slower_dynamic_fc1_k, dit->use_int8_row_fc2,
-            fused_int8_mlp_input),
+            fused_int8_mlp_input, dit->int8_mlp_ws),
            "DiT int8 fused MLP");
     } else if (dit->nax_mlp && !getenv("H3_DISABLE_NAX_MLP")) {
         OP(h3_gpu_mlp_nax_bf16(dit->gpu, mlp_output, dit->activated,
@@ -2183,7 +2218,8 @@ static int run_block(h3_dit *dit, unsigned index, int step,
                 dit->gpu, dit->hidden, dit->int8_activation,
                 dit->int8_activation_scales, dit->hidden, mlp_output,
                 next_weight->norm1, modulation, next_modulation, row_map,
-                rows, padded_rows, HIDDEN, SLOTS, 5, 0, 1, 1e-5f),
+                rows, padded_rows, HIDDEN, SLOTS, 5, 0, 1, 1e-5f,
+                dit->int8_adaln_ws),
                "DiT fused MLP gate, next attention AdaLN and int8 quantization");
             *next_attention_input_quantized = 1;
         } else {
@@ -3193,7 +3229,8 @@ void h3_dit_free(h3_dit *dit) {
     FREE(token_pool_pairs); FREE(token_baseline_indices);
     FREE(token_expand_parents); FREE(token_original); FREE(mod_mlp); FREE(fc1);
     FREE(activated); FREE(mlp_output); FREE(int8_activation);
-    FREE(int8_activation_scales); FREE(final_audio_input);
+    FREE(int8_activation_scales); FREE(int8_mlp_ws);
+    FREE(int8_qkv_ws); FREE(int8_adaln_ws); FREE(final_audio_input);
     FREE(final_video_input); FREE(final_audio_inverse);
     FREE(final_video_inverse); FREE(final_audio_norm); FREE(final_video_norm);
     FREE(final_audio_f32); FREE(final_video_f32); FREE(audio_output);

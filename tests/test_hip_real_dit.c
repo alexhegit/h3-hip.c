@@ -170,13 +170,18 @@ int main(int argc, char **argv) {
         gpu, (size_t)PADDED_ROWS * (FFN > INNER ? FFN : INNER));
     h3_gpu_tensor *input_scales = h3_gpu_tensor_new_f32(
         gpu, (size_t)PADDED_ROWS * (FFN / 1024));
+    h3_gpu_tensor *qkv_ws = h3_gpu_tensor_new_bf16(
+        gpu, (size_t)SEQUENCE * INNER * 3);
+    h3_gpu_tensor *mlp_ws = h3_gpu_tensor_new_bf16(
+        gpu, (size_t)SEQUENCE * FFN * 2);
     if (!hidden || !norm || !qkv || !query || !key || !value || !heads ||
         !branch || !int8_query || !int8_key || !int8_value || !int8_heads ||
         !int8_branch || !mlp_ref || !mlp_int8 || !mlp_rowfc2 || !activated ||
         !act_bf16 || !act_int8 || !fc1_fused || !rope_cos ||
         !rope_sin ||
         !qkv_int8 || !qkv_scales || !out_int8 || !out_scales || !fc1_int8 ||
-        !fc1_scales || !fc2_int8 || !fc2_scales || !quantized || !input_scales)
+        !fc1_scales || !fc2_int8 || !fc2_scales || !quantized || !input_scales ||
+        !qkv_ws || !mlp_ws)
         die("tensor allocation failed");
 
     gpu_call(gpu, h3_gpu_begin(gpu), "begin");
@@ -193,7 +198,7 @@ int main(int argc, char **argv) {
                      gpu, int8_query, int8_key, int8_value, quantized,
                      input_scales, norm, qkv_int8, qkv_scales, q_norm, k_norm,
                      rope_cos, rope_sin, SEQUENCE, HIDDEN, HEADS, HEAD_DIM,
-                     ROPE_HALF, 1e-5f, 0, 0, 0, 0), "int8 qkv");
+                     ROPE_HALF, 1e-5f, 0, 0, 0, 0, qkv_ws), "int8 qkv");
     gpu_call(gpu, h3_gpu_sdpa_bf16(gpu, heads, query, key, value, SEQUENCE,
                                    HEADS, HEAD_DIM,
                                    1.0f / sqrtf((float)HEAD_DIM)),
@@ -226,13 +231,14 @@ int main(int argc, char **argv) {
     gpu_call(gpu, h3_gpu_mlp_int8_bf16(
                      gpu, mlp_int8, activated, quantized, input_scales, norm,
                      fc1_int8, fc1_scales, fc2_int8, fc2_scales, fc1_w, fc2_w,
-                     SEQUENCE, HIDDEN, FFN, HIDDEN, 0, 0, 0, 0), "int8 mlp");
+                     SEQUENCE, HIDDEN, FFN, HIDDEN, 0, 0, 0, 0, mlp_ws),
+             "int8 mlp");
     gpu_call(gpu, h3_gpu_copy_bf16(gpu, act_int8, 0, activated, 0,
                                    (size_t)SEQUENCE * FFN), "save int8 swiglu");
     gpu_call(gpu, h3_gpu_mlp_int8_bf16(
                      gpu, mlp_rowfc2, activated, quantized, input_scales, norm,
                      fc1_int8, fc1_scales, fc2_int8, fc2_scales, fc1_w, fc2_w,
-                     SEQUENCE, HIDDEN, FFN, HIDDEN, 0, 0, 1, 0),
+                     SEQUENCE, HIDDEN, FFN, HIDDEN, 0, 0, 1, 0, mlp_ws),
              "int8 mlp row fc2");
     gpu_call(gpu, h3_gpu_submit(gpu), "submit");
 

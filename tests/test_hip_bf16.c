@@ -255,7 +255,7 @@ static int test_gate_adaln_quantize_int8(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_gate_adaln_quantize_int8(
         gpu, got_gated, got_quant, got_scales, gpu_residual, gpu_branch,
         gpu_norm, gpu_gate_mod, gpu_norm_mod, gpu_row_map, ROWS, PADDED_ROWS,
-        WIDTH, SLOTS, 0, 0, 1, 1e-5f), "gate adaln quantize int8"));
+        WIDTH, SLOTS, 0, 0, 1, 1e-5f, NULL), "gate adaln quantize int8"));
     CHECK(!require_gpu(gpu, h3_gpu_quantize_weight_int8(
         gpu, ref_quant, ref_scales, ref_adaln, ROWS, WIDTH),
         "reference gate adaln quantize"));
@@ -4830,7 +4830,8 @@ static int test_mlp_int8_grouped_fc2(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_mlp_int8_bf16(
         gpu, output, activated, quantized, activation_scales, input,
         fc1_int8, fc1_scales, fc2_int8, fc2_scales, fc1_w, fc2_w, ROWS,
-        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0), "mlp int8 grouped fc2"));
+        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0, NULL),
+        "mlp int8 grouped fc2"));
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit mlp grouped fc2"));
     uint16_t *got = calloc(ROWS * OUTPUT_DIM, sizeof(*got));
     uint16_t *got_ref = calloc(ROWS * OUTPUT_DIM, sizeof(*got_ref));
@@ -4915,7 +4916,7 @@ static int test_grouped_qkv_linear_rope_int8(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_grouped_qkv_linear_rope_int8(
         gpu, got_q, got_k, got_v, quantized, input_scales, gpu_input, weight,
         weight_scales, gpu_q_norm, gpu_k_norm, gpu_cos, gpu_sin, ROWS,
-        INPUT_DIM, HEADS, HEAD_DIM, ROPE_HALF, 1e-5f, 0, 0, 0, 0),
+        INPUT_DIM, HEADS, HEAD_DIM, ROPE_HALF, 1e-5f, 0, 0, 0, 0, NULL),
         "grouped qkv linear rope int8"));
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit grouped qkv int8"));
     uint16_t read_ref_q[ROWS * INNER], read_got_q[ROWS * INNER];
@@ -5146,7 +5147,8 @@ static int test_mlp_int8_nax_r128(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_mlp_int8_bf16(
         gpu, output, activated, quantized, activation_scales, input,
         fc1_int8, fc1_scales, fc2_int8, fc2_scales, fc1_w, fc2_w, ROWS,
-        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0), "mlp int8 nax"));
+        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0, NULL),
+        "mlp int8 nax"));
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit mlp int8 nax"));
     uint16_t *got = calloc(ROWS * OUTPUT_DIM, sizeof(*got));
     uint16_t *got_ref = calloc(ROWS * OUTPUT_DIM, sizeof(*got_ref));
@@ -5218,7 +5220,7 @@ static int test_mlp_int8(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_mlp_int8_bf16(
         gpu, output, activated, quantized, activation_scales, input,
         fc1_int8, fc1_scales, fc2_int8, fc2_scales, fc1_w, fc2_w, ROWS,
-        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0), "mlp int8"));
+        INPUT_DIM, HIDDEN, OUTPUT_DIM, 0, 0, 0, 0, NULL), "mlp int8"));
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit mlp int8"));
     uint16_t got[ROWS * OUTPUT_DIM], got_ref[ROWS * OUTPUT_DIM];
     CHECK(h3_gpu_tensor_read_bf16(output, got, ROWS * OUTPUT_DIM));

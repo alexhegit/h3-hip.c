@@ -365,7 +365,8 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          int use_slower_grouped_quantizer,
                          int use_slower_dynamic_fc1_k,
                          int use_int8_row_fc2,
-                         int input_is_quantized);
+                         int input_is_quantized,
+                         h3_gpu_tensor *fc1_out_ws);
 int h3_gpu_silu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *input, uint32_t elements);
 int h3_gpu_rms_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -444,7 +445,8 @@ int h3_gpu_gate_adaln_quantize_int8(
                      const h3_gpu_tensor *row_map, uint32_t rows,
                      uint32_t padded_rows, uint32_t width, uint32_t slots,
                      uint32_t gate_slot, uint32_t shift_slot,
-                     uint32_t scale_slot, float epsilon);
+                     uint32_t scale_slot, float epsilon,
+                     h3_gpu_tensor *adaln_ws);
 int h3_gpu_qkv_rope_bf16(h3_gpu *gpu, h3_gpu_tensor *query,
                          h3_gpu_tensor *key, h3_gpu_tensor *value,
                          const h3_gpu_tensor *qkv,
@@ -504,7 +506,8 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
                                  int input_is_quantized,
                                  int use_slower_unfused_qkv_rope,
                                  int use_slower_scalar_qkv_rms,
-                                 int use_slower_uncached_int8_scales);
+                                 int use_slower_uncached_int8_scales,
+                                 h3_gpu_tensor *qkv_ws);
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,

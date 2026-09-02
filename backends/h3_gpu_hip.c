@@ -3676,7 +3676,7 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          uint32_t rows, uint32_t input_dim, uint32_t hidden_dim,
                          uint32_t output_dim, int use_slower_grouped_quantizer,
                          int use_slower_dynamic_fc1_k, int use_int8_row_fc2,
-                         int input_is_quantized) {
+                         int input_is_quantized, h3_gpu_tensor *fc1_out_ws) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     uint32_t padded_rows = (rows + 127u) & ~127u;
     uint32_t fc2_scale_groups = hidden_dim / 1024u;
@@ -3685,6 +3685,7 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         (input_dim > hidden_dim ? input_dim : hidden_dim);
     size_t fc1_weight_count = (size_t)fc1_output_dim * input_dim;
     size_t fc2_weight_count = (size_t)output_dim * hidden_dim;
+    size_t fc1_out_count = (size_t)rows * fc1_output_dim;
     (void)fc1_bf16;
     (void)fc2_bf16;
     (void)use_slower_grouped_quantizer;
@@ -3713,11 +3714,15 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              "int8 MLP output")) {
         return 0;
     }
-    h3_gpu_tensor *fc1_out = h3_gpu_tensor_new_bf16_device(
-        gpu, (size_t)rows * fc1_output_dim);
+    h3_gpu_tensor *fc1_out = fc1_out_ws;
+    int own_fc1_out = 0;
     if (!fc1_out) {
-        h3_hip_set_error(ctx, "int8 MLP FC1 temporary allocation failed");
-        return 0;
+        fc1_out = h3_gpu_tensor_new_bf16_device(gpu, fc1_out_count);
+        if (!fc1_out) {
+            h3_hip_set_error(ctx, "int8 MLP FC1 temporary allocation failed");
+            return 0;
+        }
+        own_fc1_out = 1;
     }
     int ok = 1;
     if (!input_is_quantized &&
@@ -3765,7 +3770,7 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                    fc2_weight, fc2_scales, rows, hidden_dim, output_dim)) {
         ok = 0;
     }
-    h3_gpu_tensor_free(fc1_out);
+    if (own_fc1_out) h3_gpu_tensor_free(fc1_out);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_mlp_int8_bf16 failed");
     }
@@ -3817,7 +3822,7 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
     uint32_t rows, uint32_t input_dim, uint32_t heads, uint32_t head_dim,
     uint32_t rope_half, float epsilon, int input_is_quantized,
     int use_slower_unfused_qkv_rope, int use_slower_scalar_qkv_rms,
-    int use_slower_uncached_int8_scales) {
+    int use_slower_uncached_int8_scales, h3_gpu_tensor *qkv_ws) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     uint32_t inner = heads * head_dim;
     uint32_t qkv_dim = inner * 3u;
@@ -3826,6 +3831,7 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
     size_t weight_count = (size_t)qkv_dim * input_dim;
     size_t projected = (size_t)rows * inner;
     size_t rope_count = (size_t)rows * rope_half;
+    size_t qkv_count = (size_t)rows * qkv_dim;
     (void)use_slower_unfused_qkv_rope;
     (void)use_slower_scalar_qkv_rms;
     (void)use_slower_uncached_int8_scales;
@@ -3848,10 +3854,15 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
         !h3_hip_require_bf16(ctx, value, projected, "int8 value")) {
         return 0;
     }
-    h3_gpu_tensor *qkv = h3_gpu_tensor_new_bf16_device(gpu, (size_t)rows * qkv_dim);
+    h3_gpu_tensor *qkv = qkv_ws;
+    int own_qkv = 0;
     if (!qkv) {
-        h3_hip_set_error(ctx, "int8 QKV temporary allocation failed");
-        return 0;
+        qkv = h3_gpu_tensor_new_bf16_device(gpu, qkv_count);
+        if (!qkv) {
+            h3_hip_set_error(ctx, "int8 QKV temporary allocation failed");
+            return 0;
+        }
+        own_qkv = 1;
     }
     int ok = 1;
     if (!input_is_quantized &&
@@ -3870,7 +3881,7 @@ int h3_gpu_grouped_qkv_linear_rope_int8(
             rows, heads, head_dim, rope_half, 1, epsilon, 1)) {
         ok = 0;
     }
-    h3_gpu_tensor_free(qkv);
+    if (own_qkv) h3_gpu_tensor_free(qkv);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_grouped_qkv_linear_rope_int8 failed");
     }
@@ -3885,7 +3896,7 @@ int h3_gpu_gate_adaln_quantize_int8(
     const h3_gpu_tensor *norm_modulation, const h3_gpu_tensor *row_map,
     uint32_t rows, uint32_t padded_rows, uint32_t width, uint32_t slots,
     uint32_t gate_slot, uint32_t shift_slot, uint32_t scale_slot,
-    float epsilon) {
+    float epsilon, h3_gpu_tensor *adaln_ws) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t count = (size_t)rows * width;
     size_t padded_count = (size_t)padded_rows * width;
@@ -3907,10 +3918,15 @@ int h3_gpu_gate_adaln_quantize_int8(
                             "int8 gate AdaLN scales")) {
         return 0;
     }
-    h3_gpu_tensor *adaln_out = h3_gpu_tensor_new_bf16_device(gpu, count);
+    h3_gpu_tensor *adaln_out = adaln_ws;
+    int own_adaln = 0;
     if (!adaln_out) {
-        h3_hip_set_error(ctx, "int8 gate AdaLN temporary allocation failed");
-        return 0;
+        adaln_out = h3_gpu_tensor_new_bf16_device(gpu, count);
+        if (!adaln_out) {
+            h3_hip_set_error(ctx, "int8 gate AdaLN temporary allocation failed");
+            return 0;
+        }
+        own_adaln = 1;
     }
     int ok = h3_gpu_gate_adaln_bf16(
         gpu, gated_residual, adaln_out, residual, branch, norm_weight,
@@ -3919,7 +3935,7 @@ int h3_gpu_gate_adaln_quantize_int8(
              h3_hip_quantize_bf16_int8_rows(
                  ctx, quantized_output, quantized_scales, adaln_out, rows,
                  padded_rows, width);
-    h3_gpu_tensor_free(adaln_out);
+    if (own_adaln) h3_gpu_tensor_free(adaln_out);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_gate_adaln_quantize_int8 failed");
     }
