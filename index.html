@@ -309,6 +309,7 @@
       gfx1151 fox-s2 md5 <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> (same as v0.9.0).
       Build: <span class="mono">make HIP_ARCH=gfx1151</span> or <span class="mono">HIP_ARCH=gfx90a</span>.
       Halo denoise GPU: fox-s2 6.3–6.5 s · fox-fast 28 s. MI210 fox-fast denoise ~8.2 s (sdpa 1.08 s).
+      Tagged 15 s row is the quality path. Opt-in <span class="mono">--token-reduction</span> is below.
     </p>
 
     <h3>Clips from this build</h3>
@@ -340,34 +341,56 @@
     <p>
       MiniMax-H3 supports up to <strong>362 aligned frames</strong> (~15&nbsp;s at 24&nbsp;fps). Same knobs
       on both ISAs: <span class="mono">--steps 20 --layers 45 --reuse 2</span>, 864×480, seed 42.
-      DiT denoise dominates; MI210 flash SDPA is why the wall clock drops.
+      DiT denoise dominates; MI210 flash SDPA is why the quality-path wall clock drops.
+    </p>
+    <p>
+      <strong><span class="mono">--token-reduction</span></strong> is opt-in (off by default; same flag as
+      <a href="https://github.com/alexhegit/h3-spark.c">h3-spark.c</a>). It pairs video tokens in middle DiT
+      blocks so long-N SDPA shrinks. Faster; <strong>visible quality trade</strong>; not the gallery clip
+      or the fox-s2 md5 path. Generate prints a stderr warning when the flag is on.
     </p>
 
     <table>
-      <thead><tr><th>GPU</th><th class="num">Aligned frames</th><th class="num">Duration</th><th class="num">E2E wall</th><th class="num">Denoise wall</th></tr></thead>
+      <thead><tr><th>GPU</th><th>Path</th><th class="num">Aligned frames</th><th class="num">Duration</th><th class="num">E2E wall</th><th class="num">Denoise wall</th></tr></thead>
       <tbody>
         <tr class="hi">
-          <td><strong>gfx1151</strong> v0.9.0</td>
+          <td><strong>gfx1151</strong></td>
+          <td>quality</td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">45.0 min</td><td class="num">40.4 min</td>
         </tr>
+        <tr>
+          <td>gfx1151</td>
+          <td><span class="mono">--token-reduction</span></td>
+          <td class="num">362</td><td class="num">15.1 s</td>
+          <td class="num">28.2 min</td><td class="num">23.3 min</td>
+        </tr>
         <tr class="hi">
-          <td><strong>gfx90a</strong> v0.10.0</td>
+          <td><strong>gfx90a</strong></td>
+          <td>quality</td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">12 min 33 s</td><td class="num">10 min 48 s</td>
+        </tr>
+        <tr>
+          <td>gfx90a</td>
+          <td><span class="mono">--token-reduction</span></td>
+          <td class="num">362</td><td class="num">15.1 s</td>
+          <td class="num">8 min 21 s</td><td class="num">6 min 50 s</td>
         </tr>
       </tbody>
     </table>
     <p class="cap">
-      Halo phase splits:
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.1/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>.
-      MI210 session:
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.10.1/docs/perf-mi210/STATUS.md">perf-mi210/STATUS.md</a>.
+      Quality-path Halo: <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>.
+      gfx1151 TR (2 Sep 2026, v0.10.1 binary):
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/TOKEN_REDUCTION.md">perf-runs/TOKEN_REDUCTION.md</a>
+      (−37% E2E). gfx90a TR:
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-mi210/TOKEN_REDUCTION.md">perf-mi210/TOKEN_REDUCTION.md</a>
+      (−34% E2E).
     </p>
 
     <div class="hero-media" style="margin-top:28px;padding-bottom:0">
       <video src="assets/long-15s-cinematic.mp4" poster="assets/long-15s-cinematic.jpg" controls muted loop playsinline preload="metadata"></video>
-      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · 864×480 · 362f · seed 42 · gfx1151 E2E 45 min · gfx90a E2E 12 min 33 s</div>
+      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · quality path · 864×480 · 362f · seed 42 · gfx1151 E2E 45 min · gfx90a E2E 12 min 33 s</div>
     </div>
 
     <h3>Reproduce the 15 s clip</h3>
@@ -391,7 +414,10 @@ make HIP_ARCH=gfx1151 -j$(nproc) h3   <span class="c"># or gfx90a</span>
 No readable text, no logos, no subtitles. Premium technology documentary aesthetic." \
   --width 864 --height 480 --seconds 15 \
   --steps 20 --layers 45 --reuse 2 --seed 42 \
-  -o outputs/long-15s-cinematic.mp4</pre>
+  -o outputs/long-15s-cinematic.mp4
+
+<span class="c"># optional: --token-reduction  (gfx1151 28.2 min / gfx90a 8 min 21 s; quality trade)</span>
+<span class="c"># append the flag to the same command; not the gallery / md5 path</span></pre>
   </div>
 </section>
 
@@ -511,8 +537,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       Host, model and CLI code follow <a href="https://github.com/antirez/h3.c">antirez/h3.c</a>; the HIP backend
       is <span class="mono">backends/h3_gpu_hip.c</span> plus the kernels under
       <span class="mono">kernels/</span>. Model weights are subject to the MiniMax-H3 license.
-      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Tagged <span class="mono">v0.10.1</span>,
-      1 Sep 2026. Halo fox-s2 md5 unchanged from v0.9.0. Numbers match v0.10.0.
+      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Tagged <span class="mono">v0.10.1</span>
+      quality path, 1 Sep 2026. 15 s <span class="mono">--token-reduction</span> timings on <span class="mono">main</span>,
+      2 Sep 2026. Halo fox-s2 md5 unchanged from v0.9.0.
     </p>
   </div>
 </footer>
