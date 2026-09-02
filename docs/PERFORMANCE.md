@@ -105,7 +105,7 @@ short presets.
 | **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **2.89 s** | **25.4 GiB** | 11 DiT evals |
 | **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** | denoise 77% of E2E |
 | fox-s2 INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **0.34 s** | **~79 GiB** | INT8 opt-in |
-| fox-fast INT8 | same knobs + `H3_INT8_MLP=1` | **~14 s** | **2.19 s** | **180.5 GiB** | tight on 192 GiB |
+| fox-fast INT8 | same knobs + `H3_INT8_MLP=1` | **~12 s** | **1.86 s** | **19.7 GiB** | 33% faster than BF16 denoise |
 
 Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA
 (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise is ~3x faster than
@@ -116,9 +116,9 @@ MI300X profile breakdown (15 s cinematic, BF16):
 - **Linear GEMM (hipBLAS)**: 34.4 s — 18%
 - **Other (norms, activations,)**: 7 s — 4%
 
-INT8 encode overhead: 179 s CPU time launching 6061 direct dispatches
-vs BF16's 0.03 s (6556 dispatches via MPS batching). INT8 kernels
-bypass hipBLAS MPS, causing per-kernel CPU launch overhead.
+INT8 encode overhead eliminated: pre-allocated workspaces removed 2497 GiB
+of per-block allocation churn. Denoise encode time dropped from 179 s to
+0.06 s. INT8 denoise GPU time (1.86 s) is now 33% faster than BF16 (2.86 s).
 
 ## How a GitHub Release should quote this
 
