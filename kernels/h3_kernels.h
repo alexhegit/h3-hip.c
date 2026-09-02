@@ -546,6 +546,9 @@ int h3_launch_linear_int8_f32(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, float *output, const h3_linear_args *args,
     hipStream_t stream);
+int h3_launch_linear_int8_f32_fused(
+    const float *input, const int8_t *weight, const float *weight_scales,
+    float *output, const h3_linear_args *args, hipStream_t stream);
 int h3_launch_linear_int8_bf16_naive(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, const h3_linear_args *args,

@@ -1268,9 +1268,9 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
             reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<32>) :
             reinterpret_cast<const void *>(h3_linear_f32_r64_kernel<16>);
         h3_f32_stats_add("r64", &host_args);
-        return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
-               hipSuccess;
-    }
+    return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
+           hipSuccess;
+}
     dim3 block(16, 16, 1);
     dim3 grid((host_args.output_dim + 15) / 16, (host_args.rows + 15) / 16, 1);
     return hipLaunchKernel(
@@ -4345,6 +4345,212 @@ extern "C" int h3_launch_linear_int8_f32(
     else
         kernel = reinterpret_cast<const void *>(
             h3_linear_int8_f32_t128_kernel<0, 32>);
+    return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
+           hipSuccess;
+}
+
+/* ── Fused F32→INT8 quantize + INT8 GEMM with F32 output ────────────── *
+ *
+ * Quantizes F32 input on-the-fly and performs INT8 GEMM in a single kernel
+ * launch. Eliminates the separate quantize kernel and INT8 intermediate
+ * buffer for the VAE path.
+ *
+ * Two phases per block:
+ *   Phase 1 (scales): cooperatively find per-row max across all input_dim
+ *                     columns, compute row scales, store to global memory.
+ *   Phase 2 (GEMM):   in the k-tile loop, quantize F32→INT8 on-the-fly from
+ *                     global memory into shared memory, run existing INT8 GEMM.
+ *
+ * Shared memory: (BK+4)*128*2 = 33 KB (BK=128) — fits all ISAs.
+ * Grid: (output_dim/128, rows/128, 1). Block: (16, 16, 1) = 256 threads.
+ * ─────────────────────────────────────────────────────────────────────── */
+
+template <int K_CONST, int BK>
+__global__ void __launch_bounds__(256, 2)
+h3_linear_int8_f32_fused_t128_kernel(const float *input, const int8_t *weight,
+                                     const float *weight_scales, float *output,
+                                     h3_linear_args args) {
+    constexpr int BM = 128, BN = 128, TM = 8, TN = 8;
+    static_assert(BK == 32 || BK == 64 || BK == 128, "fused INT8 BK 32/64/128");
+    constexpr int LDS_K = BK + 4;
+    __shared__ int8_t As[BM][LDS_K];
+    __shared__ int8_t Bs[BN][LDS_K];
+    __shared__ float scale_a[BM];
+    __shared__ float scale_b[BN];
+
+    uint32_t block_row = blockIdx.y * (uint32_t)BM;
+    uint32_t block_col = blockIdx.x * (uint32_t)BN;
+    uint32_t tx = threadIdx.x;
+    uint32_t ty = threadIdx.y;
+    uint32_t tid = ty * 16u + tx;
+    uint32_t input_dim = K_CONST ? (uint32_t)K_CONST : args.input_dim;
+    uint32_t k_tiles = input_dim / (uint32_t)BK;
+
+    /* ── Phase 1: compute per-row scales from F32 input ── */
+    for (uint32_t row_base = tid; row_base < (uint32_t)BM; row_base += 256u) {
+        uint32_t row = block_row + row_base;
+        float local_max = 0.0f;
+        if (row < args.rows) {
+            const float *row_ptr = input + (size_t)row * input_dim;
+            uint32_t col4 = input_dim / 4u;
+            const float4 *row4 = reinterpret_cast<const float4 *>(row_ptr);
+            for (uint32_t i = 0; i < col4; i += 64u) {
+                float4 v = __ldg(row4 + i);
+                float a0 = fabsf(v.x), a1 = fabsf(v.y);
+                float a2 = fabsf(v.z), a3 = fabsf(v.w);
+                float m = fmaxf(fmaxf(a0, a1), fmaxf(a2, a3));
+                if (m > local_max) local_max = m;
+            }
+            uint32_t tail = col4 * 4u;
+            for (uint32_t i = tail + (row_base % 4u); i < input_dim; i += 4u) {
+                float a = fabsf(__ldg(row_ptr + i));
+                if (a > local_max) local_max = a;
+            }
+        }
+        /* Wave-level max reduction (32 threads) */
+        for (int offset = 16; offset > 0; offset >>= 1)
+            local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
+        /* Cross-wave reduction via shared memory */
+        __shared__ float smax[8];
+        if ((tid & 31u) == 0u) smax[tid >> 5] = local_max;
+        __syncthreads();
+        if (tid < 8u) {
+            float v = (tid < (256u >> 5)) ? smax[tid] : 0.0f;
+            for (int offset = 4; offset > 0; offset >>= 1)
+                v = fmaxf(v, h3_shfl_xor32(v, offset));
+            if (tid == 0) smax[0] = v;
+        }
+        __syncthreads();
+        float clipped_max = smax[0] * 0.999f;
+        float inv = clipped_max > 0.0f ? 127.0f / clipped_max : 127.0f;
+        if (row < args.rows) scale_a[row_base] = inv;
+    }
+    __syncthreads();
+
+    /* Load weight scales */
+    if (tid < (uint32_t)BN) {
+        uint32_t column = block_col + tid;
+        scale_b[tid] =
+            column < args.output_dim ? weight_scales[column] : 0.0f;
+    }
+
+    int32_t acc[TM][TN];
+#pragma unroll
+    for (int i = 0; i < TM; i++)
+#pragma unroll
+        for (int j = 0; j < TN; j++) acc[i][j] = 0;
+
+    /* ── Phase 2: fused quantize + INT8 GEMM ── */
+    for (uint32_t kt = 0; kt < k_tiles; kt++) {
+        uint32_t k0 = kt * (uint32_t)BK;
+
+        /* Quantize F32 input tile → INT8 in shared memory */
+        {
+            constexpr int TOTAL_I8 = BM * LDS_K; /* 128 * 132 = 16896 */
+            constexpr int I8_PER_THREAD = (TOTAL_I8 + 255) / 256; /* = 66 */
+            for (uint32_t ii = 0; ii < (uint32_t)I8_PER_THREAD; ii++) {
+                uint32_t idx = tid + ii * 256u;
+                if (idx < (uint32_t)TOTAL_I8) {
+                    uint32_t r = idx / (uint32_t)LDS_K;
+                    uint32_t c = idx % (uint32_t)LDS_K;
+                    uint32_t row = block_row + r;
+                    uint32_t col = k0 + c;
+                    float val = 0.0f;
+                    if (row < args.rows && c < (uint32_t)BK && col < input_dim)
+                        val = __ldg(input + (size_t)row * input_dim + col);
+                    float inv_a = (r < (uint32_t)BM) ? scale_a[r] : 0.0f;
+                    int q = max(-127, min(127, (int)rintf(val * inv_a)));
+                    As[r][c] = (int8_t)q;
+                }
+            }
+        }
+
+        /* Load weight tile (unchanged) */
+        h3_load_i8_tile_bmxk<BN, LDS_K, BK>(Bs, weight, block_col, k0,
+                                             args.output_dim, input_dim, tid);
+        __syncthreads();
+
+        /* INT8 dot-product accumulate */
+#pragma unroll
+        for (int k = 0; k < BK; k += 16) {
+            int32_t av0[TM], av1[TM], av2[TM], av3[TM];
+            int32_t bv0[TN], bv1[TN], bv2[TN], bv3[TN];
+#pragma unroll
+            for (int i = 0; i < TM; i++) {
+                uint64_t p0 = *reinterpret_cast<const uint64_t *>(
+                    &As[ty * (uint32_t)TM + (uint32_t)i][k]);
+                uint64_t p1 = *reinterpret_cast<const uint64_t *>(
+                    &As[ty * (uint32_t)TM + (uint32_t)i][k + 8]);
+                av0[i] = (int32_t)p0;
+                av1[i] = (int32_t)(p0 >> 32);
+                av2[i] = (int32_t)p1;
+                av3[i] = (int32_t)(p1 >> 32);
+            }
+#pragma unroll
+            for (int j = 0; j < TN; j++) {
+                uint64_t p0 = *reinterpret_cast<const uint64_t *>(
+                    &Bs[tx * (uint32_t)TN + (uint32_t)j][k]);
+                uint64_t p1 = *reinterpret_cast<const uint64_t *>(
+                    &Bs[tx * (uint32_t)TN + (uint32_t)j][k + 8]);
+                bv0[j] = (int32_t)p0;
+                bv1[j] = (int32_t)(p0 >> 32);
+                bv2[j] = (int32_t)p1;
+                bv3[j] = (int32_t)(p1 >> 32);
+            }
+#pragma unroll
+            for (int i = 0; i < TM; i++)
+#pragma unroll
+                for (int j = 0; j < TN; j++) {
+                    acc[i][j] = h3_i8dot4(av0[i], bv0[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av1[i], bv1[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av2[i], bv2[j], acc[i][j]);
+                    acc[i][j] = h3_i8dot4(av3[i], bv3[j], acc[i][j]);
+                }
+        }
+        __syncthreads();
+    }
+
+    /* ── Write output with dequantization ── */
+#pragma unroll
+    for (int i = 0; i < TM; i++) {
+        uint32_t row = block_row + ty * (uint32_t)TM + (uint32_t)i;
+        if (row >= args.rows) continue;
+        uint32_t column0 = block_col + tx * (uint32_t)TN;
+        float sa = scale_a[ty * (uint32_t)TM + (uint32_t)i];
+        for (int j = 0; j < TN; j++) {
+            uint32_t column = column0 + (uint32_t)j;
+            if (column >= args.output_dim) continue;
+            float value = (float)acc[i][j] * sa *
+                          scale_b[tx * (uint32_t)TN + (uint32_t)j];
+            output[row * args.output_dim + column] = value;
+        }
+    }
+}
+
+extern "C" int h3_launch_linear_int8_f32_fused(
+    const float *input, const int8_t *weight, const float *weight_scales,
+    float *output, const h3_linear_args *args, hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &weight_scales, &output,
+                           &host_args};
+    constexpr int BM = 128, BN = 128;
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.output_dim + BN - 1u) / BN,
+              (host_args.rows + BM - 1u) / BM, 1);
+    uint32_t input_dim = host_args.input_dim;
+    const void *kernel = nullptr;
+    if (input_dim % 128 == 0)
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_fused_t128_kernel<0, 128>);
+    else if (input_dim % 64 == 0)
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_fused_t128_kernel<0, 64>);
+    else if (input_dim % 32 == 0)
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_fused_t128_kernel<0, 32>);
+    else
+        kernel = reinterpret_cast<const void *>(
+            h3_linear_int8_f32_fused_t128_kernel<0, 32>);
     return hipLaunchKernel(kernel, grid, block, kernel_args, 0, stream) ==
            hipSuccess;
 }

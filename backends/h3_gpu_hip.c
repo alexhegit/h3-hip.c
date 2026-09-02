@@ -3511,6 +3511,38 @@ int h3_gpu_linear_f32_int8(h3_gpu *gpu, h3_gpu_tensor *output,
     return ok;
 }
 
+int h3_gpu_linear_f32_int8_fused(h3_gpu *gpu, h3_gpu_tensor *output,
+                                 const h3_gpu_tensor *input,
+                                 const h3_gpu_tensor *weight,
+                                 const h3_gpu_tensor *weight_scales,
+                                 const h3_gpu_tensor *bias,
+                                 uint32_t rows, uint32_t input_dim,
+                                 uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t input_count = (size_t)rows * input_dim;
+    size_t weight_count = (size_t)output_dim * input_dim;
+    size_t output_count = (size_t)rows * output_dim;
+    if (!ctx || !rows || !input_dim || !output_dim ||
+        !h3_hip_require_f32(ctx, input, input_count, "fused int8 linear input") ||
+        !h3_hip_require_i8(ctx, weight, weight_count, "fused int8 linear weight") ||
+        !h3_hip_require_f32(ctx, weight_scales, output_dim,
+                            "fused int8 linear weight scales") ||
+        !h3_hip_require_f32(ctx, output, output_count,
+                            "fused int8 linear output") ||
+        (bias && !h3_hip_require_f32(ctx, bias, output_dim,
+                                     "fused int8 linear bias"))) {
+        return 0;
+    }
+    h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
+    int ok = h3_hip_launch_ok(ctx, h3_launch_linear_int8_f32_fused(
+        (const float *)tensor_ptr(input)->data,
+        (const int8_t *)tensor_ptr(weight)->data,
+        (const float *)tensor_ptr(weight_scales)->data,
+        (float *)tensor_ptr(output)->data, &args, ctx->stream),
+        "h3_linear_int8_f32_fused");
+    return ok;
+}
+
 static int h3_hip_launch_linear_int8_prequant(
     struct h3_gpu *ctx, h3_gpu_tensor *output,
     const h3_gpu_tensor *quantized_input, const h3_gpu_tensor *input_scales,
