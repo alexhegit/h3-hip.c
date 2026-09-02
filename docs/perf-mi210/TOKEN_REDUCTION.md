@@ -46,4 +46,6 @@ Same knob, different GPU; ratios are in the same band.
 
 ## gfx1151
 
-15 s + TR on Strix Halo is not in this file yet.
+Same clip on Strix Halo (2026-09-02): E2E **1694 s (28.2 min)** vs 2701 s
+without the flag (−37%); denoise 1401 s vs 2423 s (−42%). Ledger:
+[`../perf-runs/TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md).

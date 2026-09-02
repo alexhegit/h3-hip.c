@@ -25,6 +25,7 @@ Prompt style: fal.ai timed shot list (T2VA, no references). Logs and MP4 under
 |---------:|---------------:|---------:|-----------------:|---------------:|--------|
 | 10.125 s | 243 | **24.7 min** (1479.8 s) | **21.2 min** (1273.2 s) | **2.3 min** (139.5 s) | [`assets/showcase/long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
 | 15.083 s | 362 | **45.0 min** (2701.4 s) | **40.4 min** (2423.0 s) | **3.5 min** (207.1 s) | [`assets/showcase/long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
+| 15.083 s + `--token-reduction` | 362 | **28.2 min** (1694.2 s) | **23.3 min** (1400.9 s) | **3.5 min** (209.3 s) | opt-in; [`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md) |
 
 For reference, fox-fast (512² · 22 frames) is **95 s** E2E with **28 s** denoise
 GPU on the same machine ([`PERFORMANCE.md`](../PERFORMANCE.md)).
@@ -73,3 +74,20 @@ Log: `outputs/long-15s-cinematic.log`.
 | **E2E** | **2701.4** | — | 864×480 · 362 frames · 3.5 MiB |
 
 10 s → 15 s: denoise **1.90×**, video VAE **1.48×**, E2E **1.83×**.
+
+## 15 s + `--token-reduction` — 2026-09-02
+
+Same prompt / knobs / seed as the quality-path 15 s run, plus
+`--token-reduction`. Binary `h3-hip 0.10.1` (`HIP_ARCH=gfx1151`). Not the
+tagged scoreboard. Full table: [`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md).
+
+| Phase | Wall (s) | Notes |
+|-------|--------:|-------|
+| Qwen text encoder | 32.5 | I/O band vs 21.6 s on 26 Aug |
+| H3 DiT load | 45.4 | peak 23.3 GiB |
+| H3 DiT Euler denoise | **1400.9** | gpu-op 1399.9; sdpa 965.5 · linear 405.5; peak 25.7 GiB |
+| audio VAE decoder | 3.8 | |
+| video VAE decoder | **209.3** | 4×2 tiles @ 272 px; same as quality path |
+| **E2E** | **1694.2** | 864×480 · 362 frames · 3.3 MiB |
+
+Quality path 2701 s → 1694 s (**−37%** E2E, **−42%** denoise). VAE did not move.
