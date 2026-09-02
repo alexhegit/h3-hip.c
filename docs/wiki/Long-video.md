@@ -15,6 +15,7 @@ Build with `HIP_ARCH=gfx1151` or `HIP_ARCH=gfx90a`
 | 10 s cinematic office | gfx1151 | 10.1 s (243 f) | **24.7 min** | 21.2 min | [`long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
 | **15 s cinematic office** | gfx1151 | **15.1 s (362 f)** | **45.0 min** | **40.4 min** | [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
 | **15 s cinematic office** | gfx90a | **15.1 s (362 f)** | **12 min 33 s** | **10 min 48 s** | same prompt / knobs / seed 42 |
+| **15 s + `--token-reduction`** | gfx90a | **15.1 s (362 f)** | **8 min 21 s** | **6 min 50 s** | opt-in; [`TOKEN_REDUCTION.md`](../perf-mi210/TOKEN_REDUCTION.md) |
 
 Posters: `assets/showcase/long-*-cinematic.jpg`  
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  

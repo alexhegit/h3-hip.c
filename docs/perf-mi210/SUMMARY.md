@@ -10,6 +10,7 @@ GPU 0 compile/debug, GPU 1 quality gates, GPU 2 long T2VA, GPU 3 spare.
 | fox-s2 E2E | 83–87 s | 241 s | 92 s | 17 s | 11.28 s | **10.87 s** |
 | fox-fast E2E | 95 s | — | 232 s | 45 s | 21.01 s | **18.56 s** |
 | 15 s / 362f E2E | 45.0 min | — | — | — | 50 min 14.58 s | **12 min 33.29 s** |
+| 15 s + `--token-reduction` | — | — | — | — | — | **8 min 21 s** (500.81 s; quality trade) |
 
 fox-fast clip `/tmp/h3-mi210/fox-fast-p1.mp4` is pixel-identical to the 45 s device-act clip (PSNR inf).
 The final scalable-SDPA clip is 24.48 dB versus `fox-fast-p1.mp4` and passes
