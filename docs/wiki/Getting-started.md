@@ -9,10 +9,9 @@ the Makefile does **not** probe the GPU.
 | `gfx90a` | MI210 / MI250X (CDNA2, wave64) | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 | `gfx942` | MI300X (CDNA3, wave64) | same as gfx90a | same as gfx90a |
 
-Last tag **v0.10.1** is dual-ISA only. Current `main` adds gfx942 plus
-VAE/INT8/sampler knobs and is what the scoreboard was timed on. gfx1151
+Tagged **v0.11.0** is the three-ISA line plus VAE/INT8/sampler knobs. gfx1151
 fox-s2 **v0.9.0** md5 `1731f95c4aa582597cf83d57f46b8f9e` is the historical
-gate. On current `main` the default 512 px VAE tile changes fox-s2 to
+gate. On v0.11.0 the default 512 px VAE tile changes fox-s2 to
 `34507f072c5cabbde6592b3f70b8fa35`.
 
 ## Build
@@ -20,7 +19,7 @@ gate. On current `main` the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-# clone tracks main. Last tag: git checkout v0.10.1
+git checkout v0.11.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
@@ -37,7 +36,7 @@ make HIP_ARCH=gfx942 -j$(nproc) h3
 `make clean` does not need `HIP_ARCH`. After switching ISA, `make clean` then
 rebuild. A missing `HIP_ARCH` on any non-clean target is a hard error.
 
-Halo fox-s2 md5 gate (v0.9.0 hash; override `H3_FOX_S2_MD5` on current `main`):
+Halo fox-s2 md5 gate (v0.9.0 hash; override `H3_FOX_S2_MD5` on v0.11.0):
 
 ```bash
 make HIP_ARCH=gfx1151 halo-regression

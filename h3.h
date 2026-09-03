@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define H3_VERSION "0.10.1"
+#define H3_VERSION "0.11.0"
 #define H3_DEFAULT_WIDTH 864
 #define H3_DEFAULT_HEIGHT 480
 #define H3_DEFAULT_FRAMES 56

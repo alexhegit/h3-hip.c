@@ -9,12 +9,11 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Scoreboard — `main` (2026-09-03)
+## Current release — v0.11.0 (2026-09-03)
 
-Last GitHub tag is **v0.10.1** (2026-09-01, dual-ISA). Numbers below are
-`origin/main` after that: gfx942, larger VAE tiles, INT8 workspace reuse,
-opt-in TR / INT8 VAE / GPU sampler. `h3 --info` still prints `h3-hip 0.10.1`
-until the next tag. Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
+One tree, three ISAs: gfx942, 512 px VAE tiles, INT8 workspace reuse, and
+opt-in TR / INT8 VAE / GPU sampler. `h3 --info` prints `h3-hip 0.11.0`.
+Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | gfx1151 | gfx90a | gfx942 |
 |--------|--------:|-------:|-------:|
@@ -27,7 +26,7 @@ this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
 `34507f072c5cabbde6592b3f70b8fa35` (2026-09-03). `halo-regression` still
 expects the v0.9.0 hash unless you set `H3_FOX_S2_MD5` / `H3_VAE_TILE_PIXELS`.
 
-## gfx1151 — retimed on `main` (2026-09-03)
+## gfx1151 — v0.11.0 (2026-09-03)
 
 AMD Ryzen AI MAX+ 395 / Radeon 8060S. `h3 --info`: **31 GiB** host, **96 GiB**
 max HIP buffer, unified memory. Build: `make HIP_ARCH=gfx1151`. Default DiT is
@@ -113,7 +112,7 @@ runs still miss the page cache: host RAM on this box is ~31 GiB.
 | 2026-08-19 | ~117 s | — | INT8 DiT, faster load I/O |
 | 2026-08-22 | — | ~213 s | fox-fast measured; denoise still ~105 s |
 | **v0.9.0** | **83–87 s** | **95 s** | WMMA attention/linear/conv; weights in the VRAM carveout; AdaLN and VAE load overlap |
-| **`main` 2026-09-03** | ~89 s I/O | ~2 min I/O | INT8 workspace; 480/512 px VAE tiles; 15 s **40 min 46 s** |
+| **v0.11.0** | ~89 s I/O | ~2 min I/O | gfx942; INT8 workspace; 480/512 px VAE tiles; 15 s **40 min 46 s** |
 
 The remaining E2E on Halo short clips is mostly NVMe weight I/O. Denoise is a
 small slice of fox-s2 and about a fifth of a cold fox-fast. 15 s is still
@@ -124,7 +123,7 @@ wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
 figure is 16.7 s; HIP fox-fast denoise wall here is **24.5 s**. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
-## gfx90a / MI210 — retimed on `main` (2026-09-02)
+## gfx90a / MI210 — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
 **BF16 hipBLAS** (not INT8). Four-GPU box: fox gates on `H3_HIP_DEVICE=1`,
@@ -209,7 +208,7 @@ Token reduction is the 15 s speed path. INT8 VAE is the VRAM path.
 INT8 DiT is the pipeline-peak cut. INT8 VAE is the VAE-peak cut. Default 15 s
 already fits a 64 GiB card; all-opts is headroom, not an enablement story.
 
-## gfx942 / MI300X — v0.10.1 (2026-09-02)
+## gfx942 / MI300X — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
 **BF16 hipBLAS** (same as gfx90a). 192 GiB VRAM; weight I/O dominates E2E on
@@ -358,7 +357,7 @@ pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
-| gfx1151 15 s E2E | **40 min 46 s** (`main` 2026-09-03) | **27 min 3 s** (all-opts / TR+INT8 VAE) |
+| gfx1151 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts / TR+INT8 VAE) |
 | gfx90a 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
 | gfx942 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
 

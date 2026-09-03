@@ -22,8 +22,8 @@ Posters: `assets/showcase/long-*-cinematic.jpg`
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
 MI210 session: [`docs/perf-mi210/STATUS.md`](../perf-mi210/STATUS.md)
 
-10 s was not re-timed on MI210 or on `main` gfx1151. The gallery MP4 is the
-**quality path** (no TR). gfx1151 quality path on `main` (2026-09-03): E2E
+10 s was not re-timed on MI210 or on v0.11.0 gfx1151. The gallery MP4 is the
+**quality path** (no TR). gfx1151 quality path on **v0.11.0**: E2E
 **40 min 46 s**, denoise **36 min 38 s**, VAE **174 s** (2×1 @ 480 px), DiT
 peak **27.9 GiB**. Log: [`long-15s-default-2026-09-03.log`](../perf-runs/long-15s-default-2026-09-03.log).
 
@@ -56,7 +56,7 @@ the quality path. GPU sampler is not required on gfx1151.
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
-| gfx1151 15 s E2E | **40 min 46 s** (`main` 2026-09-03) | **27 min 3 s** (all-opts) |
+| gfx1151 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts) |
 | gfx90a 15 s E2E | 12 min 11 s | **8 min 21 s** (denoise 6 min 56 s all-opts) |
 
 ## Reproduce the 10 s clip

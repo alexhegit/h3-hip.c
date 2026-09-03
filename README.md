@@ -9,12 +9,12 @@ One tree, three supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
 | `gfx90a` | MI210 / MI250X (CDNA2) | BF16 GEMM | wave64 MFMA flash |
 | `gfx942` | MI300X (CDNA3) | BF16 GEMM | wave64 MFMA flash |
 
-Last tag **v0.10.1** is the dual-ISA line (`gfx1151` and `gfx90a`). Current
-`main` adds **gfx942**, 512 px VAE tiles, INT8 workspace reuse, and opt-in
-`--token-reduction` / `H3_INT8_VAE` / `H3_GPU_SAMPLER`. v0.9.x remains the
-gfx1151-only history. The original project is a native MiniMax-H3 inference
-engine (Apple Metal / macOS); this repository reimplements the GPU backend
-in pure HIP so the same CLI and model stack run on ROCm.
+Tagged **v0.11.0** is the three-ISA line (`gfx1151`, `gfx90a`, `gfx942`) with
+512 px VAE tiles, INT8 workspace reuse, and opt-in `--token-reduction` /
+`H3_INT8_VAE` / `H3_GPU_SAMPLER`. v0.10.x remains the dual-ISA history; v0.9.x
+is gfx1151-only. The original project is a native MiniMax-H3 inference engine
+(Apple Metal / macOS); this repository reimplements the GPU backend in pure
+HIP so the same CLI and model stack run on ROCm.
 
 [![h3-hip.c ident](assets/showcase/h3-hip-ident.jpg)](assets/showcase/h3-hip-ident.mp4)
 
@@ -30,7 +30,7 @@ Project ident, generated on gfx1151 (864×480, 56 frames, `--steps 20 --layers 5
 
 Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
 
-| Preset | gfx1151 (`main` 2026-09-03) | gfx90a (`main` 2026-09-02) | gfx942 |
+| Preset | gfx1151 (v0.11.0) | gfx90a (v0.11.0) | gfx942 |
 |--------|----------------|------------------|-----:|
 | fox-s2 | ~85–90 s (I/O) | **10.8 s** | **~16 s** |
 | fox-fast | ~2 min (I/O) | **18.2 s** | **~12 s** |
@@ -67,7 +67,7 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 46 s**
 and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 11 s** on MI210.
 Opt-in `--token-reduction` + `H3_INT8_VAE=1` on the same 15 s clip:
-**27 min 3 s** (gfx1151, `main` 2026-09-03) / **8 min 21 s** (gfx90a);
+**27 min 3 s** (gfx1151, v0.11.0) / **8 min 21 s** (gfx90a);
 quality trade, not the showcase path.
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
@@ -147,7 +147,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Last tag is **v0.10.1**. The scoreboard above is **`main`**, not that tag.
+Current tagged line is **v0.11.0**. `h3 --info` prints `h3-hip 0.11.0`.
 
 | Capability | Status |
 |------------|--------|
@@ -205,7 +205,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-# clone tracks main (the scoreboard). Last tag: git checkout v0.10.1
+git checkout v0.11.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
