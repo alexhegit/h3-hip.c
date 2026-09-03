@@ -301,15 +301,17 @@
         </tr>
         <tr class="hi">
           <td><strong>15 s cinematic</strong> E2E</td>
-          <td class="num">45.0 min</td><td class="num">12 min 33 s</td>
+          <td class="num">40 min 46 s</td><td class="num">12 min 11 s</td>
         </tr>
       </tbody>
     </table>
     <p class="cap">
-      gfx1151 fox-s2 md5 <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> (same as v0.9.0).
+      gfx1151 fox-s2 md5 <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> on <strong>v0.9.0</strong>.
+      <span class="mono">main</span> 3 Sep 2026 default VAE tiles change fox-s2 to
+      <span class="mono">34507f07…</span>.
       Build: <span class="mono">make HIP_ARCH=gfx1151</span> or <span class="mono">HIP_ARCH=gfx90a</span>.
-      Halo denoise GPU: fox-s2 6.3–6.5 s · fox-fast 28 s. MI210 fox-fast denoise ~8.2 s (sdpa 1.08 s).
-      Tagged 15 s row is the quality path. Opt-in <span class="mono">--token-reduction</span> is below.
+      Halo denoise: fox-s2 <strong>3.36 s</strong> · fox-fast <strong>24.5 s</strong>.
+      15 s quality path <strong>40 min 46 s</strong> (peak 27.9 GiB). Opt-in <span class="mono">--token-reduction</span> is below.
     </p>
 
     <h3>Clips from this build</h3>
@@ -357,7 +359,7 @@
           <td><strong>gfx1151</strong></td>
           <td>quality</td>
           <td class="num">362</td><td class="num">15.1 s</td>
-          <td class="num">45.0 min</td><td class="num">40.4 min</td>
+          <td class="num">40 min 46 s</td><td class="num">36 min 38 s</td>
         </tr>
         <tr>
           <td>gfx1151</td>
@@ -369,7 +371,7 @@
           <td><strong>gfx90a</strong></td>
           <td>quality</td>
           <td class="num">362</td><td class="num">15.1 s</td>
-          <td class="num">12 min 33 s</td><td class="num">10 min 48 s</td>
+          <td class="num">12 min 11 s</td><td class="num">10 min 47 s</td>
         </tr>
         <tr>
           <td>gfx90a</td>
@@ -380,17 +382,17 @@
       </tbody>
     </table>
     <p class="cap">
-      Quality-path Halo: <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>.
-      gfx1151 TR (2 Sep 2026, v0.10.1 binary):
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/TOKEN_REDUCTION.md">perf-runs/TOKEN_REDUCTION.md</a>
-      (−37% E2E). gfx90a TR:
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-mi210/TOKEN_REDUCTION.md">perf-mi210/TOKEN_REDUCTION.md</a>
-      (−34% E2E).
+      Quality-path Halo (<span class="mono">main</span> 3 Sep 2026):
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>
+      · 2446 s E2E · 2×1 @ 480 px VAE · DiT peak 27.9 GiB.
+      gfx1151 TR (2 Sep 2026, vs then-45.0 min):
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/TOKEN_REDUCTION.md">perf-runs/TOKEN_REDUCTION.md</a>.
+      gfx90a quality path 12 min 11 s; TR 8 min 21 s.
     </p>
 
     <div class="hero-media" style="margin-top:28px;padding-bottom:0">
       <video src="assets/long-15s-cinematic.mp4" poster="assets/long-15s-cinematic.jpg" controls muted loop playsinline preload="metadata"></video>
-      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · quality path · 864×480 · 362f · seed 42 · gfx1151 E2E 45 min · gfx90a E2E 12 min 33 s</div>
+      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · quality path · 864×480 · 362f · seed 42 · gfx1151 E2E 40 min 46 s · gfx90a E2E 12 min 11 s</div>
     </div>
 
     <h3>Reproduce the 15 s clip</h3>
@@ -501,9 +503,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       </li>
       <li>
         <strong>Not quality-traded.</strong> There is no distillation, no LoRA, no calibration pass. The kernel
-        work is gated on the fox-s2 MP4 hashing to
-        <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> — byte-identical output, not a perceptual
-        distance below some threshold.
+        work on v0.9.0 is gated on the fox-s2 MP4 hashing to
+        <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span>. Default VAE tiles on
+        <span class="mono">main</span> change that hash.
       </li>
       <li>
         <strong>Not a clean-room measurement.</strong> On gfx1151 the BIOS carveout leaves ~31&nbsp;GiB
@@ -512,7 +514,8 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       </li>
       <li>
         <strong>Not every AMD GPU.</strong> Supported ISAs are
-        <span class="mono">gfx1151</span> and <span class="mono">gfx90a</span>. You must pass
+        <span class="mono">gfx1151</span>, <span class="mono">gfx90a</span>, and
+        <span class="mono">gfx942</span>. You must pass
         <span class="mono">HIP_ARCH</span> to match the card. Other targets are experimental.
         <span class="mono">hipMalloc</span> failure is still fatal; small-carveout cards still need
         <span class="mono">hipMemGetInfo</span> budgeting.
