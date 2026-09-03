@@ -25,6 +25,8 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/FOX_FAST.md`](../perf-runs/FOX_FAST.md) | fox-fast ledger (day-5 run; v0.9.0 is a pointer) |
 | [`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md) | Full v0.9.0 timed tables |
 | [`../perf-runs/TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) | gfx1151 15 s + `--token-reduction` (2026-09-02) |
+| [`../perf-runs/long-15s-default-2026-09-03.log`](../perf-runs/long-15s-default-2026-09-03.log) | gfx1151 15 s quality path on `main` |
+| [`../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt`](../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt) | gfx1151 fox default / sampler / all-opts `--profile` |
 | [`../perf-runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md) | What antirez/h3.c publishes vs HIP reruns |
 | `docs/perf-day*/STATUS.md` | Session logs |
 | [`../deprecated/`](../deprecated/README.md) | Superseded whole docs (e.g. the pre-port plan) |
@@ -43,7 +45,8 @@ spreadsheets on the GitHub release.
 
 - Interleave A/B; do not declare an I/O win from one E2E sample.
 - Denoise `gpu-op` is the GPU baseline; `linear`/`sdpa` splits can jitter.
-- fox-s2 md5 `1731f95c…` is the bit-identical check for that preset.
+- fox-s2 md5 `1731f95c…` is the **v0.9.0** bit-identical check. Current `main`
+  default tiles change the hash (`34507f07…` on 2026-09-03).
 - Load-pipeline A/B: `tools/bench_pipeline.sh`, `bench_adaln.sh`, `bench_core.sh`,
   `bench_load_phase.sh`, `bench_device_weights.sh`, `bench_ab_io.sh`.
 - Allocator / NVMe probes: `tests/probe_alloc.hip`, `probe_read.hip`,

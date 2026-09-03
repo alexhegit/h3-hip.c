@@ -1,0 +1,140 @@
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:===== fox-fast GPU_SAMPLER 2026-09-03T07:56:29+08:00 =====
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: Qwen text encoder        total          wall=  22.333s encode=  0.111s wait=   1.938s root-gpu=  1.938s peak=  4.546GiB alloc= 46.865GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: Qwen text encoder        op-classes     gpu-op=  2.008s linear=  1.921s sdpa=  0.002s conv=  0.000s other=  0.085s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: Qwen text encoder        weight-load    pin= 10.703s (46.865GiB,   4.38GiB/s) read=222.678s (46.860GiB,   0.21GiB/s) upload= 11.427s (46.860GiB,   4.10GiB/s) recycled= 94.3% pinned= 0.000GiB device=46.865GiB
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT load stage refine text          0.815s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT load stage AdaLN precompute    12.230s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT load stage rope and maps        0.045s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT core split   block-io= 15.239s quantize=  0.158s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT load stage transformer core    15.449s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT load stage activations          0.001s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT                   load           wall=  28.540s encode= 15.544s wait=   0.750s root-gpu=  0.750s peak= 19.709GiB alloc= 75.145GiB submissions=30 direct=266 linear=62 conv=0 attention=2
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT                   op-classes     gpu-op=  1.375s linear=  1.059s sdpa=  0.000s conv=  0.000s other=  0.315s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT                   GPU Euler denoise wall=  25.061s encode=  0.131s wait=  24.920s root-gpu= 24.920s peak= 19.709GiB alloc=  0.000GiB submissions=11 direct=6121 linear=0 conv=0 attention=495
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT                   op-classes     gpu-op= 25.032s linear= 20.199s sdpa=  3.299s conv=  0.000s other=  1.533s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT                   total          wall=  53.634s encode= 15.675s wait=  25.670s root-gpu= 25.670s peak= 19.709GiB alloc= 75.145GiB submissions=41 direct=6387 linear=62 conv=0 attention=497
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: H3 DiT                   weight-load    pin=  3.353s (75.145GiB,  22.41GiB/s) read= 93.443s (58.139GiB,   0.62GiB/s) upload=  1.657s (58.139GiB,  35.10GiB/s) recycled= 95.7% pinned= 0.004GiB device=75.141GiB
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: audio VAE decoder        total          wall=   0.450s encode=  0.002s wait=   0.266s root-gpu=  0.266s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: audio VAE decoder        op-classes     gpu-op=  0.266s linear=  0.000s sdpa=  0.000s conv=  0.204s other=  0.062s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: audio VAE decoder        weight-load    pin=  0.010s ( 0.543GiB,  52.49GiB/s) read=  0.015s ( 0.242GiB,  15.79GiB/s) upload=  0.146s ( 0.242GiB,   1.66GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.543GiB
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: video VAE decoder        total          wall=   5.438s encode=  0.008s wait=   4.788s root-gpu=  4.788s peak=  1.593GiB alloc= 10.372GiB submissions=38 direct=403 linear=145 conv=0 attention=36
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: video VAE decoder        op-classes     gpu-op=  4.793s linear=  3.223s sdpa=  1.232s conv=  0.000s other=  0.337s
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:h3 profile: video VAE decoder        weight-load    pin=  0.105s (10.372GiB,  99.24GiB/s) read=  0.851s ( 9.028GiB,  10.61GiB/s) upload=  0.363s ( 9.028GiB,  24.90GiB/s) recycled= 98.6% pinned= 0.002GiB device=10.370GiB
+/tmp/h3-halo-main-perf/fox-fast-gpu-sampler.log:===== fox-fast GPU_SAMPLER done 2026-09-03T07:57:52+08:00 =====
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:===== fox-fast ALL-OPTS 2026-09-03T07:57:52+08:00 =====
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: Qwen text encoder        total          wall=  31.141s encode=  0.408s wait=   1.709s root-gpu=  1.709s peak=  4.546GiB alloc= 46.865GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: Qwen text encoder        op-classes     gpu-op=  1.735s linear=  1.693s sdpa=  0.002s conv=  0.000s other=  0.039s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: Qwen text encoder        weight-load    pin= 10.869s (46.865GiB,   4.31GiB/s) read=352.448s (46.860GiB,   0.13GiB/s) upload=  4.617s (46.860GiB,  10.15GiB/s) recycled= 93.1% pinned= 0.000GiB device=46.865GiB
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT load stage refine text          1.272s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT load stage AdaLN precompute    19.400s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT load stage rope and maps        0.045s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT core split   block-io= 20.539s quantize=  0.158s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT load stage transformer core    20.776s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT load stage activations          0.001s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT                   load           wall=  41.493s encode= 26.088s wait=   0.342s root-gpu=  0.342s peak= 19.709GiB alloc= 75.145GiB submissions=30 direct=268 linear=62 conv=0 attention=2
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT                   op-classes     gpu-op=  1.271s linear=  0.962s sdpa=  0.000s conv=  0.000s other=  0.309s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT                   GPU Euler denoise wall=  18.034s encode=  0.135s wait=  17.890s root-gpu= 17.890s peak= 19.709GiB alloc=  0.000GiB submissions=11 direct=6143 linear=0 conv=0 attention=495
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT                   op-classes     gpu-op= 18.006s linear= 14.963s sdpa=  1.970s conv=  0.000s other=  1.074s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT                   total          wall=  59.560s encode= 26.223s wait=  18.233s root-gpu= 18.233s peak= 19.709GiB alloc= 75.146GiB submissions=41 direct=6411 linear=62 conv=0 attention=497
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: H3 DiT                   weight-load    pin=  1.465s (75.146GiB,  51.28GiB/s) read=145.475s (58.139GiB,   0.40GiB/s) upload=  1.226s (58.139GiB,  47.43GiB/s) recycled= 95.8% pinned= 0.004GiB device=75.141GiB
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: audio VAE decoder        total          wall=   0.313s encode=  0.002s wait=   0.260s root-gpu=  0.260s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: audio VAE decoder        op-classes     gpu-op=  0.260s linear=  0.000s sdpa=  0.000s conv=  0.202s other=  0.058s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: audio VAE decoder        weight-load    pin=  0.009s ( 0.543GiB,  58.76GiB/s) read=  0.015s ( 0.242GiB,  15.69GiB/s) upload=  0.018s ( 0.242GiB,  13.31GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.543GiB
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: video VAE decoder        total          wall=   4.577s encode=  0.005s wait=   4.001s root-gpu=  4.001s peak=  1.711GiB alloc= 12.680GiB submissions=38 direct=691 linear=1 conv=0 attention=36
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: video VAE decoder        op-classes     gpu-op=  4.064s linear=  0.008s sdpa=  1.274s conv=  0.000s other=  2.781s
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:h3 profile: video VAE decoder        weight-load    pin=  0.108s (12.680GiB, 117.02GiB/s) read=  0.725s ( 9.028GiB,  12.45GiB/s) upload=  0.289s ( 9.028GiB,  31.21GiB/s) recycled= 98.6% pinned= 0.002GiB device=12.678GiB
+/tmp/h3-halo-main-perf/fox-fast-all-opts.log:===== fox-fast ALL-OPTS done 2026-09-03T07:59:43+08:00 =====
+/tmp/h3-halo-main-perf/fox-s2-default.log:===== fox-s2 DEFAULT 2026-09-03T07:48:43+08:00 =====
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: Qwen text encoder        total          wall=  21.938s encode=  0.243s wait=   1.148s root-gpu=  1.148s peak=  4.542GiB alloc= 46.861GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: Qwen text encoder        op-classes     gpu-op=  1.207s linear=  1.138s sdpa=  0.001s conv=  0.000s other=  0.068s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: Qwen text encoder        weight-load    pin=  8.082s (46.861GiB,   5.80GiB/s) read=226.244s (46.860GiB,   0.21GiB/s) upload=  7.722s (46.860GiB,   6.07GiB/s) recycled= 94.4% pinned= 0.000GiB device=46.861GiB
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT load stage refine text          0.917s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT load stage AdaLN precompute    19.028s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT load stage rope and maps        0.008s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT core split   block-io= 18.851s quantize=  0.122s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT load stage transformer core    19.030s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT load stage activations          0.001s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT                   load           wall=  38.984s encode= 18.696s wait=   0.243s root-gpu=  0.243s peak= 15.101GiB alloc= 64.039GiB submissions=27 direct=226 linear=60 conv=0 attention=2
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT                   op-classes     gpu-op=  0.578s linear=  0.341s sdpa=  0.000s conv=  0.000s other=  0.237s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT                   Euler denoise  wall=   3.359s encode=  0.097s wait=   3.257s root-gpu=  3.257s peak= 15.101GiB alloc=  0.000GiB submissions=2 direct=858 linear=0 conv=0 attention=70
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT                   op-classes     gpu-op=  3.352s linear=  2.700s sdpa=  0.438s conv=  0.000s other=  0.214s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT                   total          wall=  42.357s encode= 18.793s wait=   3.500s root-gpu=  3.500s peak= 15.101GiB alloc= 64.039GiB submissions=29 direct=1084 linear=60 conv=0 attention=72
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: H3 DiT                   weight-load    pin=  2.811s (64.039GiB,  22.79GiB/s) read=134.707s (50.962GiB,   0.38GiB/s) upload=  1.606s (50.962GiB,  31.73GiB/s) recycled= 95.1% pinned= 0.003GiB device=64.036GiB
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: audio VAE decoder        total          wall=   0.355s encode=  0.002s wait=   0.268s root-gpu=  0.268s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: audio VAE decoder        op-classes     gpu-op=  0.268s linear=  0.000s sdpa=  0.000s conv=  0.208s other=  0.060s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: audio VAE decoder        weight-load    pin=  0.046s ( 0.543GiB,  11.87GiB/s) read=  0.014s ( 0.242GiB,  16.76GiB/s) upload=  0.016s ( 0.242GiB,  15.25GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.543GiB
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: video VAE decoder        total          wall=   5.373s encode=  0.006s wait=   4.751s root-gpu=  4.751s peak=  1.593GiB alloc= 10.372GiB submissions=38 direct=403 linear=145 conv=0 attention=36
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: video VAE decoder        op-classes     gpu-op=  4.754s linear=  3.174s sdpa=  1.242s conv=  0.000s other=  0.339s
+/tmp/h3-halo-main-perf/fox-s2-default.log:h3 profile: video VAE decoder        weight-load    pin=  0.173s (10.372GiB,  59.85GiB/s) read=  0.786s ( 9.028GiB,  11.49GiB/s) upload=  0.420s ( 9.028GiB,  21.49GiB/s) recycled= 98.6% pinned= 0.002GiB device=10.370GiB
+/tmp/h3-halo-main-perf/fox-s2-default.log:md5 34507f072c5cabbde6592b3f70b8fa35  /tmp/h3-halo-main-perf/fox-s2-default.mp4
+/tmp/h3-halo-main-perf/fox-s2-default.log:===== fox-s2 DEFAULT done 2026-09-03T07:50:12+08:00 =====
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:===== fox-s2 ALL-OPTS 2026-09-03T07:54:29+08:00 =====
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: Qwen text encoder        total          wall=  31.133s encode=  0.387s wait=   1.055s root-gpu=  1.055s peak=  4.542GiB alloc= 46.861GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: Qwen text encoder        op-classes     gpu-op=  1.319s linear=  1.046s sdpa=  0.001s conv=  0.000s other=  0.273s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: Qwen text encoder        weight-load    pin= 13.141s (46.861GiB,   3.57GiB/s) read=327.221s (46.860GiB,   0.14GiB/s) upload=  7.002s (46.860GiB,   6.69GiB/s) recycled= 93.7% pinned= 0.000GiB device=46.861GiB
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT load stage refine text          1.183s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT load stage AdaLN precompute    16.642s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT load stage rope and maps        0.013s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT core split   block-io= 19.069s quantize=  0.122s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT load stage transformer core    19.251s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT load stage activations          0.001s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT                   load           wall=  37.090s encode= 33.870s wait=   0.125s root-gpu=  0.125s peak= 15.101GiB alloc= 64.039GiB submissions=27 direct=228 linear=60 conv=0 attention=2
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT                   op-classes     gpu-op=  0.739s linear=  0.495s sdpa=  0.000s conv=  0.000s other=  0.243s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT                   GPU Euler denoise wall=   2.406s encode=  0.085s wait=   2.318s root-gpu=  2.318s peak= 15.101GiB alloc=  0.000GiB submissions=2 direct=866 linear=0 conv=0 attention=70
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT                   op-classes     gpu-op=  2.400s linear=  2.000s sdpa=  0.251s conv=  0.000s other=  0.149s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT                   total          wall=  39.510s encode= 33.955s wait=   2.443s root-gpu=  2.443s peak= 15.101GiB alloc= 64.039GiB submissions=29 direct=1094 linear=60 conv=0 attention=72
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: H3 DiT                   weight-load    pin=  3.391s (64.039GiB,  18.89GiB/s) read=127.247s (50.962GiB,   0.40GiB/s) upload=  1.694s (50.962GiB,  30.08GiB/s) recycled= 95.1% pinned= 0.004GiB device=64.036GiB
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: audio VAE decoder        total          wall=   0.361s encode=  0.002s wait=   0.267s root-gpu=  0.267s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: audio VAE decoder        op-classes     gpu-op=  0.267s linear=  0.000s sdpa=  0.000s conv=  0.205s other=  0.061s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: audio VAE decoder        weight-load    pin=  0.051s ( 0.543GiB,  10.65GiB/s) read=  0.014s ( 0.242GiB,  16.77GiB/s) upload=  0.018s ( 0.242GiB,  13.80GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.543GiB
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: video VAE decoder        total          wall=   4.622s encode=  0.005s wait=   3.967s root-gpu=  3.967s peak=  1.711GiB alloc= 12.680GiB submissions=38 direct=691 linear=1 conv=0 attention=36
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: video VAE decoder        op-classes     gpu-op=  4.030s linear=  0.008s sdpa=  1.248s conv=  0.000s other=  2.773s
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:h3 profile: video VAE decoder        weight-load    pin=  0.344s (12.680GiB,  36.84GiB/s) read=  0.738s ( 9.028GiB,  12.23GiB/s) upload=  0.308s ( 9.028GiB,  29.34GiB/s) recycled= 98.6% pinned= 0.002GiB device=12.678GiB
+/tmp/h3-halo-main-perf/fox-s2-all-opts.log:===== fox-s2 ALL-OPTS done 2026-09-03T07:56:29+08:00 =====
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:===== fox-s2 GPU_SAMPLER 2026-09-03T07:53:02+08:00 =====
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: Qwen text encoder        total          wall=  27.545s encode=  0.166s wait=   1.395s root-gpu=  1.395s peak=  4.542GiB alloc= 46.861GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: Qwen text encoder        op-classes     gpu-op=  1.433s linear=  1.371s sdpa=  0.001s conv=  0.000s other=  0.061s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: Qwen text encoder        weight-load    pin=  6.700s (46.861GiB,   6.99GiB/s) read=288.536s (46.860GiB,   0.16GiB/s) upload=  8.162s (46.860GiB,   5.74GiB/s) recycled= 94.8% pinned= 0.000GiB device=46.861GiB
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT load stage refine text          1.266s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT load stage AdaLN precompute    18.795s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT load stage rope and maps        0.009s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT core split   block-io= 17.342s quantize=  0.121s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT load stage transformer core    17.504s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT load stage activations          0.001s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT                   load           wall=  37.574s encode= 21.592s wait=   0.152s root-gpu=  0.152s peak= 15.101GiB alloc= 64.039GiB submissions=27 direct=226 linear=60 conv=0 attention=2
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT                   op-classes     gpu-op=  0.606s linear=  0.368s sdpa=  0.000s conv=  0.000s other=  0.238s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT                   GPU Euler denoise wall=   3.514s encode=  0.074s wait=   3.437s root-gpu=  3.437s peak= 15.101GiB alloc=  0.000GiB submissions=2 direct=862 linear=0 conv=0 attention=70
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT                   op-classes     gpu-op=  3.508s linear=  2.846s sdpa=  0.447s conv=  0.000s other=  0.215s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT                   total          wall=  41.101s encode= 21.666s wait=   3.589s root-gpu=  3.589s peak= 15.101GiB alloc= 64.039GiB submissions=29 direct=1088 linear=60 conv=0 attention=72
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: H3 DiT                   weight-load    pin=  3.048s (64.039GiB,  21.01GiB/s) read=130.528s (50.962GiB,   0.39GiB/s) upload=  1.368s (50.962GiB,  37.26GiB/s) recycled= 95.2% pinned= 0.003GiB device=64.036GiB
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: audio VAE decoder        total          wall=   0.353s encode=  0.002s wait=   0.267s root-gpu=  0.267s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: audio VAE decoder        op-classes     gpu-op=  0.267s linear=  0.000s sdpa=  0.000s conv=  0.206s other=  0.061s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: audio VAE decoder        weight-load    pin=  0.045s ( 0.543GiB,  12.12GiB/s) read=  0.014s ( 0.242GiB,  17.02GiB/s) upload=  0.017s ( 0.242GiB,  14.30GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.543GiB
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: video VAE decoder        total          wall=   5.419s encode=  0.006s wait=   4.781s root-gpu=  4.781s peak=  1.593GiB alloc= 10.372GiB submissions=38 direct=403 linear=145 conv=0 attention=36
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: video VAE decoder        op-classes     gpu-op=  4.784s linear=  3.200s sdpa=  1.245s conv=  0.000s other=  0.338s
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:h3 profile: video VAE decoder        weight-load    pin=  0.187s (10.372GiB,  55.45GiB/s) read=  0.755s ( 9.028GiB,  11.96GiB/s) upload=  0.459s ( 9.028GiB,  19.65GiB/s) recycled= 98.6% pinned= 0.002GiB device=10.370GiB
+/tmp/h3-halo-main-perf/fox-s2-gpu-sampler.log:===== fox-s2 GPU_SAMPLER done 2026-09-03T07:54:29+08:00 =====
+/tmp/h3-halo-main-perf/fox-fast-default.log:===== fox-fast DEFAULT 2026-09-03T07:50:32+08:00 =====
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: Qwen text encoder        total          wall=  32.289s encode=  0.020s wait=   2.439s root-gpu=  2.439s peak=  4.546GiB alloc= 46.865GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: Qwen text encoder        op-classes     gpu-op=  2.414s linear=  2.385s sdpa=  0.002s conv=  0.000s other=  0.026s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: Qwen text encoder        weight-load    pin=  7.638s (46.865GiB,   6.14GiB/s) read=349.150s (46.860GiB,   0.13GiB/s) upload= 13.861s (46.860GiB,   3.38GiB/s) recycled= 94.3% pinned= 0.000GiB device=46.865GiB
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT load stage refine text          0.998s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT load stage AdaLN precompute    19.831s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT load stage rope and maps        0.045s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT core split   block-io= 24.355s quantize=  0.161s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT load stage transformer core    24.582s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT load stage activations          0.001s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT                   load           wall=  45.457s encode= 27.720s wait=   0.510s root-gpu=  0.510s peak= 19.709GiB alloc= 75.145GiB submissions=30 direct=266 linear=62 conv=0 attention=2
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT                   op-classes     gpu-op=  1.263s linear=  0.957s sdpa=  0.000s conv=  0.000s other=  0.306s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT                   Euler denoise  wall=  24.488s encode=  0.138s wait=  24.318s root-gpu= 24.318s peak= 19.709GiB alloc=  0.000GiB submissions=11 direct=6061 linear=0 conv=0 attention=495
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT                   op-classes     gpu-op= 24.433s linear= 19.511s sdpa=  3.373s conv=  0.000s other=  1.549s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT                   total          wall=  69.976s encode= 27.858s wait=  24.828s root-gpu= 24.828s peak= 19.709GiB alloc= 75.145GiB submissions=41 direct=6327 linear=62 conv=0 attention=497
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: H3 DiT                   weight-load    pin=  3.150s (75.145GiB,  23.85GiB/s) read=156.532s (58.139GiB,   0.37GiB/s) upload=  1.405s (58.139GiB,  41.37GiB/s) recycled= 95.8% pinned= 0.004GiB device=75.141GiB
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: audio VAE decoder        total          wall=   0.320s encode=  0.002s wait=   0.268s root-gpu=  0.268s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: audio VAE decoder        op-classes     gpu-op=  0.268s linear=  0.000s sdpa=  0.000s conv=  0.203s other=  0.064s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: audio VAE decoder        weight-load    pin=  0.009s ( 0.543GiB,  62.19GiB/s) read=  0.015s ( 0.242GiB,  16.30GiB/s) upload=  0.018s ( 0.242GiB,  13.50GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.543GiB
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: video VAE decoder        total          wall=   5.349s encode=  0.006s wait=   4.786s root-gpu=  4.786s peak=  1.593GiB alloc= 10.372GiB submissions=38 direct=403 linear=145 conv=0 attention=36
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: video VAE decoder        op-classes     gpu-op=  4.789s linear=  3.200s sdpa=  1.249s conv=  0.000s other=  0.340s
+/tmp/h3-halo-main-perf/fox-fast-default.log:h3 profile: video VAE decoder        weight-load    pin=  0.091s (10.372GiB, 114.53GiB/s) read=  0.674s ( 9.028GiB,  13.40GiB/s) upload=  0.359s ( 9.028GiB,  25.18GiB/s) recycled= 98.6% pinned= 0.002GiB device=10.370GiB
+/tmp/h3-halo-main-perf/fox-fast-default.log:md5 685fa60fe42168791a3e16433b2086c7  /tmp/h3-halo-main-perf/fox-fast-default.mp4
+/tmp/h3-halo-main-perf/fox-fast-default.log:===== fox-fast DEFAULT done 2026-09-03T07:52:43+08:00 =====

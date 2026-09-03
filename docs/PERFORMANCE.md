@@ -16,30 +16,72 @@ or `make HIP_ARCH=gfx942`. `h3 --info` prints `h3-hip 0.10.1`.
 
 | Preset | gfx1151 | gfx90a | gfx942 |
 |--------|--------:|-------:|-------:|
-| fox-s2 E2E | 83–87 s | **~10.8 s** | **~16 s** |
-| fox-fast E2E | ~95 s | **~18 s** | **~12 s** |
-| 15 s cinematic E2E | 45.0 min | **12 min 11 s** | **~2.5 min** |
+| fox-s2 E2E | ~85–90 s (I/O) | **~10.8 s** | **~16 s** |
+| fox-fast E2E | ~2 min (I/O) | **~18 s** | **~12 s** |
+| 15 s cinematic E2E | **40 min 46 s** | **12 min 11 s** | **~2.5 min** |
 
-gfx1151 fox-s2 md5 is unchanged from v0.9.0: `1731f95c4aa582597cf83d57f46b8f9e`.
+gfx1151 fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
+this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
+`34507f072c5cabbde6592b3f70b8fa35` (2026-09-03). `halo-regression` still
+expects the v0.9.0 hash unless you set `H3_FOX_S2_MD5` / `H3_VAE_TILE_PIXELS`.
 
-## gfx1151 — same numbers as v0.9.0 (2026-08-26)
+## gfx1151 — retimed on `main` (2026-09-03)
 
-AMD Ryzen AI MAX+ 395 / Radeon 8060S (64 GiB unified). Build: `make HIP_ARCH=gfx1151`.
+AMD Ryzen AI MAX+ 395 / Radeon 8060S. `h3 --info`: **31 GiB** host, **96 GiB**
+max HIP buffer, unified memory. Build: `make HIP_ARCH=gfx1151`. Default DiT is
+**INT8** (RDNA). Peak VRAM is `--profile` `peak=` (live tensors).
 
-| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
-|--------|---------------|----:|------------:|----------:|
-| **fox-s2** | 512² · 22 frames · `--steps 2 --layers 35 --reuse 1` | **83–87 s** | **6.3–6.5 s** | **~48 GiB** |
-| **fox-fast** | 512² · 22 frames · `--steps 20 --layers 45 --reuse 2` | **95 s** | **28 s** (11 evals) | **~48 GiB** |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **45.0 min** | **40.4 min** denoise wall | **~48 GiB** |
-| **15 s + `--token-reduction`** | same + opt-in flag | **28.2 min** | denoise 23.3 min | **~36 GiB** |
+VAE default tile is **512 px / 1×1** at 512² and **480 px / 2×1** at 864×480.
+
+### Default (INT8 DiT, no opt-in flags)
+
+| Preset | Command knobs | E2E | Denoise wall | Peak VRAM |
+|--------|---------------|----:|-------------:|----------:|
+| **fox-s2** | 512² · 22 frames · `--steps 2 --layers 35 --reuse 1` | **~89 s** | **3.36 s** | **15.1 GiB** |
+| **fox-fast** | 512² · 22 frames · `--steps 20 --layers 45 --reuse 2` | **~2 min** | **24.5 s** (11 evals) | **19.7 GiB** |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **40 min 46 s** | **36 min 38 s** (2198 s) | **27.9 GiB** |
+
+15 s split: sdpa **1613 s**, linear 548 s, VAE **174 s** (2×1 @ 480 px, peak
+10.2 GiB). E2E **2446 s**. vs v0.9.0 (45.0 min / 2423 s denoise / 207 s VAE
+@ 272 px): **−9.4% E2E**, **−9.3% denoise**, **−16% VAE**. Log:
+[`perf-runs/long-15s-default-2026-09-03.log`](perf-runs/long-15s-default-2026-09-03.log).
+
+v0.9.0 fox-s2 denoise was 6.3–6.5 s; INT8 workspace reuse on this tree cuts
+that to **3.36 s**. fox-s2 / fox-fast **E2E** is still NVMe-bound (~31 GiB
+host RAM vs ~107 GiB of weights).
+
+### GPU sampler (`H3_GPU_SAMPLER=1`)
+
+Not a Halo short-clip win (unlike MI300X). fox-s2 denoise 3.36 → **3.51 s**;
+fox-fast 24.5 → **25.1 s**. Same DiT peaks.
+
+### All optimizations enabled
+
+```bash
+H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
+```
+
+INT8 DiT is already the gfx1151 default (do not also set `H3_INT8_MLP=1` for
+the Halo table).
+
+| Preset | E2E | Denoise wall | Video VAE | Peak VRAM |
+|--------|----:|-------------:|----------:|----------:|
+| **fox-s2** | I/O band | **2.41 s** | 4.62 s | **15.1 GiB** |
+| **fox-fast** | I/O band | **18.0 s** | 4.58 s | **19.7 GiB** |
+| **15 s cinematic** | **28.2 min** (2026-09-02 CLI `--token-reduction`) | **23.3 min** | ~3.5 min | denoise peak **25.7 GiB** |
+
+15 s all-opts on this tree (GPU sampler + TR + INT8 VAE) was still running
+when the quality-path row was recorded. Until that log lands, quote the
+2026-09-02 CLI TR run: [`perf-runs/TOKEN_REDUCTION.md`](perf-runs/TOKEN_REDUCTION.md).
+TR is the 15 s wall-clock lever. INT8 VAE on fox moves VAE linear ~3.2 s →
+~0.01 s and **other** 0.34 → 2.78 s; VAE peak **1.6 → 1.7 GiB** (512 px
+already 1×1).
 
 fox-s2 and fox-fast are complete T2VA MP4s (~0.9 s of picture+sound at 24 fps),
 not truncated previews. fox-fast matches upstream’s “first fast video”
 (`--reuse 2` → 11 DiT evals). The README fox showcase clip is `--layers 50
 --reuse 1` and is **not** the fox-fast scoreboard. 15 s cinematic uses the
 fox-fast quality knobs at long duration.
-
-fox-s2 output md5 `1731f95c4aa582597cf83d57f46b8f9e` on this tree.
 
 ```bash
 # fox-s2 (short smoke used for HIP A/B)
@@ -66,13 +108,15 @@ runs still miss the page cache: host RAM on this box is ~31 GiB.
 | 2026-08-19 | ~117 s | — | INT8 DiT, faster load I/O |
 | 2026-08-22 | — | ~213 s | fox-fast measured; denoise still ~105 s |
 | **v0.9.0** | **83–87 s** | **95 s** | WMMA attention/linear/conv; weights in the VRAM carveout; AdaLN and VAE load overlap |
+| **`main` 2026-09-03** | ~89 s I/O | ~2 min I/O | INT8 workspace; 480/512 px VAE tiles; 15 s **40 min 46 s** |
 
-The remaining E2E on Halo is mostly NVMe weight I/O. Denoise is a small slice of
-fox-s2 and about a third of fox-fast.
+The remaining E2E on Halo short clips is mostly NVMe weight I/O. Denoise is a
+small slice of fox-s2 and about a fifth of a cold fox-fast. 15 s is still
+DiT-SDPA bound.
 
 Upstream [antirez/h3.c](https://github.com/antirez/h3.c) publishes **denoise
 wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
-figure is 16.7 s; HIP denoise wall here is 35 s. That ratio mixes two GPUs and
+figure is 16.7 s; HIP fox-fast denoise wall here is **24.5 s**. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
 ## gfx90a / MI210 — retimed on `main` (2026-09-02)
@@ -250,8 +294,8 @@ Drops half spatial width in middle layers (blocks 4–30). 15 s cinematic denois
 185.7 s → 116.8 s (37% faster). Quality impact: slight detail loss in fine
 textures.
 
-**VRAM impact:** −12 GiB for 15 s cinematic (48→36 GiB on gfx1151) due to
-halved spatial tokens in middle DiT blocks.
+**VRAM impact:** gfx1151 15 s default peak is **27.9 GiB** (not ~48 GiB).
+The 2026-09-02 TR run peaked at **25.7 GiB** in denoise.
 
 ### Optimization: Video VAE INT8 (`H3_INT8_VAE=1`)
 
@@ -305,11 +349,11 @@ Override at runtime: `H3_VAE_TILE_PIXELS=272` restores old behaviour.
 
 Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
 pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
-**tagged** quality-path row (45.0 min / 12 min 11 s) with these numbers.
+**tagged** quality-path row (40 min 46 s / 12 min 11 s) with these numbers.
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
-| gfx1151 15 s E2E | 45.0 min | **28.2 min** (−37%); [perf-runs/TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
+| gfx1151 15 s E2E | **40 min 46 s** (`main` 2026-09-03) | **28.2 min** (2026-09-02 CLI TR vs then-45.0 min); [perf-runs/TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
 | gfx90a 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
 | gfx942 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
 

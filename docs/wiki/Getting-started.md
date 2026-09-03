@@ -1,15 +1,19 @@
 # Getting started (HIP)
 
-One source tree. Two supported HIP offload ISAs. You pass `HIP_ARCH` yourself;
+One source tree. Three supported HIP offload ISAs. You pass `HIP_ARCH` yourself;
 the Makefile does **not** probe the GPU.
 
 | `HIP_ARCH` | GPU | Runtime DiT | Runtime SDPA |
 |---|---|---|---|
 | `gfx1151` | Strix Halo (RDNA, wave32) | INT8 weights (hipBLAS), BF16 activations | rocWMMA |
-| `gfx90a` | MI210 (CDNA, wave64) | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
+| `gfx90a` | MI210 / MI250X (CDNA2, wave64) | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
+| `gfx942` | MI300X (CDNA3, wave64) | same as gfx90a | same as gfx90a |
 
-Other AMD targets are experimental. Tagged **v0.10.1** on `main` covers both
-ISAs (same kernels as v0.10.0). gfx1151 fox-s2 still matches the v0.9.0 md5 gate.
+Tagged **v0.10.1** on `main` covers the dual-ISA line; `main` after that adds
+gfx942 plus VAE/INT8/sampler knobs. gfx1151 fox-s2 **v0.9.0** md5
+`1731f95c4aa582597cf83d57f46b8f9e` is the historical gate. On current `main`
+the default 512 px VAE tile changes fox-s2 to
+`34507f072c5cabbde6592b3f70b8fa35`.
 
 ## Build
 
@@ -24,13 +28,16 @@ make HIP_ARCH=gfx1151 -j$(nproc) h3
 # MI210
 make HIP_ARCH=gfx90a -j$(nproc) h3
 
+# MI300X
+make HIP_ARCH=gfx942 -j$(nproc) h3
+
 ./h3 --info -d /path/to/MiniMax-H3
 ```
 
 `make clean` does not need `HIP_ARCH`. After switching ISA, `make clean` then
 rebuild. A missing `HIP_ARCH` on any non-clean target is a hard error.
 
-Halo fox-s2 md5 gate (same hash as v0.9.0):
+Halo fox-s2 md5 gate (v0.9.0 hash; override `H3_FOX_S2_MD5` on current `main`):
 
 ```bash
 make HIP_ARCH=gfx1151 halo-regression
@@ -85,8 +92,12 @@ weight-streaming T2VA jobs against the same NVMe at once.
 ## Optional knobs
 
 ```text
-H3_INT8_MLP=1          # gfx90a: restore INT8 DiT (gfx1151 default)
+H3_INT8_MLP=1          # gfx90a/gfx942: INT8 DiT (gfx1151 default)
 H3_INT8_MLP=0          # gfx1151: keep BF16 DiT weights
+H3_GPU_SAMPLER=1       # GPU Euler sampler (opt-in on HIP)
+H3_TOKEN_REDUCTION=1   # same as --token-reduction
+H3_INT8_VAE=1          # INT8 Video VAE weights (VRAM; fox VAE wall may not fall)
+H3_VAE_TILE_PIXELS=272 # restore v0.9.0-sized VAE tiles
 H3_SDPA_CDNA_FLASH=0   # gfx90a: hipBLAS score-matrix SDPA fallback
 H3_SDPA_CDNA_FP16_PV=0 # gfx90a flash: BF16 PV instead of FP16
 ```

@@ -4,9 +4,10 @@ Measured 2026-09-02 on Strix Halo (`gfx1151`), branch `token-reduction` @
 `903a7f0`, binary `h3-hip 0.10.1` rebuilt `HIP_ARCH=gfx1151`. Official
 MiniMax-H3 at `/home/amd/HF-MODELS/MiniMax-H3`.
 
-Same prompt / knobs / seed as [`LONG_VIDEO.md`](LONG_VIDEO.md) (v0.9.0 quality
-path, 45.0 min E2E), plus `--token-reduction` (off by default; visible quality
-trade). Not a fox-s2 md5 path.
+Same prompt / knobs / seed as [`LONG_VIDEO.md`](LONG_VIDEO.md) **v0.9.0**
+quality path (45.0 min E2E; 272 px VAE tiles), plus `--token-reduction`.
+On `main` (2026-09-03) the quality path is **40 min 46 s** with 480 px tiles;
+this TR table is **not** re-based to that run.
 
 Log: [`long-15s-tr-2026-09-02.log`](long-15s-tr-2026-09-02.log)  
 Output: `/tmp/halo-long/long-15s-tr.mp4` (864×480, 362 frames, 15.083 s,

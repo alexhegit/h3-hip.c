@@ -6,8 +6,9 @@ Halo ledger for the 10 s / 15 s cinematic clips. Same knobs on gfx90a
 [`../perf-mi210/STATUS.md`](../perf-mi210/STATUS.md). 10 s was not re-timed
 on MI210.
 
-Measured on AMD Ryzen AI MAX+ 395 / Radeon 8060S (`gfx1151`), v0.9.0 binary,
-official MiniMax-H3 checkpoint at `/home/amd/HF-MODELS/MiniMax-H3`.
+Measured on AMD Ryzen AI MAX+ 395 / Radeon 8060S (`gfx1151`), official
+MiniMax-H3 at `/home/amd/HF-MODELS/MiniMax-H3`. v0.9.0 numbers (26 Aug) stay
+below; **`main` 2026-09-03** retimes the 15 s quality path.
 
 Shared knobs (same as fox-fast quality path):
 
@@ -24,11 +25,12 @@ Prompt style: fal.ai timed shot list (T2VA, no references). Logs and MP4 under
 | Duration | Aligned frames | E2E wall | DiT denoise wall | Video VAE wall | Output |
 |---------:|---------------:|---------:|-----------------:|---------------:|--------|
 | 10.125 s | 243 | **24.7 min** (1479.8 s) | **21.2 min** (1273.2 s) | **2.3 min** (139.5 s) | [`assets/showcase/long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
-| 15.083 s | 362 | **45.0 min** (2701.4 s) | **40.4 min** (2423.0 s) | **3.5 min** (207.1 s) | [`assets/showcase/long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
-| 15.083 s + `--token-reduction` | 362 | **28.2 min** (1694.2 s) | **23.3 min** (1400.9 s) | **3.5 min** (209.3 s) | opt-in; [`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md) |
+| 15.083 s | 362 | **45.0 min** (2701.4 s) | **40.4 min** (2423.0 s) | **3.5 min** (207.1 s) | v0.9.0; [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
+| 15.083 s (`main` 2026-09-03) | 362 | **40 min 46 s** (2446 s) | **36 min 38 s** (2198 s) | **2.9 min** (174 s) | 2×1 @ 480 px; peak 27.9 GiB; [`long-15s-default-2026-09-03.log`](long-15s-default-2026-09-03.log) |
+| 15.083 s + `--token-reduction` | 362 | **28.2 min** (1694.2 s) | **23.3 min** (1400.9 s) | **3.5 min** (209.3 s) | 2026-09-02 CLI TR @ 272 px VAE; [`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md) |
 
-For reference, fox-fast (512² · 22 frames) is **95 s** E2E with **28 s** denoise
-GPU on the same machine ([`PERFORMANCE.md`](../PERFORMANCE.md)).
+For reference, fox-fast (512² · 22 frames) on this machine is I/O-bound E2E
+with **24.5 s** denoise GPU on `main` ([`PERFORMANCE.md`](../PERFORMANCE.md)).
 
 Long clips are dominated by DiT denoise. Scaling 22 → 362 frames is ~16× in
 frame count; denoise wall grows ~86× (28 s → 2423 s), reflecting super-linear
@@ -91,3 +93,21 @@ tagged scoreboard. Full table: [`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md).
 | **E2E** | **1694.2** | 864×480 · 362 frames · 3.3 MiB |
 
 Quality path 2701 s → 1694 s (**−37%** E2E, **−42%** denoise). VAE did not move.
+
+## 15 s quality path — 2026-09-03 (`main`)
+
+Same prompt / knobs / seed as 26 Aug. Binary `h3-hip 0.10.1` rebuilt
+`HIP_ARCH=gfx1151` at `e5b0499`. Default INT8 DiT, CPU Euler sampler, BF16 VAE,
+480 px tiles. Log: [`long-15s-default-2026-09-03.log`](long-15s-default-2026-09-03.log).
+
+| Phase | Wall (s) | Notes |
+|-------|--------:|-------|
+| Qwen text encoder | 26.4 | peak 4.6 GiB |
+| H3 DiT load | 41.7 | peak 27.9 GiB |
+| H3 DiT Euler denoise | **2197.8** | gpu-op 2197; sdpa 1613 · linear 548 · other 36; peak **27.9 GiB** |
+| audio VAE decoder | 3.9 | |
+| video VAE decoder | **173.6** | **2×1 tiles @ 480 px**; peak 10.2 GiB |
+| **E2E** (wall clock) | **2446** | 08:00:30–08:41:16; 864×480 · 362 frames |
+
+vs v0.9.0 2701 / 2423 / 207 s: **−9.4% E2E**, **−9.3% denoise**, **−16% VAE**.
+md5 `e54e2cfa1b6d87c13d8401003a5575a7` (not the gallery file).

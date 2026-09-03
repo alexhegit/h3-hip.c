@@ -49,8 +49,10 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - Multi-task parallelism is **not supported** on a single GPU (shared kernel state). Use `HIP_VISIBLE_DEVICES` for multi-process isolation. See `docs/DESIGN_MULTI_TASK.md`.
 - `H3_INT8_MLP=1` enables INT8 DiT on gfx90a/gfx942 (default is BF16 GEMM on CDNA).
 - `H3_INT8_VAE=1` enables INT8 Video VAE weights (69% VRAM reduction, ~9% slower).
-- `H3_GPU_SAMPLER=1` keeps latents on GPU during Euler denoise (57% faster fox-s2).
-- `H3_TOKEN_REDUCTION=1` halves spatial width in middle DiT blocks (37% faster long video).
+- `H3_GPU_SAMPLER=1` keeps latents on GPU during Euler denoise (large fox-s2
+  win on MI300X; **not** a gfx1151 short-clip win in the 2026-09-03 retune).
+- `H3_TOKEN_REDUCTION=1` halves spatial width in middle DiT blocks (~37% faster
+  long video). Same as `--token-reduction`.
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
