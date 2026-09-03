@@ -24,7 +24,8 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/FOX_S2.md`](../perf-runs/FOX_S2.md) | fox-s2 ledger (A/B/C; v0.9.0 is a pointer) |
 | [`../perf-runs/FOX_FAST.md`](../perf-runs/FOX_FAST.md) | fox-fast ledger (day-5 run; v0.9.0 is a pointer) |
 | [`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md) | Full v0.9.0 timed tables |
-| [`../perf-runs/TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) | gfx1151 15 s + `--token-reduction` (2026-09-02) |
+| [`../perf-runs/TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) | gfx1151 15 s + `--token-reduction` (2026-09-02, 28.2 min) |
+| [`../perf-runs/long-15s-default-2026-09-03.log`](../perf-runs/long-15s-default-2026-09-03.log) | gfx1151 15 s quality path on `main` |
 | [`../perf-runs/long-15s-all-opts-2026-09-03.log`](../perf-runs/long-15s-all-opts-2026-09-03.log) | gfx1151 15 s all-opts (sampler+TR+INT8 VAE) |
 | [`../perf-runs/long-15s-tr-int8vae-2026-09-03.log`](../perf-runs/long-15s-tr-int8vae-2026-09-03.log) | gfx1151 15 s TR+INT8 VAE (no sampler) |
 | [`../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt`](../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt) | gfx1151 fox default / sampler / all-opts `--profile` |
