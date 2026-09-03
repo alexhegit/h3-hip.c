@@ -197,18 +197,19 @@
     <div class="sec-num"><b>02</b> — Results</div>
     <h2>Where the speedup came from</h2>
     <p>
-      Two eras, same Halo box, same checkpoint, same CLI. The cards and ladder below are this port
-      measured against <em>itself</em> on <strong>gfx1151</strong>. They are not AMD versus anyone else,
-      and they are not a Metal comparison. Wall time on this box moves with page-cache state, so
-      end-to-end is a band and <strong>denoise GPU time</strong> (HIP events) is the figure to trust.
-      MI210 / MI300X never ran the 18&nbsp;Aug first profile, so they belong in the tagged table, not in
-      these multipliers.
+      Two Halo milestones, this port measured against <em>itself</em> on <strong>gfx1151</strong>.
+      <strong>v0.9.0</strong> is the kernel milestone: first working HIP (18&nbsp;Aug) versus the 26&nbsp;Aug
+      tag. <strong>v0.11.0</strong> is compared only to that v0.9.0 Halo baseline — same machine, same
+      checkpoint, same CLI. Wall time moves with page-cache state; <strong>denoise GPU time</strong>
+      (HIP events) is the figure to trust. MI210 / MI300X are new ISAs in the tagged table below,
+      not multipliers against the August first profile.
     </p>
 
-    <h3>Era 1 — first HIP to v0.9.0 (18–26 Aug)</h3>
+    <h3>v0.9.0 — gfx1151 kernel milestone (18–26 Aug)</h3>
     <p>
       Make the GPU cheap, then stop page-locking the 31&nbsp;GiB host pool. After WMMA, short fox-s2
-      is no longer GPU-bound; the remaining wall clock is NVMe.
+      is no longer GPU-bound; the remaining wall clock is NVMe. This is the Halo performance milestone.
+      gfx90a / gfx942 are not in these multipliers — they did not run the 18&nbsp;Aug first profile.
     </p>
 
     <div class="stats">
@@ -238,7 +239,7 @@
     <p>
       Each rung is a dated gfx1151 session that kept something. Bar length is denoise GPU time;
       the number on the right is cumulative speedup against the first HIP profile.
-      The last rung is v0.11.0, not v0.9.0.
+      WMMA is the v0.9.0 milestone; the last rung is the v0.11.0 denoise on the same GPU.
     </p>
 
     <div class="ladder">
@@ -304,33 +305,33 @@
       </p>
     </div>
 
-    <h3>Era 2 — v0.9.0 to v0.11.0 (same gfx1151)</h3>
+    <h3>v0.11.0 vs v0.9.0 — same gfx1151</h3>
     <p>
-      Do not retarget the 3.0&times; fox-s2 E2E card: cold E2E is still the 31&nbsp;GiB host vs ~107&nbsp;GiB
-      weights. The GPU work that landed after WMMA shows up in denoise and in the 15&nbsp;s cinematic
-      (which did not exist as a scoreboard clip in August).
+      Same machine, same checkpoint, same quality-path CLI unless noted. fox-s2 E2E is still NVMe
+      (~83–90&nbsp;s), so it is not a speedup card. What moved is denoise and the 15&nbsp;s cinematic.
+      All-opts is opt-in (<span class="mono">--token-reduction</span> + INT8 VAE), not the tagged quality row.
     </p>
 
     <div class="stats">
       <div class="stat">
-        <div class="k red">12&times;</div>
-        <div class="t">fox-s2 denoise vs first HIP</div>
-        <div class="d">40.3 s → 3.36 s</div>
-      </div>
-      <div class="stat">
         <div class="k red">1.9&times;</div>
-        <div class="t">fox-s2 denoise vs v0.9.0</div>
+        <div class="t">fox-s2 denoise GPU</div>
         <div class="d">6.3–6.5 s → 3.36 s</div>
       </div>
       <div class="stat">
         <div class="k">−9%</div>
-        <div class="t">15 s quality E2E vs v0.9.0</div>
+        <div class="t">15 s quality E2E</div>
         <div class="d">45.0 min → 40 min 46 s</div>
       </div>
       <div class="stat">
+        <div class="k">−16%</div>
+        <div class="t">15 s VAE wall</div>
+        <div class="d">207 s → 174 s</div>
+      </div>
+      <div class="stat">
         <div class="k red">1.7&times;</div>
-        <div class="t">15 s all-opts vs v0.9.0 quality</div>
-        <div class="d">45.0 min → 27 min 3 s</div>
+        <div class="t">15 s all-opts E2E</div>
+        <div class="d">45.0 min → 27 min 3 s · opt-in</div>
       </div>
     </div>
 
