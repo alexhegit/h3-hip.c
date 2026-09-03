@@ -3878,7 +3878,8 @@ static int h3_fp8_gemm_run(
     const void *input, const void *weight, uint32_t m, uint32_t n,
     uint32_t k, float *fp32_acc, hipStream_t stream) {
     float alpha = 1.0f, beta = 0.0f;
-    hipblasOperation_t op = HIPBLAS_OP_T;
+    hipblasOperation_t opT = HIPBLAS_OP_T;
+    hipblasOperation_t opN = HIPBLAS_OP_N;
     hipblasLtMatmulDesc_t matmulDesc = NULL;
     hipblasLtMatrixLayout_t Adesc = NULL, Bdesc = NULL;
     hipblasLtMatrixLayout_t Cdesc = NULL, Ddesc = NULL;
@@ -3891,9 +3892,9 @@ static int h3_fp8_gemm_run(
                                   HIPBLAS_R_32F) != HIPBLAS_STATUS_SUCCESS)
         goto done;
     (void)hipblasLtMatmulDescSetAttribute(
-        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSA, &op, sizeof(op));
+        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSA, &opT, sizeof(opT));
     (void)hipblasLtMatmulDescSetAttribute(
-        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSB, &op, sizeof(op));
+        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN));
 
     if (hipblasLtMatrixLayoutCreate(&Adesc, HIP_R_8F_E4M3_FNUZ, k, m, k) !=
             HIPBLAS_STATUS_SUCCESS ||
@@ -3931,8 +3932,8 @@ static int h3_fp8_gemm_run(
             h3_fp8_hipblaslt, matmulDesc, Adesc, Bdesc, Cdesc, Ddesc,
             pref, 1, heuristic, &returned);
         hipblasStatus_t st = hipblasLtMatmul(
-            h3_fp8_hipblaslt, matmulDesc, &alpha, input, Adesc,
-            weight, Bdesc, &beta, fp32_acc, Cdesc, fp32_acc, Ddesc,
+            h3_fp8_hipblaslt, matmulDesc, &alpha, weight, Adesc,
+            input, Bdesc, &beta, fp32_acc, Cdesc, fp32_acc, Ddesc,
             &heuristic[0].algo, f32_ws, ws_size, stream);
         ok = (st == HIPBLAS_STATUS_SUCCESS);
     }

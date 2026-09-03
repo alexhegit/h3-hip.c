@@ -1933,9 +1933,7 @@ static h3_dit *load_dit(const char *weight_directory,
      * path when H3_FP8_MLP=1 is set; INT8 remains the fallback for other ISAs. */
     dit->fp8_mlp = !dit->ssd_streaming && dit->fused_mlp &&
                     h3_gpu_has_fp8_mlp(dit->gpu);
-    dit->fp8_qkv = !dit->ssd_streaming &&
-                    dit->sequence >= 128 &&
-                    h3_gpu_has_fp8_mlp(dit->gpu);
+    dit->fp8_qkv = 0; /* TODO: FP8 QKV needs fused norm+RoPE+GEMM path */
     dit->fp8_attention_out = !dit->ssd_streaming &&
                              dit->sequence >= 128 &&
                              h3_gpu_has_fp8_mlp(dit->gpu);
