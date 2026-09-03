@@ -230,6 +230,23 @@ short presets.
 | fox-s2 | **~14 s** | **0.34 s** | **~79 GiB** | 2.7× faster |
 | fox-fast | **~12 s** | **1.86 s** | **19.7 GiB** | 1.6× faster |
 
+### FP8 DiT (`H3_FP8_MLP=1`, gfx942 only)
+
+**Status:** experimental — not default. Requires hipBLASLt (auto-detected at build).
+FP8 E4M3 FNUZ is a gfx942-only ISA feature; on gfx1151/gfx90a the flag is
+ignored and falls back to BF16/INT8.
+
+FP8 uses hipBLASLt `HIPBLAS_COMPUTE_32F` with `HIP_R_8F_E4M3_FNUZ` inputs,
+FP32 accumulation, and custom epilogue kernels for scale+cast to BF16. FP8
+supersedes INT8 when both are set (clears INT8 flags in DIT init).
+
+| Preset | E2E | Denoise GPU | Peak VRAM | vs BF16 | vs INT8 |
+|--------|----:|------------:|----------:|--------:|--------:|
+| 15 s cinematic | TBD | TBD | TBD | TBD | TBD |
+
+FP8 weight quantize: per-row absmax with max=240.0 (AMD FNUZ, not OCP 448.0).
+Same theoretical peak as INT8 (2,615 TFLOPS) but wider range avoids overflow.
+
 ### All optimizations enabled
 
 ```bash
