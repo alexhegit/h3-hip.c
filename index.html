@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiniMax-H3 on AMD HIP — h3-hip.c</title>
-<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. v0.10.1 supports gfx1151 (Strix Halo) and gfx90a (MI210). Pass HIP_ARCH yourself.">
+<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. Current main covers gfx1151, gfx90a, and gfx942. Pass HIP_ARCH yourself.">
 <style>
   :root {
     --bg: #0b0c0e;
@@ -144,15 +144,16 @@
 
 <header>
   <div class="wrap">
-    <div class="eyebrow">v0.10.1 · gfx1151 and gfx90a</div>
+    <div class="eyebrow">main · gfx1151 / gfx90a / gfx942</div>
     <h1>MiniMax-H3 on AMD HIP
-      <span class="sub">One tree, two ISAs — Strix Halo fox-s2 still 83–87&nbsp;s; MI210 does the same 15&nbsp;s clip in 12&nbsp;min 33&nbsp;s.</span>
+      <span class="sub">One tree, three ISAs — Halo 15&nbsp;s quality path 40&nbsp;min 46&nbsp;s; MI210 does the same clip in 12&nbsp;min 11&nbsp;s.</span>
     </h1>
     <p class="lede">
       <a href="https://github.com/alexhegit/h3-hip.c">h3-hip.c</a> reimplements the GPU backend of
       <a href="https://github.com/antirez/h3.c">antirez/h3.c</a> in HIP. Pass
-      <span class="mono">HIP_ARCH=gfx1151</span> or <span class="mono">HIP_ARCH=gfx90a</span> — the Makefile
-      does not probe the GPU. Halo fox-s2 still hashes to the v0.9.0 md5.
+      <span class="mono">HIP_ARCH=gfx1151</span>, <span class="mono">gfx90a</span>, or
+      <span class="mono">gfx942</span> — the Makefile does not probe the GPU. Last tag is
+      <span class="mono">v0.10.1</span>; the numbers on this page are current <span class="mono">main</span>.
     </p>
     <div class="hero-links">
       <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
@@ -285,7 +286,7 @@
       </p>
     </div>
 
-    <h3>Tagged baseline — v0.10.1</h3>
+    <h3>Current <span class="mono">main</span> — 3 Sep 2026</h3>
     <table>
       <thead>
         <tr><th>Preset</th><th class="num">gfx1151</th><th class="num">gfx90a</th></tr>
@@ -293,11 +294,11 @@
       <tbody>
         <tr class="hi">
           <td><strong>fox-s2</strong> E2E</td>
-          <td class="num">83–87 s</td><td class="num">~10.5 s</td>
+          <td class="num">~85–90 s (I/O)</td><td class="num">~10.8 s</td>
         </tr>
         <tr class="hi">
           <td><strong>fox-fast</strong> E2E</td>
-          <td class="num">~95 s</td><td class="num">~18 s</td>
+          <td class="num">~2 min (I/O)</td><td class="num">~18 s</td>
         </tr>
         <tr class="hi">
           <td><strong>15 s cinematic</strong> E2E</td>
@@ -541,9 +542,10 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       Host, model and CLI code follow <a href="https://github.com/antirez/h3.c">antirez/h3.c</a>; the HIP backend
       is <span class="mono">backends/h3_gpu_hip.c</span> plus the kernels under
       <span class="mono">kernels/</span>. Model weights are subject to the MiniMax-H3 license.
-      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Tagged <span class="mono">v0.10.1</span>
-      quality path, 1 Sep 2026. 15 s <span class="mono">--token-reduction</span> timings on <span class="mono">main</span>,
-      2 Sep 2026. Halo fox-s2 md5 unchanged from v0.9.0.
+      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Scoreboard is
+      <span class="mono">main</span> as of 3 Sep 2026. Last tag
+      <span class="mono">v0.10.1</span> does not include gfx942 or the Halo retune.
+      Default fox-s2 md5 on <span class="mono">main</span> is no longer the v0.9.0 gate.
     </p>
   </div>
 </footer>
