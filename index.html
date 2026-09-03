@@ -365,7 +365,7 @@
           <td>gfx1151</td>
           <td><span class="mono">--token-reduction</span></td>
           <td class="num">362</td><td class="num">15.1 s</td>
-          <td class="num">28.2 min</td><td class="num">23.3 min</td>
+          <td class="num">27 min 3 s</td><td class="num">23 min 10 s</td>
         </tr>
         <tr class="hi">
           <td><strong>gfx90a</strong></td>
@@ -385,8 +385,9 @@
       Quality-path Halo (<span class="mono">main</span> 3 Sep 2026):
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/LONG_VIDEO.md">LONG_VIDEO.md</a>
       · 2446 s E2E · 2×1 @ 480 px VAE · DiT peak 27.9 GiB.
-      gfx1151 TR (2 Sep 2026, vs then-45.0 min):
-      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/TOKEN_REDUCTION.md">perf-runs/TOKEN_REDUCTION.md</a>.
+      gfx1151 TR / all-opts (<span class="mono">main</span> 3 Sep 2026):
+      <strong>27 min 3 s</strong> E2E, VAE peak 3.7 GiB.
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/perf-runs/long-15s-all-opts-2026-09-03.log">all-opts log</a>.
       gfx90a quality path 12 min 11 s; TR 8 min 21 s.
     </p>
 
@@ -418,7 +419,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   --steps 20 --layers 45 --reuse 2 --seed 42 \
   -o outputs/long-15s-cinematic.mp4
 
-<span class="c"># optional: --token-reduction  (gfx1151 28.2 min / gfx90a 8 min 21 s; quality trade)</span>
+<span class="c"># optional: --token-reduction + H3_INT8_VAE=1  (gfx1151 27 min 3 s / gfx90a 8 min 21 s)</span>
 <span class="c"># append the flag to the same command; not the gallery / md5 path</span></pre>
   </div>
 </section>
