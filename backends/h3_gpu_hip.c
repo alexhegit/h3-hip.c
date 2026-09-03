@@ -1008,6 +1008,14 @@ int h3_gpu_has_int8_mlp(const h3_gpu *gpu) {
     return h3_hip_rdna_wmma_default();
 }
 
+int h3_gpu_has_fp8_mlp(const h3_gpu *gpu) {
+    (void)gpu;
+    const char *e = getenv("H3_FP8_MLP");
+    if (!e || strcmp(e, "0") == 0) return 0;
+    if (strcmp(e, "1") == 0) return 1;
+    return 0;
+}
+
 h3_gpu_tensor *h3_gpu_tensor_new_f32(h3_gpu *gpu, size_t elements) {
     return (h3_gpu_tensor *)h3_hip_tensor_new(gpu_ptr(gpu), NULL, elements,
                                             sizeof(float), H3_GPU_F32);
@@ -4055,6 +4063,278 @@ int h3_gpu_gate_adaln_quantize_int8(
     if (own_adaln) h3_gpu_tensor_free(adaln_out);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_gate_adaln_quantize_int8 failed");
+    }
+    return ok;
+}
+
+/* FP8 E4M3 FNUZ backend (gfx942 / CDNA3 only). */
+static int h3_hip_quantize_bf16_fp8_rows(
+    struct h3_gpu *ctx, h3_gpu_tensor *output, h3_gpu_tensor *scales,
+    const h3_gpu_tensor *input, uint32_t rows, uint32_t padded_rows,
+    uint32_t columns) {
+    size_t count = (size_t)rows * columns;
+    size_t padded_count = (size_t)padded_rows * columns;
+    if (!ctx || !rows || !columns ||
+        !h3_hip_require_bf16(ctx, input, count, "BF16 weight to FP8 quantize") ||
+        !h3_hip_require_i8(ctx, output, padded_count,
+                           "FP8 quantized output") ||
+        !h3_hip_require_f32(ctx, scales, padded_rows, "FP8 quantize scales")) {
+        return 0;
+    }
+    h3_int8_quant_args args = {rows, columns, 1.0f};
+    return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_fp8_rows(
+        (const uint16_t *)tensor_ptr(input)->data,
+        (uint8_t *)tensor_ptr(output)->data,
+        (float *)tensor_ptr(scales)->data, &args, padded_rows,
+        ctx->stream), "h3_quantize_bf16_fp8_rows");
+}
+
+int h3_gpu_quantize_weight_fp8(h3_gpu *gpu, h3_gpu_tensor *output,
+                                h3_gpu_tensor *scales,
+                                const h3_gpu_tensor *input, uint32_t rows,
+                                uint32_t columns) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * columns;
+    if (!ctx || !rows || !columns ||
+        !h3_hip_require_bf16(ctx, input, count, "BF16 weight to FP8") ||
+        !h3_hip_require_i8(ctx, output, count, "FP8 quantized weight") ||
+        !h3_hip_require_f32(ctx, scales, rows, "FP8 weight scales")) {
+        return 0;
+    }
+    h3_int8_quant_args args = {rows, columns, 1.0f};
+    return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_fp8_rows(
+        (const uint16_t *)tensor_ptr(input)->data,
+        (uint8_t *)tensor_ptr(output)->data,
+        (float *)tensor_ptr(scales)->data, &args, rows, ctx->stream),
+        "h3_quantize_bf16_fp8_rows");
+}
+
+static int h3_hip_launch_linear_fp8_prequant(
+    struct h3_gpu *ctx, h3_gpu_tensor *output,
+    const h3_gpu_tensor *quantized_input, const h3_gpu_tensor *input_scales,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
+    uint32_t rows, uint32_t input_dim, uint32_t output_dim) {
+    h3_linear_args args = {rows, input_dim, output_dim, 0};
+    return h3_hip_launch_linear(ctx, h3_launch_linear_fp8_bf16(
+        (const void *)tensor_ptr(quantized_input)->data,
+        (const void *)tensor_ptr(weight)->data,
+        (const float *)tensor_ptr(input_scales)->data,
+        (const float *)tensor_ptr(weight_scales)->data,
+        (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
+        "h3_linear_fp8_bf16", 0);
+}
+
+int h3_gpu_linear_fp8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                           h3_gpu_tensor *quantized_input,
+                           h3_gpu_tensor *input_scales,
+                           const h3_gpu_tensor *input,
+                           const h3_gpu_tensor *weight,
+                           const h3_gpu_tensor *weight_scales,
+                           uint32_t rows, uint32_t input_dim,
+                           uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t padded_rows = (rows + 127u) & ~127u;
+    size_t activation_count = (size_t)padded_rows * input_dim;
+    size_t weight_count = (size_t)output_dim * input_dim;
+    size_t output_count = (size_t)rows * output_dim;
+    if (!ctx || !rows || !input_dim || !output_dim ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                             "fp8 linear input") ||
+        !h3_hip_require_i8(ctx, weight, weight_count, "fp8 linear weight") ||
+        !h3_hip_require_f32(ctx, weight_scales, output_dim,
+                            "fp8 linear weight scales") ||
+        !h3_hip_require_i8(ctx, quantized_input, activation_count,
+                           "fp8 quantized input") ||
+        !h3_hip_require_f32(ctx, input_scales, padded_rows,
+                            "fp8 linear input scales") ||
+        !h3_hip_require_bf16(ctx, output, output_count, "fp8 linear output")) {
+        return 0;
+    }
+    h3_int8_quant_args quant_args = {rows, input_dim, 1.0f};
+    if (!h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_fp8_rows(
+            (const uint16_t *)tensor_ptr(input)->data,
+            (uint8_t *)tensor_ptr(quantized_input)->data,
+            (float *)tensor_ptr(input_scales)->data, &quant_args, padded_rows,
+            ctx->stream), "h3_quantize_bf16_fp8_rows")) {
+        return 0;
+    }
+    return h3_hip_launch_linear_fp8_prequant(
+        ctx, output, quantized_input, input_scales, weight, weight_scales,
+        rows, input_dim, output_dim);
+}
+
+int h3_gpu_linear_fp8_head_major_bf16(
+    h3_gpu *gpu, h3_gpu_tensor *output, h3_gpu_tensor *quantized_input,
+    h3_gpu_tensor *input_scales, const h3_gpu_tensor *input,
+    const h3_gpu_tensor *weight, const h3_gpu_tensor *weight_scales,
+    uint32_t rows, uint32_t heads, uint32_t head_dim, uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t input_dim = heads * head_dim;
+    uint32_t padded_rows = (rows + 127u) & ~127u;
+    size_t activation_count = (size_t)padded_rows * input_dim;
+    size_t weight_count = (size_t)output_dim * input_dim;
+    size_t output_count = (size_t)rows * output_dim;
+    if (!ctx || !rows || !heads || !head_dim || !output_dim ||
+        !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                             "head-major fp8 linear input") ||
+        !h3_hip_require_i8(ctx, weight, weight_count, "fp8 linear weight") ||
+        !h3_hip_require_f32(ctx, weight_scales, output_dim,
+                            "fp8 linear weight scales") ||
+        !h3_hip_require_i8(ctx, quantized_input, activation_count,
+                           "head-major fp8 quantized input") ||
+        !h3_hip_require_f32(ctx, input_scales, padded_rows,
+                            "head-major fp8 input scales") ||
+        !h3_hip_require_bf16(ctx, output, output_count,
+                             "head-major fp8 linear output")) {
+        return 0;
+    }
+    /* For head-major input, we need to quantize with head-major layout.
+     * For simplicity, use the same row-major quantize (heads packed per row). */
+    if (!h3_hip_quantize_bf16_fp8_rows(
+            ctx, quantized_input, input_scales, input, rows, padded_rows,
+            input_dim)) {
+        return 0;
+    }
+    return h3_hip_launch_linear_fp8_prequant(
+        ctx, output, quantized_input, input_scales, weight, weight_scales,
+        rows, input_dim, output_dim);
+}
+
+int h3_gpu_mlp_fp8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                        h3_gpu_tensor *activated,
+                        h3_gpu_tensor *quantized_activation,
+                        h3_gpu_tensor *activation_scales,
+                        const h3_gpu_tensor *input,
+                        const h3_gpu_tensor *fc1_weight,
+                        const h3_gpu_tensor *fc1_scales,
+                        const h3_gpu_tensor *fc2_weight,
+                        const h3_gpu_tensor *fc2_scales,
+                        uint32_t rows, uint32_t input_dim,
+                        uint32_t hidden_dim, uint32_t output_dim,
+                        int input_is_quantized,
+                        h3_gpu_tensor *fc1_out_ws) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    uint32_t padded_rows = (rows + 127u) & ~127u;
+    uint32_t fc1_output_dim = hidden_dim * 2u;
+    size_t activation_capacity = (size_t)padded_rows *
+        (input_dim > hidden_dim ? input_dim : hidden_dim);
+    size_t fc1_weight_count = (size_t)fc1_output_dim * input_dim;
+    size_t fc2_weight_count = (size_t)output_dim * hidden_dim;
+    (void)fc1_out_ws;
+    if (!ctx || !rows || !input_dim || !hidden_dim || !output_dim ||
+        !h3_hip_require_i8(ctx, quantized_activation, activation_capacity,
+                           "fp8 MLP activation") ||
+        !h3_hip_require_f32(ctx, activation_scales, padded_rows,
+                            "fp8 MLP activation scales") ||
+        !h3_hip_require_i8(ctx, fc1_weight, fc1_weight_count,
+                           "fp8 MLP FC1 weight") ||
+        !h3_hip_require_f32(ctx, fc1_scales, fc1_output_dim,
+                            "fp8 MLP FC1 scales") ||
+        !h3_hip_require_i8(ctx, fc2_weight, fc2_weight_count,
+                           "fp8 MLP FC2 weight") ||
+        !h3_hip_require_f32(ctx, fc2_scales, output_dim,
+                            "fp8 MLP FC2 scales") ||
+        (!input_is_quantized &&
+         !h3_hip_require_bf16(ctx, input, (size_t)rows * input_dim,
+                              "fp8 MLP input")) ||
+        !h3_hip_require_bf16(ctx, activated, (size_t)rows * hidden_dim,
+                             "fp8 MLP activated") ||
+        !h3_hip_require_bf16(ctx, output, (size_t)rows * output_dim,
+                             "fp8 MLP output")) {
+        return 0;
+    }
+    int ok = 1;
+    /* Quantize input to FP8 if not already quantized. */
+    if (!input_is_quantized &&
+        !h3_hip_quantize_bf16_fp8_rows(
+            ctx, quantized_activation, activation_scales, input, rows,
+            padded_rows, input_dim)) {
+        ok = 0;
+    }
+    /* FC1: FP8 GEMM with SwiGLU epilogue. */
+    if (ok) {
+        h3_linear_args args = {rows, input_dim, fc1_output_dim, 0};
+        if (!h3_hip_launch_linear(ctx, h3_launch_linear_fp8_fc1_swiglu_bf16(
+                (const void *)tensor_ptr(quantized_activation)->data,
+                (const void *)tensor_ptr(fc1_weight)->data,
+                (const float *)tensor_ptr(activation_scales)->data,
+                (const float *)tensor_ptr(fc1_scales)->data,
+                (uint16_t *)tensor_ptr(activated)->data, &args, ctx->stream),
+                "h3_fp8_fc1_swiglu_bf16", 0)) {
+            ok = 0;
+        }
+    }
+    /* Quantize activated (SwiGLU output) to FP8 for FC2. */
+    if (ok &&
+        !h3_hip_quantize_bf16_fp8_rows(
+            ctx, quantized_activation, activation_scales, activated, rows,
+            padded_rows, hidden_dim)) {
+        ok = 0;
+    }
+    /* FC2: FP8 GEMM. */
+    if (ok) {
+        if (!h3_hip_launch_linear_fp8_prequant(
+                ctx, output, quantized_activation, activation_scales,
+                fc2_weight, fc2_scales, rows, hidden_dim, output_dim)) {
+            ok = 0;
+        }
+    }
+    if (!ok) {
+        h3_hip_set_error(ctx, "h3_mlp_fp8_bf16 failed");
+    }
+    return ok;
+}
+
+int h3_gpu_gate_adaln_quantize_fp8(
+    h3_gpu *gpu, h3_gpu_tensor *gated_residual,
+    h3_gpu_tensor *quantized_output, h3_gpu_tensor *quantized_scales,
+    const h3_gpu_tensor *residual, const h3_gpu_tensor *branch,
+    const h3_gpu_tensor *norm_weight, const h3_gpu_tensor *gate_modulation,
+    const h3_gpu_tensor *norm_modulation, const h3_gpu_tensor *row_map,
+    uint32_t rows, uint32_t padded_rows, uint32_t width, uint32_t slots,
+    uint32_t gate_slot, uint32_t shift_slot, uint32_t scale_slot,
+    float epsilon, h3_gpu_tensor *adaln_ws) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    size_t padded_count = (size_t)padded_rows * width;
+    if (!ctx || !rows || !width || padded_rows < rows ||
+        gate_slot >= slots || shift_slot >= slots || scale_slot >= slots ||
+        !h3_hip_require_bf16(ctx, residual, count, "fp8 gate AdaLN residual") ||
+        !h3_hip_require_bf16(ctx, branch, count, "fp8 gate AdaLN branch") ||
+        !h3_hip_require_bf16(ctx, norm_weight, width, "fp8 gate AdaLN norm") ||
+        !h3_hip_require_bf16(ctx, gate_modulation, 1,
+                             "fp8 gate AdaLN gate modulation") ||
+        !h3_hip_require_bf16(ctx, norm_modulation, 1,
+                             "fp8 gate AdaLN norm modulation") ||
+        !h3_hip_require_u32(ctx, row_map, rows, "fp8 gate AdaLN row map") ||
+        !h3_hip_require_bf16(ctx, gated_residual, count,
+                             "fp8 gate AdaLN gated residual") ||
+        !h3_hip_require_i8(ctx, quantized_output, padded_count,
+                           "fp8 gate AdaLN quantized output") ||
+        !h3_hip_require_f32(ctx, quantized_scales, padded_rows,
+                            "fp8 gate AdaLN scales")) {
+        return 0;
+    }
+    h3_gpu_tensor *adaln_out = adaln_ws;
+    int own_adaln = 0;
+    if (!adaln_out) {
+        adaln_out = h3_gpu_tensor_new_bf16_device(gpu, count);
+        if (!adaln_out) {
+            h3_hip_set_error(ctx, "fp8 gate AdaLN temporary allocation failed");
+            return 0;
+        }
+        own_adaln = 1;
+    }
+    int ok = h3_gpu_gate_adaln_bf16(
+        gpu, gated_residual, adaln_out, residual, branch, norm_weight,
+        gate_modulation, norm_modulation, row_map, rows, width, slots,
+        gate_slot, shift_slot, scale_slot, epsilon) &&
+             h3_hip_quantize_bf16_fp8_rows(
+                 ctx, quantized_output, quantized_scales, adaln_out, rows,
+                 padded_rows, width);
+    if (own_adaln) h3_gpu_tensor_free(adaln_out);
+    if (!ok) {
+        h3_hip_set_error(ctx, "h3_gate_adaln_quantize_fp8 failed");
     }
     return ok;
 }

@@ -38,6 +38,7 @@ void h3_gpu_free(h3_gpu *gpu);
 int h3_gpu_is_m5(const h3_gpu *gpu);
 int h3_gpu_has_nax_mlp(const h3_gpu *gpu);
 int h3_gpu_has_int8_mlp(const h3_gpu *gpu);
+int h3_gpu_has_fp8_mlp(const h3_gpu *gpu);
 
 h3_gpu_tensor *h3_gpu_tensor_new_f32(h3_gpu *gpu, size_t elements);
 h3_gpu_tensor *h3_gpu_tensor_new_bf16(h3_gpu *gpu, size_t elements);
@@ -387,6 +388,55 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          int use_int8_row_fc2,
                          int input_is_quantized,
                          h3_gpu_tensor *fc1_out_ws);
+int h3_gpu_quantize_weight_fp8(h3_gpu *gpu, h3_gpu_tensor *output,
+                                h3_gpu_tensor *scales,
+                                const h3_gpu_tensor *input, uint32_t rows,
+                                uint32_t columns);
+int h3_gpu_linear_fp8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                           h3_gpu_tensor *quantized_input,
+                           h3_gpu_tensor *input_scales,
+                           const h3_gpu_tensor *input,
+                           const h3_gpu_tensor *weight,
+                           const h3_gpu_tensor *weight_scales,
+                           uint32_t rows, uint32_t input_dim,
+                           uint32_t output_dim);
+int h3_gpu_linear_fp8_head_major_bf16(
+                           h3_gpu *gpu, h3_gpu_tensor *output,
+                           h3_gpu_tensor *quantized_input,
+                           h3_gpu_tensor *input_scales,
+                           const h3_gpu_tensor *input,
+                           const h3_gpu_tensor *weight,
+                           const h3_gpu_tensor *weight_scales,
+                           uint32_t rows, uint32_t heads,
+                           uint32_t head_dim, uint32_t output_dim);
+int h3_gpu_mlp_fp8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                        h3_gpu_tensor *activated,
+                        h3_gpu_tensor *quantized_activation,
+                        h3_gpu_tensor *activation_scales,
+                        const h3_gpu_tensor *input,
+                        const h3_gpu_tensor *fc1_weight,
+                        const h3_gpu_tensor *fc1_scales,
+                        const h3_gpu_tensor *fc2_weight,
+                        const h3_gpu_tensor *fc2_scales,
+                        uint32_t rows, uint32_t input_dim,
+                        uint32_t hidden_dim, uint32_t output_dim,
+                        int input_is_quantized,
+                        h3_gpu_tensor *fc1_out_ws);
+int h3_gpu_gate_adaln_quantize_fp8(
+                        h3_gpu *gpu, h3_gpu_tensor *gated_residual,
+                        h3_gpu_tensor *quantized_output,
+                        h3_gpu_tensor *quantized_scales,
+                        const h3_gpu_tensor *residual,
+                        const h3_gpu_tensor *branch,
+                        const h3_gpu_tensor *norm_weight,
+                        const h3_gpu_tensor *gate_modulation,
+                        const h3_gpu_tensor *norm_modulation,
+                        const h3_gpu_tensor *row_map,
+                        uint32_t rows, uint32_t padded_rows,
+                        uint32_t width, uint32_t slots,
+                        uint32_t gate_slot, uint32_t shift_slot,
+                        uint32_t scale_slot, float epsilon,
+                        h3_gpu_tensor *adaln_ws);
 int h3_gpu_silu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *input, uint32_t elements);
 int h3_gpu_rms_norm_bf16(h3_gpu *gpu, h3_gpu_tensor *output,

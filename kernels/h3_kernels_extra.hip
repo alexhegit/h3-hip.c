@@ -1983,6 +1983,118 @@ extern "C" int h3_launch_quantize_bf16_int8_groups(
                            stream) == hipSuccess;
 }
 
+/* ===========================================================================
+ * FP8 E4M3 FNUZ quantize kernel (gfx942 / CDNA3 only).
+ *
+ * FP8 E4M3 FNUZ has a max representable value of 240.0.
+ * Quantization: fp8_val = clamp(round(bf16_val * inverse), -240, 240)
+ * Dequantization: bf16_val = fp8_val * scale
+ * =========================================================================== */
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp8.h>
+#endif
+
+__global__ void h3_quantize_bf16_fp8_rows_kernel(
+    const uint16_t *input, void *output, float *scales,
+    h3_int8_quant_args args) {
+    __shared__ float warp_max[16];
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    uint32_t base = row * args.columns;
+    if (row >= args.rows) {
+        for (uint32_t column = tid; column < args.columns; column += threads)
+            ((uint8_t *)output)[base + column] = 0;
+        if (tid == 0) scales[row] = 1.0f;
+        return;
+    }
+    float local_max = 0.0f;
+    if ((args.columns & 3u) == 0u) {
+        for (uint32_t column = tid * 4u; column < args.columns;
+             column += threads * 4u) {
+            uint2 packed =
+                *reinterpret_cast<const uint2 *>(input + base + column);
+            uint16_t a0 = (uint16_t)(packed.x & 0xffffu);
+            uint16_t a1 = (uint16_t)(packed.x >> 16);
+            uint16_t a2 = (uint16_t)(packed.y & 0xffffu);
+            uint16_t a3 = (uint16_t)(packed.y >> 16);
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a0)));
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a1)));
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a2)));
+            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a3)));
+        }
+    } else {
+        for (uint32_t column = tid; column < args.columns; column += threads)
+            local_max = fmaxf(local_max,
+                              fabsf(h3_bf16_to_f32(input[base + column])));
+    }
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1)
+        local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
+    if ((tid & 31u) == 0u) warp_max[tid >> 5] = local_max;
+    __syncthreads();
+    if (tid < 16u) {
+        float value = (tid < (threads >> 5)) ? warp_max[tid] : 0.0f;
+#pragma unroll
+        for (int offset = 8; offset > 0; offset >>= 1)
+            value = fmaxf(value, h3_shfl_xor32(value, offset));
+        if (tid == 0) warp_max[0] = value;
+    }
+    __syncthreads();
+    float clipped_max = warp_max[0] * args.clip;
+    /* FP8 E4M3 FNUZ max is 240.0, not 127.0 as INT8. */
+    static const float FP8_MAX = 240.0f;
+    float scale = clipped_max > 0.0f ? clipped_max / FP8_MAX : 1.0f / FP8_MAX;
+    float inverse = clipped_max > 0.0f ? FP8_MAX / clipped_max : FP8_MAX;
+    if (tid == 0) scales[row] = scale;
+    if ((args.columns & 3u) == 0u) {
+        for (uint32_t column = tid * 4u; column < args.columns;
+             column += threads * 4u) {
+            uint2 packed =
+                *reinterpret_cast<const uint2 *>(input + base + column);
+            uint16_t vals[4] = {
+                (uint16_t)(packed.x & 0xffffu), (uint16_t)(packed.x >> 16),
+                (uint16_t)(packed.y & 0xffffu), (uint16_t)(packed.y >> 16)};
+            uint32_t qpack = 0;
+#pragma unroll
+            for (int i = 0; i < 4; i++) {
+                float val = h3_bf16_to_f32(vals[i]) * inverse;
+                if (val > FP8_MAX) val = FP8_MAX;
+                if (val < -FP8_MAX) val = -FP8_MAX;
+                __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
+                qpack |= (uint32_t)(fp8_val.__x) << (8 * i);
+            }
+            *reinterpret_cast<uint32_t *>((uint8_t *)output + base + column) = qpack;
+        }
+    } else {
+        for (uint32_t column = tid; column < args.columns; column += threads) {
+            float val = h3_bf16_to_f32(input[base + column]) * inverse;
+            if (val > FP8_MAX) val = FP8_MAX;
+            if (val < -FP8_MAX) val = -FP8_MAX;
+            __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
+            ((uint8_t *)output)[base + column] = fp8_val.__x;
+        }
+    }
+}
+
+extern "C" int h3_launch_quantize_bf16_fp8_rows(
+    const uint16_t *input, void *output, float *scales,
+    const h3_int8_quant_args *args, uint32_t dispatch_rows,
+    hipStream_t stream) {
+    h3_int8_quant_args host_args = *args;
+    void *kernel_args[] = {&input, &output, &scales, &host_args};
+    uint32_t block_threads =
+        host_args.columns >= 4096u && (host_args.columns % 4u) == 0u ? 512u
+                                                                     : 256u;
+    dim3 block(block_threads, 1, 1);
+    dim3 grid(dispatch_rows, 1, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_quantize_bf16_fp8_rows_kernel),
+               grid, block, kernel_args, sizeof(kernel_args),
+               stream) == hipSuccess;
+}
+
 __global__ void h3_linear_int8_bf16_naive_kernel(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output, h3_linear_args args) {
@@ -3666,6 +3778,251 @@ static int h3_int8_hipblas_grouped_linear(
     }
     return 1;
 }
+
+/* ===========================================================================
+ * FP8 E4M3 FNUZ GEMM via hipBLASLt (gfx942 / CDNA3 only).
+ *
+ * Flow: quantize BF16 input → FP8, then hipBLASLt FP8×FP8 → FP32 GEMM,
+ * then epilogue: out_bf16[m][n] = fp32_acc[m][n] * input_scale[m] * weight_scale[n].
+ *
+ * Weight is pre-quantized to FP8 at load time. Both input and weight are
+ * FP8 E4M3 FNUZ (max=240.0). The GEMM accumulates in FP32 and the epilogue
+ * dequantizes to BF16.
+ * =========================================================================== */
+#if __has_include(<hipblaslt/hipblaslt.h>)
+#include <hipblaslt/hipblaslt.h>
+
+static hipblasLtHandle_t h3_fp8_hipblaslt = NULL;
+static int h3_fp8_hipblaslt_inited = 0;
+
+static int h3_fp8_ensure_hiplt(hipStream_t stream) {
+    if (h3_fp8_hipblaslt_inited) return h3_fp8_hipblaslt != NULL;
+    h3_fp8_hipblaslt_inited = 1;
+    if (hipblasLtCreate(&h3_fp8_hipblaslt) != HIPBLAS_STATUS_SUCCESS) {
+        h3_fp8_hipblaslt = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+/* 4-wide f32 load + packed bf16 store. D[m,n] = acc[m,n] * sa[m] * sb[n]. */
+__global__ void __launch_bounds__(256)
+h3_fp32_scale_to_bf16_kernel(const float *acc, const float *sa, const float *sb,
+                             uint16_t *out, uint32_t rows, uint32_t cols) {
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= cols) return;
+    float srow = sa[row];
+    const float *in = acc + (size_t)row * cols + col;
+    uint16_t *dst = out + (size_t)row * cols + col;
+    if (col + 3u < cols) {
+        float4 v = *reinterpret_cast<const float4 *>(in);
+        float4 scale = *reinterpret_cast<const float4 *>(sb + col);
+        uint16_t o0 = h3_f32_to_bf16(v.x * srow * scale.x);
+        uint16_t o1 = h3_f32_to_bf16(v.y * srow * scale.y);
+        uint16_t o2 = h3_f32_to_bf16(v.z * srow * scale.z);
+        uint16_t o3 = h3_f32_to_bf16(v.w * srow * scale.w);
+        uint2 packed;
+        packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+        packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < cols; j++)
+            dst[j] = h3_f32_to_bf16(in[j] * srow * sb[col + j]);
+    }
+}
+
+/* acc is [rows, 2H] from gemm; gate = [0:H), up = [H:2H). */
+__global__ void __launch_bounds__(256)
+h3_fp32_swiglu_to_bf16_kernel(
+    const float *acc, const float *sa, const float *sb,
+    uint16_t *out, uint32_t rows, uint32_t hidden) {
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= hidden) return;
+    float srow = sa[row];
+    const float *gate_in = acc + (size_t)row * hidden * 2 + col;
+    const float *up_in = acc + (size_t)row * hidden * 2 + hidden + col;
+    uint16_t *dst = out + (size_t)row * hidden + col;
+    if (col + 3u < hidden) {
+        float4 gv = *reinterpret_cast<const float4 *>(gate_in);
+        float4 uv = *reinterpret_cast<const float4 *>(up_in);
+        float4 gate_scale = *reinterpret_cast<const float4 *>(sb + col);
+        float4 up_scale = *reinterpret_cast<const float4 *>(sb + hidden + col);
+        uint16_t o0 = h3_f32_to_bf16(
+            h3_silu(gv.x * srow * gate_scale.x) *
+            (uv.x * srow * up_scale.x));
+        uint16_t o1 = h3_f32_to_bf16(
+            h3_silu(gv.y * srow * gate_scale.y) *
+            (uv.y * srow * up_scale.y));
+        uint16_t o2 = h3_f32_to_bf16(
+            h3_silu(gv.z * srow * gate_scale.z) *
+            (uv.z * srow * up_scale.z));
+        uint16_t o3 = h3_f32_to_bf16(
+            h3_silu(gv.w * srow * gate_scale.w) *
+            (uv.w * srow * up_scale.w));
+        uint2 packed;
+        packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+        packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < hidden; j++) {
+            float gate = gate_in[j] * srow * sb[col + j];
+            float up = up_in[j] * srow * sb[hidden + col + j];
+            dst[j] = h3_f32_to_bf16(h3_silu(gate) * up);
+        }
+    }
+}
+
+static int h3_fp8_gemm_run(
+    const void *input, const void *weight, uint32_t m, uint32_t n,
+    uint32_t k, float *fp32_acc, hipStream_t stream) {
+    float alpha = 1.0f, beta = 0.0f;
+    hipblasOperation_t op = HIPBLAS_OP_T;
+    hipblasLtMatmulDesc_t matmulDesc = NULL;
+    hipblasLtMatrixLayout_t Adesc = NULL, Bdesc = NULL;
+    hipblasLtMatrixLayout_t Cdesc = NULL, Ddesc = NULL;
+    hipblasLtMatmulPreference_t pref = NULL;
+    void *f32_ws = NULL;
+    size_t ws_size = 0;
+    int ok = 0;
+
+    if (hipblasLtMatmulDescCreate(&matmulDesc, HIPBLAS_COMPUTE_32F,
+                                  HIPBLAS_R_32F) != HIPBLAS_STATUS_SUCCESS)
+        goto done;
+    (void)hipblasLtMatmulDescSetAttribute(
+        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSA, &op, sizeof(op));
+    (void)hipblasLtMatmulDescSetAttribute(
+        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSB, &op, sizeof(op));
+
+    if (hipblasLtMatrixLayoutCreate(&Adesc, HIP_R_8F_E4M3_FNUZ, k, m, k) !=
+            HIPBLAS_STATUS_SUCCESS ||
+        hipblasLtMatrixLayoutCreate(&Bdesc, HIP_R_8F_E4M3_FNUZ, k, n, k) !=
+            HIPBLAS_STATUS_SUCCESS ||
+        hipblasLtMatrixLayoutCreate(&Cdesc, HIP_R_32F, m, n, m) !=
+            HIPBLAS_STATUS_SUCCESS ||
+        hipblasLtMatrixLayoutCreate(&Ddesc, HIP_R_32F, m, n, m) !=
+            HIPBLAS_STATUS_SUCCESS)
+        goto done;
+
+    if (hipblasLtMatmulPreferenceCreate(&pref) != HIPBLAS_STATUS_SUCCESS)
+        goto done;
+    {
+        hipblasLtMatmulHeuristicResult_t heuristic[1];
+        int returned = 0;
+        if (hipblasLtMatmulAlgoGetHeuristic(h3_fp8_hipblaslt, matmulDesc,
+                                            Adesc, Bdesc, Cdesc, Ddesc, pref,
+                                            1, heuristic, &returned) !=
+                HIPBLAS_STATUS_SUCCESS ||
+            returned < 1 || heuristic[0].state != HIPBLAS_STATUS_SUCCESS)
+            goto done;
+        ws_size = heuristic[0].workspaceSize;
+    }
+    if (ws_size > 0) {
+        if (hipMalloc(&f32_ws, ws_size) != hipSuccess) {
+            f32_ws = NULL;
+            ws_size = 0;
+        }
+    }
+    {
+        hipblasLtMatmulHeuristicResult_t heuristic[1];
+        int returned = 0;
+        (void)hipblasLtMatmulAlgoGetHeuristic(
+            h3_fp8_hipblaslt, matmulDesc, Adesc, Bdesc, Cdesc, Ddesc,
+            pref, 1, heuristic, &returned);
+        hipblasStatus_t st = hipblasLtMatmul(
+            h3_fp8_hipblaslt, matmulDesc, &alpha, input, Adesc,
+            weight, Bdesc, &beta, fp32_acc, Cdesc, fp32_acc, Ddesc,
+            &heuristic[0].algo, f32_ws, ws_size, stream);
+        ok = (st == HIPBLAS_STATUS_SUCCESS);
+    }
+
+done:
+    if (f32_ws) (void)hipFree(f32_ws);
+    if (pref) hipblasLtMatmulPreferenceDestroy(pref);
+    if (Ddesc) hipblasLtMatrixLayoutDestroy(Ddesc);
+    if (Cdesc) hipblasLtMatrixLayoutDestroy(Cdesc);
+    if (Bdesc) hipblasLtMatrixLayoutDestroy(Bdesc);
+    if (Adesc) hipblasLtMatrixLayoutDestroy(Adesc);
+    if (matmulDesc) hipblasLtMatmulDescDestroy(matmulDesc);
+    return ok;
+}
+
+extern "C" int h3_launch_linear_fp8_bf16(
+    const void *input, const void *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_args *args, hipStream_t stream) {
+    if (!h3_fp8_ensure_hiplt(stream)) return 0;
+    uint32_t m = args->output_dim;
+    uint32_t n = args->rows;
+    uint32_t k = args->input_dim;
+    if (!m || !n || !k) return 0;
+    uint32_t fp32_count = n * m;
+    float *fp32_acc = NULL;
+    if (hipMalloc(&fp32_acc, (size_t)fp32_count * sizeof(float)) != hipSuccess)
+        return 0;
+    if (!h3_fp8_gemm_run(input, weight, m, n, k, fp32_acc, stream)) {
+        (void)hipFree(fp32_acc);
+        return 0;
+    }
+    dim3 block(256, 1, 1);
+    dim3 grid(((m + 3u) / 4u + 255u) / 256u, n, 1);
+    void *ep_args[] = {&fp32_acc, &input_scales, &weight_scales,
+                       &output, &n, &m};
+    hipLaunchKernel(
+        reinterpret_cast<const void *>(h3_fp32_scale_to_bf16_kernel),
+        grid, block, ep_args, 0, stream);
+    (void)hipFree(fp32_acc);
+    return 1;
+}
+
+extern "C" int h3_launch_linear_fp8_fc1_swiglu_bf16(
+    const void *input, const void *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_args *args, hipStream_t stream) {
+    if (!h3_fp8_ensure_hiplt(stream)) return 0;
+    uint32_t m = args->output_dim;
+    uint32_t n = args->rows;
+    uint32_t k = args->input_dim;
+    if (!m || !n || !k) return 0;
+    uint32_t fp32_count = n * m;
+    float *fp32_acc = NULL;
+    if (hipMalloc(&fp32_acc, (size_t)fp32_count * sizeof(float)) != hipSuccess)
+        return 0;
+    if (!h3_fp8_gemm_run(input, weight, m, n, k, fp32_acc, stream)) {
+        (void)hipFree(fp32_acc);
+        return 0;
+    }
+    dim3 block(256, 1, 1);
+    dim3 grid(((m + 3u) / 4u + 255u) / 256u, n, 1);
+    uint32_t hidden = m / 2;
+    void *ep_args[] = {&fp32_acc, &input_scales, &weight_scales,
+                       &output, &n, &hidden};
+    hipLaunchKernel(
+        reinterpret_cast<const void *>(h3_fp32_swiglu_to_bf16_kernel),
+        grid, block, ep_args, 0, stream);
+    (void)hipFree(fp32_acc);
+    return 1;
+}
+
+#else
+extern "C" int h3_launch_linear_fp8_bf16(
+    const void *input, const void *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_args *args, hipStream_t stream) {
+    (void)input; (void)weight; (void)input_scales; (void)weight_scales;
+    (void)output; (void)args; (void)stream;
+    return 0;
+}
+extern "C" int h3_launch_linear_fp8_fc1_swiglu_bf16(
+    const void *input, const void *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_args *args, hipStream_t stream) {
+    (void)input; (void)weight; (void)input_scales; (void)weight_scales;
+    (void)output; (void)args; (void)stream;
+    return 0;
+}
+#endif
 
 static int h3_launch_linear_int8_r64_dispatch(
     const int8_t *input, const int8_t *weight, const float *input_scales,
