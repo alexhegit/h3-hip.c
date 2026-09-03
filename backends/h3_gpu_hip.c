@@ -4081,7 +4081,13 @@ static int h3_hip_quantize_bf16_fp8_rows(
         !h3_hip_require_f32(ctx, scales, padded_rows, "FP8 quantize scales")) {
         return 0;
     }
-    h3_int8_quant_args args = {rows, columns, 1.0f};
+    float clip = 0.95f;
+    const char *clip_value = getenv("H3_FP8_CLIP");
+    if (clip_value) {
+        float parsed = strtof(clip_value, NULL);
+        if (parsed >= 0.5f && parsed <= 1.0f) clip = parsed;
+    }
+    h3_int8_quant_args args = {rows, columns, clip};
     return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_fp8_rows(
         (const uint16_t *)tensor_ptr(input)->data,
         (uint8_t *)tensor_ptr(output)->data,
@@ -4101,7 +4107,13 @@ int h3_gpu_quantize_weight_fp8(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_require_f32(ctx, scales, rows, "FP8 weight scales")) {
         return 0;
     }
-    h3_int8_quant_args args = {rows, columns, 1.0f};
+    float clip = 0.95f;
+    const char *clip_value = getenv("H3_FP8_CLIP");
+    if (clip_value) {
+        float parsed = strtof(clip_value, NULL);
+        if (parsed >= 0.5f && parsed <= 1.0f) clip = parsed;
+    }
+    h3_int8_quant_args args = {rows, columns, clip};
     return h3_hip_launch_ok(ctx, h3_launch_quantize_bf16_fp8_rows(
         (const uint16_t *)tensor_ptr(input)->data,
         (uint8_t *)tensor_ptr(output)->data,

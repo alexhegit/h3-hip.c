@@ -398,6 +398,39 @@ which was previously impossible (required ~50 GiB). The INT8 VAE path
 (`H3_INT8_VAE=1`) combined with 480 px tiles reduces VAE peak from 9.4 to
 3.7 GiB (−61%).
 
+## FP8 DiT (MI300X, gfx942 only)
+
+FP8 (`H3_FP8_MLP=1`) uses E4M3 FNUZ format with hipBLASLt GEMM.
+Default weight quantization clip=0.95 (`H3_FP8_CLIP` env var, range 0.5–1.0).
+
+**15 s cinematic (864×480, 20 steps, 45 layers, reuse 2):**
+
+| Metric | BF16 | INT8 | FP8 (clip=0.95) |
+|--------|-----:|-----:|-----------------:|
+| DiT denoise | 186.3 s | 179.6 s | **175.7 s** |
+| Video VAE | 34.6 s | 30.4 s | **27.2 s** |
+| Text | 2.6 s | 2.6 s | 2.5 s |
+| Audio | 1.9 s | 1.9 s | 1.9 s |
+| E2E | ~225 s | ~215 s | **~207 s** |
+| DiT peak VRAM | 41.1 GiB | 27.8 GiB | **30.9 GiB** |
+
+FP8 is 6% faster than BF16, 2% faster than INT8 in DiT denoise.
+FP8 peak VRAM is 25% less than BF16, 11% more than INT8.
+
+**Precision (fox-s2, frame 0, vs BF16):**
+
+| Metric | INT8 | FP8 (clip=1.0) | FP8 (clip=0.95) |
+|--------|-----:|----------------:|-----------------:|
+| PSNR | 29.51 dB | 24.65 dB | **25.85 dB** |
+| SSIM | 0.927 | 0.903 | **0.910** |
+
+FP8 clip=0.95 improves PSNR by +1.2 dB over clip=1.0 baseline.
+INT8 remains higher quality (29.5 vs 25.9 dB) due to 7-bit integer precision
+vs FP8 E4M3's 3-bit mantissa.
+
+Note: FP8 QKV projection disabled (`fp8_qkv = 0`) — fused QKV+RoPE+norm path
+needs special FP8 handling not yet implemented.
+
 ## How a GitHub Release should quote this
 
 Paste the **current** summary table (all three ISAs). Do not paste phase splits,
