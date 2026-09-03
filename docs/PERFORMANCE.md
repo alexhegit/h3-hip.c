@@ -242,10 +242,11 @@ supersedes INT8 when both are set (clears INT8 flags in DIT init).
 
 | Preset | E2E | Denoise GPU | Peak VRAM | vs BF16 | vs INT8 |
 |--------|----:|------------:|----------:|--------:|--------:|
-| 15 s cinematic | TBD | TBD | TBD | TBD | TBD |
+| 15 s cinematic | ~221 s | **178.7 s** | **30.9 GiB** | denoise −4.6% / VRAM −25% | denoise −0.7% |
 
 FP8 weight quantize: per-row absmax with max=240.0 (AMD FNUZ, not OCP 448.0).
 Same theoretical peak as INT8 (2,615 TFLOPS) but wider range avoids overflow.
+FP8 linear GEMM: 25.5 s vs INT8 28.5 s (−10%) vs BF16 34.6 s (−26%).
 
 ### All optimizations enabled
 
