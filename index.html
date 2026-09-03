@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiniMax-H3 on AMD HIP — h3-hip.c</title>
-<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. Current main covers gfx1151, gfx90a, and gfx942. Pass HIP_ARCH yourself.">
+<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. v0.11.0 covers gfx1151, gfx90a, and gfx942. Pass HIP_ARCH yourself.">
 <style>
   :root {
     --bg: #0b0c0e;
@@ -144,7 +144,7 @@
 
 <header>
   <div class="wrap">
-    <div class="eyebrow">main · gfx1151 / gfx90a / gfx942</div>
+    <div class="eyebrow">v0.11.0 · gfx1151 / gfx90a / gfx942</div>
     <h1>MiniMax-H3 on AMD HIP
       <span class="sub">One tree, three ISAs — Halo 15&nbsp;s quality path 40&nbsp;min 46&nbsp;s; MI210 does the same clip in 12&nbsp;min 11&nbsp;s.</span>
     </h1>
@@ -152,12 +152,12 @@
       <a href="https://github.com/alexhegit/h3-hip.c">h3-hip.c</a> reimplements the GPU backend of
       <a href="https://github.com/antirez/h3.c">antirez/h3.c</a> in HIP. Pass
       <span class="mono">HIP_ARCH=gfx1151</span>, <span class="mono">gfx90a</span>, or
-      <span class="mono">gfx942</span> — the Makefile does not probe the GPU. Last tag is
-      <span class="mono">v0.10.1</span>; the numbers on this page are current <span class="mono">main</span>.
+      <span class="mono">gfx942</span> — the Makefile does not probe the GPU. Tagged
+      <span class="mono">v0.11.0</span>.
     </p>
     <div class="hero-links">
       <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
-      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.1">v0.10.1</a>
+      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.11.0">v0.11.0</a>
       <a class="btn" href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a class="btn" href="#results">Results</a>
       <a class="btn" href="#long">Long video</a>
@@ -286,7 +286,7 @@
       </p>
     </div>
 
-    <h3>Current <span class="mono">main</span> — 3 Sep 2026</h3>
+    <h3>Tagged baseline — v0.11.0</h3>
     <table>
       <thead>
         <tr><th>Preset</th><th class="num">gfx1151</th><th class="num">gfx90a</th></tr>
@@ -308,7 +308,7 @@
     </table>
     <p class="cap">
       gfx1151 fox-s2 md5 <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> on <strong>v0.9.0</strong>.
-      <span class="mono">main</span> 3 Sep 2026 default VAE tiles change fox-s2 to
+      <span class="mono">main</span> / v0.11.0 default VAE tiles change fox-s2 to
       <span class="mono">34507f07…</span>.
       Build: <span class="mono">make HIP_ARCH=gfx1151</span> or <span class="mono">HIP_ARCH=gfx90a</span>.
       Halo denoise: fox-s2 <strong>3.36 s</strong> · fox-fast <strong>24.5 s</strong>.
@@ -530,7 +530,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   <div class="wrap">
     <div class="foot-links">
       <a href="https://github.com/alexhegit/h3-hip.c">alexhegit/h3-hip.c</a>
-      <a href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.10.1">v0.10.1</a>
+      <a href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.11.0">v0.11.0</a>
       <a href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/PERFORMANCE.md">Scoreboard</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/KNOWN_ISSUES.md">Known issues</a>
@@ -542,10 +542,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       Host, model and CLI code follow <a href="https://github.com/antirez/h3.c">antirez/h3.c</a>; the HIP backend
       is <span class="mono">backends/h3_gpu_hip.c</span> plus the kernels under
       <span class="mono">kernels/</span>. Model weights are subject to the MiniMax-H3 license.
-      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Scoreboard is
-      <span class="mono">main</span> as of 3 Sep 2026. Last tag
-      <span class="mono">v0.10.1</span> does not include gfx942 or the Halo retune.
-      Default fox-s2 md5 on <span class="mono">main</span> is no longer the v0.9.0 gate.
+      Measured on gfx1151 (Ryzen AI MAX+ 395) and gfx90a (MI210). Tagged
+      <span class="mono">v0.11.0</span> as of 3 Sep 2026.
+      Default fox-s2 md5 is no longer the v0.9.0 gate.
     </p>
   </div>
 </footer>
