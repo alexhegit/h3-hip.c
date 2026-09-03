@@ -65,6 +65,7 @@
     border: 1px solid var(--line); background: #000;
   }
   .cap { color: var(--ink-faint); font-size: 13px; margin-top: 10px; }
+  p.cap { max-width: none; }
 
   /* sections */
   section { padding: 70px 0; border-bottom: 1px solid var(--line); }
@@ -106,7 +107,7 @@
   th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); }
   th { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); font-weight: 500; }
   td { color: var(--ink-dim); }
-  th.num { text-align: right; }
+  th .mono { text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--ink-faint); }
   td.num { text-align: right; font-family: var(--mono); color: var(--ink); }
   tr.hi td { color: var(--ink); }
 
@@ -144,9 +145,9 @@
 
 <header>
   <div class="wrap">
-    <div class="eyebrow">v0.11.0 · gfx1151 / gfx90a / gfx942</div>
+    <div class="eyebrow">v0.11.0 · Strix Halo · MI210 · MI300X</div>
     <h1>MiniMax-H3 on AMD HIP
-      <span class="sub">One tree, three ISAs — Halo 15&nbsp;s quality path 40&nbsp;min 46&nbsp;s; MI210 does the same clip in 12&nbsp;min 11&nbsp;s.</span>
+      <span class="sub">v0.11.0: Halo vs v0.9.0, plus MI210 and MI300X — quality path and opt-in speed path.</span>
     </h1>
     <p class="lede">
       <a href="https://github.com/alexhegit/h3-hip.c">h3-hip.c</a> reimplements the GPU backend of
@@ -159,6 +160,7 @@
       <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
       <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.11.0">v0.11.0</a>
       <a class="btn" href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
+      <a class="btn" href="#targets">GPUs</a>
       <a class="btn" href="#results">Results</a>
       <a class="btn" href="#long">Long video</a>
       <a class="btn" href="#how">How</a>
@@ -183,11 +185,49 @@
       the GPU layer with HIP.
     </p>
     <p>
-      Three supported HIP offload ISAs, one source tree. <strong>gfx1151</strong> (Strix Halo / Radeon 8060S)
-      is the original APU path: 96&nbsp;GiB VRAM carveout, ~31&nbsp;GiB host RAM, ~107&nbsp;GiB of weights
-      per T2VA run. <strong>gfx90a</strong> (MI210) and <strong>gfx942</strong> (MI300X) are the discrete
-      CDNA paths: BF16 DiT GEMM and wave64 MFMA flash attention. You choose the ISA at compile time with
-      <span class="mono">make HIP_ARCH=…</span>.
+      One source tree, three HIP offload targets. The Makefile does not probe the GPU — you pass
+      <span class="mono">HIP_ARCH</span> to match the product in the table.
+    </p>
+
+    <h3 id="targets">HIP_ARCH ↔ product</h3>
+    <table>
+      <thead>
+        <tr>
+          <th><span class="mono">HIP_ARCH</span></th>
+          <th>Architecture</th>
+          <th>Product</th>
+          <th>Default DiT</th>
+          <th>SDPA</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="hi">
+          <td><span class="mono">gfx1151</span></td>
+          <td>RDNA, wave32</td>
+          <td><strong>Strix Halo</strong> — Ryzen AI MAX+ 395 / Radeon 8060S</td>
+          <td>INT8 + BF16 activations</td>
+          <td>rocWMMA</td>
+        </tr>
+        <tr class="hi">
+          <td><span class="mono">gfx90a</span></td>
+          <td>CDNA2, wave64</td>
+          <td><strong>Instinct MI210</strong> / MI250X</td>
+          <td>BF16 GEMM</td>
+          <td>MFMA flash</td>
+        </tr>
+        <tr class="hi">
+          <td><span class="mono">gfx942</span></td>
+          <td>CDNA3, wave64</td>
+          <td><strong>Instinct MI300X</strong></td>
+          <td>BF16 GEMM</td>
+          <td>MFMA flash</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="cap">
+      Build: <span class="mono">make HIP_ARCH=gfx1151</span>, <span class="mono">gfx90a</span>, or
+      <span class="mono">gfx942</span>. CDNA INT8 DiT is opt-in (<span class="mono">H3_INT8_MLP=1</span>).
+      Other AMD targets are experimental.
     </p>
   </div>
 </section>
@@ -197,15 +237,16 @@
     <div class="sec-num"><b>02</b> — Results</div>
     <h2>Where the speedup came from</h2>
     <p>
-      Two Halo milestones, this port measured against <em>itself</em> on <strong>gfx1151</strong>.
-      <strong>v0.9.0</strong> is the kernel milestone: first working HIP (18&nbsp;Aug) versus the 26&nbsp;Aug
-      tag. <strong>v0.11.0</strong> is compared only to that v0.9.0 Halo baseline — same machine, same
-      checkpoint, same CLI. Wall time moves with page-cache state; <strong>denoise GPU time</strong>
-      (HIP events) is the figure to trust. MI210 / MI300X are new ISAs in the tagged table below,
-      not multipliers against the August first profile.
+      Two Halo milestones on <strong>Strix Halo</strong> (<span class="mono">gfx1151</span>), this port
+      measured against <em>itself</em>. <strong>v0.9.0</strong> is the kernel milestone.
+      <strong>v0.11.0</strong> then does two things: the Halo delta versus v0.9.0, and the same tree on
+      <strong>MI210</strong> (<span class="mono">gfx90a</span>) and <strong>MI300X</strong>
+      (<span class="mono">gfx942</span>) with a quality path and an opt-in speed path.
+      Wall time moves with page-cache state; <strong>denoise GPU time</strong> (HIP events) is the
+      figure to trust. Do not put MI210 / MI300X into the August multipliers.
     </p>
 
-    <h3>v0.9.0 — gfx1151 kernel milestone (18–26 Aug)</h3>
+    <h3>v0.9.0 — Strix Halo kernel milestone (18–26 Aug)</h3>
     <p>
       Make the GPU cheap, then stop page-locking the 31&nbsp;GiB host pool. After WMMA, short fox-s2
       is no longer GPU-bound; the remaining wall clock is NVMe. This is the Halo performance milestone.
@@ -305,7 +346,7 @@
       </p>
     </div>
 
-    <h3>v0.11.0 vs v0.9.0 — same gfx1151</h3>
+    <h3>v0.11.0 vs v0.9.0 — Strix Halo (gfx1151)</h3>
     <p>
       Same machine, same checkpoint, same quality-path CLI unless noted. fox-s2 E2E is still NVMe
       (~83–90&nbsp;s), so it is not a speedup card. What moved is denoise and the 15&nbsp;s cinematic.
@@ -335,10 +376,21 @@
       </div>
     </div>
 
-    <h3>Tagged baseline — v0.11.0</h3>
+    <h3>v0.11.0 — quality path on three products</h3>
+    <p>
+      v0.11.0 has two jobs besides the Halo-vs-v0.9.0 delta:
+      ship the same tree on <strong>MI210</strong> and <strong>MI300X</strong>, and publish both the
+      default quality path and the opt-in speed path. Defaults: no
+      <span class="mono">--token-reduction</span>. Halo DiT is INT8; CDNA DiT is BF16.
+    </p>
     <table>
       <thead>
-        <tr><th>Preset</th><th class="num">gfx1151</th><th class="num">gfx90a</th><th class="num">gfx942</th></tr>
+        <tr>
+          <th>Preset</th>
+          <th class="num">Strix Halo<br><span class="mono">gfx1151</span></th>
+          <th class="num">MI210<br><span class="mono">gfx90a</span></th>
+          <th class="num">MI300X<br><span class="mono">gfx942</span></th>
+        </tr>
       </thead>
       <tbody>
         <tr class="hi">
@@ -356,14 +408,51 @@
       </tbody>
     </table>
     <p class="cap">
-      gfx1151 fox-s2 md5 <span class="mono">1731f95c4aa582597cf83d57f46b8f9e</span> on <strong>v0.9.0</strong>.
-      v0.11.0 default VAE tiles change fox-s2 to
-      <span class="mono">34507f07…</span>.
-      Build: <span class="mono">make HIP_ARCH=gfx1151</span>, <span class="mono">gfx90a</span>, or <span class="mono">gfx942</span>.
+      Quality path: default flags, no TR. v0.11.0 fox-s2 md5 <span class="mono">34507f07…</span>
+      (512 px VAE tiles); v0.9.0 gate was <span class="mono">1731f95c…</span>.
       Halo denoise: fox-s2 <strong>3.36 s</strong> · fox-fast <strong>24.5 s</strong>.
+      MI210 denoise: fox-s2 <strong>1.25 s</strong> · fox-fast <strong>8.14 s</strong>.
       MI300X denoise: fox-s2 <strong>0.92 s</strong> · fox-fast <strong>2.89 s</strong>.
-      15 s quality path: Halo <strong>40 min 46 s</strong> · MI210 <strong>12 min 11 s</strong> · MI300X <strong>3 min 46 s</strong>.
-      Opt-in <span class="mono">--token-reduction</span> is below.
+    </p>
+
+    <h3>v0.11.0 — opt-in speed path (15 s)</h3>
+    <p>
+      Same 864×480 / 362-frame clip. Flags: <span class="mono">--token-reduction</span> plus
+      <span class="mono">H3_INT8_VAE=1</span>. CDNA also uses <span class="mono">H3_INT8_MLP=1</span>
+      in the all-opts runs. Visible quality trade; not the gallery clip. GPU sampler is not a Halo 15&nbsp;s win.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>15 s cinematic</th>
+          <th class="num">Strix Halo<br><span class="mono">gfx1151</span></th>
+          <th class="num">MI210<br><span class="mono">gfx90a</span></th>
+          <th class="num">MI300X<br><span class="mono">gfx942</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="hi">
+          <td><strong>Quality E2E</strong></td>
+          <td class="num">40 min 46 s</td><td class="num">12 min 11 s</td><td class="num">3 min 46 s</td>
+        </tr>
+        <tr class="hi">
+          <td><strong>Speed-path E2E</strong></td>
+          <td class="num">27 min 3 s</td><td class="num">8 min 21 s</td><td class="num">~2.4 min</td>
+        </tr>
+        <tr>
+          <td>Speed-path denoise</td>
+          <td class="num">23 min 10 s</td><td class="num">6 min 56 s</td><td class="num">1 min 53 s</td>
+        </tr>
+        <tr>
+          <td>VAE peak (quality → speed)</td>
+          <td class="num">10.2 → 3.7 GiB</td><td class="num">10.2 → 3.7 GiB</td><td class="num">9.4 → 3.7 GiB</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="cap">
+      Halo <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.11.0/docs/perf-runs/long-15s-all-opts-2026-09-03.log">all-opts log</a>.
+      MI210 15 s all-opts E2E 501 s. MI300X all-opts denoise 113 s / E2E ~142 s.
+      Full phase tables: <a href="https://github.com/alexhegit/h3-hip.c/blob/v0.11.0/docs/PERFORMANCE.md">PERFORMANCE.md</a>.
     </p>
 
     <h3>Clips from this build</h3>
@@ -408,37 +497,37 @@
       <thead><tr><th>GPU</th><th>Path</th><th class="num">Aligned frames</th><th class="num">Duration</th><th class="num">E2E wall</th><th class="num">Denoise wall</th></tr></thead>
       <tbody>
         <tr class="hi">
-          <td><strong>gfx1151</strong></td>
+          <td><strong>Strix Halo</strong> <span class="mono">gfx1151</span></td>
           <td>quality</td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">40 min 46 s</td><td class="num">36 min 38 s</td>
         </tr>
         <tr>
-          <td>gfx1151</td>
+          <td>Strix Halo <span class="mono">gfx1151</span></td>
           <td><span class="mono">--token-reduction</span></td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">27 min 3 s</td><td class="num">23 min 10 s</td>
         </tr>
         <tr class="hi">
-          <td><strong>gfx90a</strong></td>
+          <td><strong>MI210</strong> <span class="mono">gfx90a</span></td>
           <td>quality</td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">12 min 11 s</td><td class="num">10 min 47 s</td>
         </tr>
         <tr>
-          <td>gfx90a</td>
+          <td>MI210 <span class="mono">gfx90a</span></td>
           <td><span class="mono">--token-reduction</span></td>
           <td class="num">362</td><td class="num">15.1 s</td>
-          <td class="num">8 min 21 s</td><td class="num">6 min 50 s</td>
+          <td class="num">8 min 21 s</td><td class="num">6 min 56 s</td>
         </tr>
         <tr class="hi">
-          <td><strong>gfx942</strong></td>
+          <td><strong>MI300X</strong> <span class="mono">gfx942</span></td>
           <td>quality</td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">3 min 46 s</td><td class="num">3 min 39 s</td>
         </tr>
         <tr>
-          <td>gfx942</td>
+          <td>MI300X <span class="mono">gfx942</span></td>
           <td>all-opts / TR</td>
           <td class="num">362</td><td class="num">15.1 s</td>
           <td class="num">~2.4 min</td><td class="num">1 min 53 s</td>
@@ -459,7 +548,7 @@
 
     <div class="hero-media" style="margin-top:28px;padding-bottom:0">
       <video src="assets/long-15s-cinematic.mp4" poster="assets/long-15s-cinematic.jpg" controls muted loop playsinline preload="metadata"></video>
-      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · quality path · 864×480 · 362f · seed 42 · gfx1151 40 min 46 s · gfx90a 12 min 11 s · gfx942 3 min 46 s</div>
+      <div class="cap">T2VA — 15 s cinematic office <span class="tag">untitled</span> · quality path · 864×480 · 362f · seed 42 · Strix Halo 40 min 46 s · MI210 12 min 11 s · MI300X 3 min 46 s</div>
     </div>
 
     <h3>Reproduce the 15 s clip</h3>
