@@ -52,8 +52,10 @@ host RAM vs ~107 GiB of weights).
 
 ### GPU sampler (`H3_GPU_SAMPLER=1`)
 
-Not a Halo short-clip win (unlike MI300X). fox-s2 denoise 3.36 → **3.51 s**;
-fox-fast 24.5 → **25.1 s**. Same DiT peaks.
+Not a Halo win. fox-s2 denoise 3.36 → **3.51 s**; fox-fast 24.5 → **25.1 s**.
+15 s + TR + INT8 VAE: GPU Euler denoise **1390.2 s** vs CPU Euler **1390.6 s**
+(same run, detached `nohup`). Earlier agent-attached jobs died at
+`denoise enqueue` because the session reaped them; not a HIP bug.
 
 ### All optimizations enabled
 
@@ -61,21 +63,22 @@ fox-fast 24.5 → **25.1 s**. Same DiT peaks.
 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 ```
 
-INT8 DiT is already the gfx1151 default (do not also set `H3_INT8_MLP=1` for
-the Halo table).
+INT8 DiT is already the gfx1151 default.
 
 | Preset | E2E | Denoise wall | Video VAE | Peak VRAM |
 |--------|----:|-------------:|----------:|----------:|
 | **fox-s2** | I/O band | **2.41 s** | 4.62 s | **15.1 GiB** |
 | **fox-fast** | I/O band | **18.0 s** | 4.58 s | **19.7 GiB** |
-| **15 s cinematic** | **28.2 min** (2026-09-02 CLI `--token-reduction`) | **23.3 min** | ~3.5 min | denoise peak **25.7 GiB** |
+| **15 s cinematic** | **27 min 3 s** | **23 min 10 s** (1390 s) | **150 s** | DiT **27.9 GiB** · VAE **3.7 GiB** |
 
-15 s all-opts on this tree (GPU sampler + TR + INT8 VAE) was still running
-when the quality-path row was recorded. Until that log lands, quote the
-2026-09-02 CLI TR run: [`perf-runs/TOKEN_REDUCTION.md`](perf-runs/TOKEN_REDUCTION.md).
-TR is the 15 s wall-clock lever. INT8 VAE on fox moves VAE linear ~3.2 s →
-~0.01 s and **other** 0.34 → 2.78 s; VAE peak **1.6 → 1.7 GiB** (512 px
-already 1×1).
+15 s log: [`perf-runs/long-15s-all-opts-2026-09-03.log`](perf-runs/long-15s-all-opts-2026-09-03.log)
+(three flags). Same wall clock without sampler:
+[`long-15s-tr-int8vae-2026-09-03.log`](perf-runs/long-15s-tr-int8vae-2026-09-03.log).
+vs quality path 2446 s / 2198 s / 174 s: **−34% E2E**, **−37% denoise**,
+**−14% VAE wall**, VAE peak **10.2 → 3.7 GiB**. DiT peak stays **27.9 GiB**.
+
+INT8 VAE on 15 s: linear **117 → 0.32 s**, other **13 → 104 s** (per-tile
+quantize). TR is the denoise lever; GPU sampler is not.
 
 fox-s2 and fox-fast are complete T2VA MP4s (~0.9 s of picture+sound at 24 fps),
 not truncated previews. fox-fast matches upstream’s “first fast video”
@@ -353,7 +356,7 @@ pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
-| gfx1151 15 s E2E | **40 min 46 s** (`main` 2026-09-03) | **28.2 min** (2026-09-02 CLI TR vs then-45.0 min); [perf-runs/TOKEN_REDUCTION.md](perf-runs/TOKEN_REDUCTION.md) |
+| gfx1151 15 s E2E | **40 min 46 s** (`main` 2026-09-03) | **27 min 3 s** (all-opts / TR+INT8 VAE) |
 | gfx90a 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
 | gfx942 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
 

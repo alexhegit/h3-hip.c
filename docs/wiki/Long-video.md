@@ -14,7 +14,7 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 |------|-----|----------|----------|--------------|------|
 | 10 s cinematic office | gfx1151 | 10.1 s (243 f) | **24.7 min** | 21.2 min | [`long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
 | **15 s cinematic office** | gfx1151 | **15.1 s (362 f)** | **40 min 46 s** | **36 min 38 s** | [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
-| **15 s + `--token-reduction`** | gfx1151 | **15.1 s (362 f)** | **28.2 min** | **23.3 min** | 2026-09-02 CLI TR; [`TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) |
+| **15 s all-opts** | gfx1151 | **15.1 s (362 f)** | **27 min 3 s** | **23 min 10 s** | sampler+TR+INT8 VAE; [`long-15s-all-opts-2026-09-03.log`](../perf-runs/long-15s-all-opts-2026-09-03.log) |
 | **15 s cinematic office** | gfx90a | **15.1 s (362 f)** | **12 min 11 s** | **10 min 47 s** | `main` 2026-09-02; 480 px VAE tiles |
 | **15 s + `--token-reduction`** | gfx90a | **15.1 s (362 f)** | **8 min 21 s** | **6 min 50 s** | opt-in; [`TOKEN_REDUCTION.md`](../perf-mi210/TOKEN_REDUCTION.md) |
 
@@ -51,13 +51,12 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   -o outputs/long-15s-cinematic.mp4
 ```
 
-Add `--token-reduction` only when you want wall clock over the quality path.
-Same flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c). Off by
-default; not the showcase / md5 path.
+Add `--token-reduction` and `H3_INT8_VAE=1` when wall clock matters more than
+the quality path. GPU sampler is not required on gfx1151.
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
-| gfx1151 15 s E2E | **40 min 46 s** (`main` 2026-09-03) | **28.2 min** (2026-09-02 CLI TR) |
+| gfx1151 15 s E2E | **40 min 46 s** (`main` 2026-09-03) | **27 min 3 s** (all-opts) |
 | gfx90a 15 s E2E | 12 min 11 s | **8 min 21 s** (denoise 6 min 56 s all-opts) |
 
 ## Reproduce the 10 s clip

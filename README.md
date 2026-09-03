@@ -65,8 +65,9 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 46 s**
 and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 11 s** on MI210.
-Opt-in `--token-reduction` on the same 15 s clip: **28.2 min** (gfx1151, 2026-09-02) /
-**8 min 21 s** (gfx90a); quality trade, not the showcase path.
+Opt-in `--token-reduction` + `H3_INT8_VAE=1` on the same 15 s clip:
+**27 min 3 s** (gfx1151, `main` 2026-09-03) / **8 min 21 s** (gfx90a);
+quality trade, not the showcase path.
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
 [Wiki: Long video](docs/wiki/Long-video.md) ·
@@ -123,7 +124,7 @@ MODEL=/path/to/MiniMax-H3
 
 # Long T2VA — 15 s cinematic office (864×480, 362 frames;
 # E2E 40 min 46 s gfx1151 / 12 min 11 s gfx90a; add --token-reduction
-# for ~28 min / 8 min 21 s with a visible quality trade)
+# and H3_INT8_VAE=1 for 27 min 3 s / 8 min 21 s with a visible quality trade)
 ./h3 --profile -d "$MODEL" \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
 
@@ -174,9 +175,8 @@ video tokens in middle DiT blocks). It is **off by default**. Use it when
 wall clock matters more than fox-s2 bit identity — long T2VA is DiT-SDPA
 bound on both ISAs. gfx1151 fox-fast denoise with CLI TR was 34.6 s →
 25.8 s (v0.9.0); on this tree default fox-fast denoise is **24.5 s** (all-opts
-**18.0 s**). Same 15 s cinematic: gfx1151 quality path **40 min 46 s** (vs
-v0.9.0 45.0 min); CLI TR **28.2 min** (2026-09-02). gfx90a **8 min 21 s**
-(vs 12 min 11 s).
+**18.0 s**). Same 15 s cinematic: gfx1151 quality path **40 min 46 s**;
+TR + INT8 VAE **27 min 3 s**. gfx90a **8 min 21 s** (vs 12 min 11 s).
 Tagged scoreboard stays without TR. Generate prints a stderr warning when
 the flag is on.
 

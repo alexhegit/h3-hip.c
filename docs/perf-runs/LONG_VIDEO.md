@@ -27,7 +27,7 @@ Prompt style: fal.ai timed shot list (T2VA, no references). Logs and MP4 under
 | 10.125 s | 243 | **24.7 min** (1479.8 s) | **21.2 min** (1273.2 s) | **2.3 min** (139.5 s) | [`assets/showcase/long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
 | 15.083 s | 362 | **45.0 min** (2701.4 s) | **40.4 min** (2423.0 s) | **3.5 min** (207.1 s) | v0.9.0; [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
 | 15.083 s (`main` 2026-09-03) | 362 | **40 min 46 s** (2446 s) | **36 min 38 s** (2198 s) | **2.9 min** (174 s) | 2×1 @ 480 px; peak 27.9 GiB; [`long-15s-default-2026-09-03.log`](long-15s-default-2026-09-03.log) |
-| 15.083 s + `--token-reduction` | 362 | **28.2 min** (1694.2 s) | **23.3 min** (1400.9 s) | **3.5 min** (209.3 s) | 2026-09-02 CLI TR @ 272 px VAE; [`TOKEN_REDUCTION.md`](TOKEN_REDUCTION.md) |
+| 15.083 s all-opts (`main` 2026-09-03) | 362 | **27 min 3 s** (1623 s) | **23 min 10 s** (1390 s) | **2.5 min** (150 s) | sampler+TR+INT8 VAE; VAE peak 3.7 GiB; [`long-15s-all-opts-2026-09-03.log`](long-15s-all-opts-2026-09-03.log) |
 
 For reference, fox-fast (512² · 22 frames) on this machine is I/O-bound E2E
 with **24.5 s** denoise GPU on `main` ([`PERFORMANCE.md`](../PERFORMANCE.md)).
@@ -111,3 +111,39 @@ Same prompt / knobs / seed as 26 Aug. Binary `h3-hip 0.10.1` rebuilt
 
 vs v0.9.0 2701 / 2423 / 207 s: **−9.4% E2E**, **−9.3% denoise**, **−16% VAE**.
 md5 `e54e2cfa1b6d87c13d8401003a5575a7` (not the gallery file).
+
+## 15 s TR + INT8 VAE — 2026-09-03 (`main`)
+
+Same prompt / knobs / seed, plus `--token-reduction` and `H3_INT8_VAE=1`.
+CPU Euler sampler (no `H3_GPU_SAMPLER`). Detached `nohup`. Log:
+[`long-15s-tr-int8vae-2026-09-03.log`](long-15s-tr-int8vae-2026-09-03.log).
+
+| Phase | Wall (s) | Notes |
+|-------|--------:|-------|
+| Qwen text encoder | 31.0 | |
+| H3 DiT load | 45.7 | peak 27.9 GiB |
+| H3 DiT Euler denoise | **1390.6** | gpu-op 1390; sdpa 959 · linear 404 · other 27 |
+| audio VAE decoder | 3.9 | |
+| video VAE decoder | **149.7** | 2×1 @ 480 px; linear 0.33 · other 104; peak **3.7 GiB** |
+| **E2E** (wall clock) | **1623** | 13:01:07–13:28:10; **27 min 3 s** |
+
+vs quality path 2446 / 2198 / 174: **−34% E2E**, **−37% denoise**, **−14% VAE**.
+md5 `54e8806b28cba9a4c8e529180e2b39dc`.
+
+## 15 s all-opts — 2026-09-03 (`main`)
+
+`H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1` plus CLI
+`--token-reduction`. Detached `nohup`. Log:
+[`long-15s-all-opts-2026-09-03.log`](long-15s-all-opts-2026-09-03.log).
+
+| Phase | Wall (s) | Notes |
+|-------|--------:|-------|
+| Qwen text encoder | 32.3 | |
+| H3 DiT load | 45.0 | peak 27.9 GiB |
+| H3 DiT GPU Euler denoise | **1390.2** | sdpa 960 · linear 405 · other 26 |
+| audio VAE decoder | 3.9 | |
+| video VAE decoder | **149.6** | peak **3.7 GiB** |
+| **E2E** (wall clock) | **1623** | 13:32:44–13:59:47; **27 min 3 s** |
+
+Matches the no-sampler TR+INT8 VAE run to the second. md5
+`0da4bff28eb6ee736bf435804ef7c682`.

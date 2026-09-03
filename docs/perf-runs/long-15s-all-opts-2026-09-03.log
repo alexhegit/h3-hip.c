@@ -1,0 +1,23 @@
+h3 profile: Qwen text encoder        total          wall=  32.264s encode=  0.017s wait=  10.815s root-gpu= 10.815s peak=  4.587GiB alloc= 46.906GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op= 10.827s linear= 10.602s sdpa=  0.105s conv=  0.000s other=  0.119s
+h3 profile: Qwen text encoder        weight-load    pin=  0.725s (46.906GiB,  64.67GiB/s) read=362.171s (46.860GiB,   0.13GiB/s) upload=  3.062s (46.860GiB,  15.30GiB/s) recycled= 92.4% pinned= 0.000GiB device=46.906GiB
+h3 profile: H3 DiT load stage refine text          1.401s
+h3 profile: H3 DiT load stage AdaLN precompute    19.174s
+h3 profile: H3 DiT load stage rope and maps        0.088s
+h3 profile: H3 DiT core split   block-io= 24.058s quantize=  0.160s
+h3 profile: H3 DiT load stage transformer core    24.291s
+h3 profile: H3 DiT load stage activations          0.023s
+h3 profile: H3 DiT                   load           wall=  44.976s encode= 23.840s wait=   1.075s root-gpu=  1.075s peak= 27.901GiB alloc= 86.155GiB submissions=30 direct=268 linear=62 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  1.516s linear=  1.209s sdpa=  0.000s conv=  0.000s other=  0.307s
+h3 profile: H3 DiT                   GPU Euler denoise wall=1390.175s encode=  3.769s wait=1386.340s root-gpu=1386.340s peak= 27.909GiB alloc=  0.008GiB submissions=11 direct=6143 linear=0 conv=0 attention=495
+h3 profile: H3 DiT                   op-classes     gpu-op=1390.086s linear=404.634s sdpa=959.584s conv=  0.000s other= 25.869s
+h3 profile: H3 DiT                   total          wall=1435.185s encode= 27.609s wait=1387.415s root-gpu=1387.415s peak= 27.909GiB alloc= 86.163GiB submissions=41 direct=6411 linear=62 conv=0 attention=497
+h3 profile: H3 DiT                   weight-load    pin=  0.730s (86.163GiB, 118.00GiB/s) read=156.092s (58.139GiB,   0.37GiB/s) upload=  1.711s (58.139GiB,  33.98GiB/s) recycled= 95.7% pinned= 0.073GiB device=86.089GiB
+h3 profile: audio VAE decoder        total          wall=   3.885s encode=  0.004s wait=   3.510s root-gpu=  3.510s peak=  0.286GiB alloc=  1.450GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  3.511s linear=  0.000s sdpa=  0.000s conv=  3.098s other=  0.413s
+h3 profile: audio VAE decoder        weight-load    pin=  0.021s ( 1.450GiB,  70.11GiB/s) read=  0.032s ( 0.242GiB,   7.52GiB/s) upload=  0.297s ( 0.242GiB,   0.82GiB/s) recycled= 99.5% pinned= 0.000GiB device= 1.450GiB
+h3 profile: video VAE decoder        total          wall= 149.598s encode=  3.636s wait= 141.819s root-gpu=141.819s peak=  3.737GiB alloc= 12.534GiB submissions=42 direct=23118 linear=42 conv=0 attention=1512
+h3 profile: video VAE decoder        op-classes     gpu-op=145.361s linear=  0.324s sdpa= 40.721s conv=  0.000s other=104.315s
+h3 profile: video VAE decoder        weight-load    pin=  0.413s (12.534GiB,  30.31GiB/s) read=  0.979s ( 9.028GiB,   9.22GiB/s) upload=  0.396s ( 9.028GiB,  22.79GiB/s) recycled= 98.6% pinned= 0.025GiB device=12.509GiB
+E2E_WALL 13:32:44-13:59:47 = 1623s (27 min 3 s)
+md5 0da4bff28eb6ee736bf435804ef7c682
