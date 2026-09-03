@@ -1,24 +1,27 @@
 # h3-hip.c
 
 HIP port of [antirez/h3.c](https://github.com/antirez/h3.c) for **AMD GPUs**.
-One tree, three supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
+One tree, three supported products — pass `HIP_ARCH` to match the GPU you
+compile for. Timed scoreboard SKUs are **Strix Halo (gfx1151)**, **MI210
+(gfx90a)**, and **MI300X (gfx942)**. MI250 / MI250X also use `gfx90a` but
+were not timed.
 
-| ISA | GPU | Default DiT | SDPA |
-|-----|-----|-------------|------|
-| `gfx1151` | Strix Halo (RDNA) | INT8 + BF16 activations | wave32 rocWMMA |
-| `gfx90a` | MI210 / MI250X (CDNA2) | BF16 GEMM | wave64 MFMA flash |
-| `gfx942` | MI300X (CDNA3) | BF16 GEMM | wave64 MFMA flash |
+| Product | `HIP_ARCH` | Default DiT | SDPA |
+|---------|------------|-------------|------|
+| **Strix Halo** (RDNA) | `gfx1151` | INT8 + BF16 activations | wave32 rocWMMA |
+| **MI210** (CDNA2) | `gfx90a` | BF16 GEMM | wave64 MFMA flash |
+| **MI300X** (CDNA3) | `gfx942` | BF16 GEMM | wave64 MFMA flash |
 
-Tagged **v0.11.0** is the three-ISA line (`gfx1151`, `gfx90a`, `gfx942`) with
-512 px VAE tiles, INT8 workspace reuse, and opt-in `--token-reduction` /
-`H3_INT8_VAE` / `H3_GPU_SAMPLER`. v0.10.x remains the dual-ISA history; v0.9.x
-is gfx1151-only. The original project is a native MiniMax-H3 inference engine
+Tagged **v0.11.0** is that three-product line with 512 px VAE tiles, INT8
+workspace reuse, and opt-in `--token-reduction` / `H3_INT8_VAE` /
+`H3_GPU_SAMPLER`. v0.10.x remains the dual-ISA history; v0.9.x is Strix Halo
+only. The original project is a native MiniMax-H3 inference engine
 (Apple Metal / macOS); this repository reimplements the GPU backend in pure
 HIP so the same CLI and model stack run on ROCm.
 
 [![h3-hip.c ident](assets/showcase/h3-hip-ident.jpg)](assets/showcase/h3-hip-ident.mp4)
 
-Project ident, generated on gfx1151 (864×480, 56 frames, `--steps 20 --layers 50
+Project ident, generated on Strix Halo (gfx1151) (864×480, 56 frames, `--steps 20 --layers 50
 --reuse 1`). Click the poster for the MP4:
 [h3-hip-ident.mp4](assets/showcase/h3-hip-ident.mp4).
 
@@ -30,11 +33,11 @@ Project ident, generated on gfx1151 (864×480, 56 frames, `--steps 20 --layers 5
 
 Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
 
-| Preset | gfx1151 (v0.11.0) | gfx90a (v0.11.0) | gfx942 |
-|--------|----------------|------------------|-----:|
+| Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
+|--------|---------------------:|---------------:|----------------:|
 | fox-s2 | ~85–90 s (I/O) | **10.8 s** | **~16 s** |
 | fox-fast | ~2 min (I/O) | **18.2 s** | **~12 s** |
-| 15 s cinematic (864×480, 362 f) | **40 min 46 s** | **12 min 11 s** | **~2.5 min** |
+| 15 s cinematic (864×480, 362 f) | **40 min 46 s** | **12 min 11 s** | **3 min 46 s** |
 
 These are **complete muxed MP4s** (video + audio), not stubs. fox-s2 and
 fox-fast are both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only
@@ -49,7 +52,7 @@ at 864×480 / 362 frames.
 | **fox showcase** | 512² · 22 f | `--steps 20 --layers 50 --reuse 1` | README / wiki gallery fox |
 | **15 s cinematic** | 864×480 · 362 f | `--steps 20 --layers 45 --reuse 2` | Same quality path as fox-fast, long duration |
 
-## Showcase (AMD gfx1151)
+## Showcase (Strix Halo)
 
 Clips below were generated on an AMD Strix Halo iGPU (`gfx1151`) with this HIP
 port. Click a poster for the MP4. The last three are **untitled** model output
@@ -65,9 +68,9 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 46 s**
-and **10 s E2E ~25 min** on gfx1151; **15 s E2E 12 min 11 s** on MI210.
-Opt-in `--token-reduction` + `H3_INT8_VAE=1` on the same 15 s clip:
-**27 min 3 s** (gfx1151, v0.11.0) / **8 min 21 s** (gfx90a);
+and **10 s E2E ~25 min** on Strix Halo (gfx1151); **15 s E2E 12 min 11 s** on
+MI210 (gfx90a). Opt-in `--token-reduction` + `H3_INT8_VAE=1` on the same 15 s
+clip: **27 min 3 s** (Strix Halo, v0.11.0) / **8 min 21 s** (MI210);
 quality trade, not the showcase path.
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
@@ -124,7 +127,7 @@ MODEL=/path/to/MiniMax-H3
   -o assets/showcase/amd-developer-community-raw.mp4
 
 # Long T2VA — 15 s cinematic office (864×480, 362 frames;
-# E2E 40 min 46 s gfx1151 / 12 min 11 s gfx90a; add --token-reduction
+# E2E 40 min 46 s Strix Halo (gfx1151) / 12 min 11 s MI210 (gfx90a); add --token-reduction
 # and H3_INT8_VAE=1 for 27 min 3 s / 8 min 21 s with a visible quality trade)
 ./h3 --profile -d "$MODEL" \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
@@ -155,7 +158,7 @@ Current tagged line is **v0.11.0**. `h3 --info` prints `h3-hip 0.11.0`.
 | Dual HIP ISA (`HIP_ARCH=gfx1151` / `gfx90a` / `gfx942`) | ✅ |
 | FL2VA (`--first-frame` / `--last-frame`) | ✅ |
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
-| Runtime INT8 DiT (hipBLAS) | ✅ gfx1151 default; gfx90a via `H3_INT8_MLP=1` |
+| Runtime INT8 DiT (hipBLAS) | ✅ Strix Halo (gfx1151) default; MI210/MI300X via `H3_INT8_MLP=1` |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; visible quality trade |
 
@@ -166,7 +169,7 @@ Current tagged line is **v0.11.0**. `h3 --info` prints `h3-hip 0.11.0`.
   [Getting started](docs/wiki/Getting-started.md),
   [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
   [Long video](docs/wiki/Long-video.md)
-- **Timings** (gfx1151 / gfx90a / gfx942): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
+- **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
 The fox showcase uses `--steps 20 --layers 50 --reuse 1`. Tagged scoreboard
@@ -174,10 +177,10 @@ commands are in PERFORMANCE.md. **`--token-reduction`** is the same opt-in
 speed flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c) (pair
 video tokens in middle DiT blocks). It is **off by default**. Use it when
 wall clock matters more than fox-s2 bit identity — long T2VA is DiT-SDPA
-bound on both ISAs. gfx1151 fox-fast denoise with CLI TR was 34.6 s →
+bound on both ISAs. Strix Halo fox-fast denoise with CLI TR was 34.6 s →
 25.8 s (v0.9.0); on this tree default fox-fast denoise is **24.5 s** (all-opts
-**18.0 s**). Same 15 s cinematic: gfx1151 quality path **40 min 46 s**;
-TR + INT8 VAE **27 min 3 s**. gfx90a **8 min 21 s** (vs 12 min 11 s).
+**18.0 s**). Same 15 s cinematic: Strix Halo (gfx1151) quality path **40 min 46 s**;
+TR + INT8 VAE **27 min 3 s**. MI210 (gfx90a) **8 min 21 s** (vs 12 min 11 s).
 Tagged scoreboard stays without TR. Generate prints a stderr warning when
 the flag is on.
 
@@ -190,9 +193,9 @@ T2VA pipeline, and Long video are under `docs/wiki/`.
 - Linux + ROCm (`hipcc`, `libamdhip64`). Three HIP offload ISAs; you must pass
   `HIP_ARCH` to match the GPU you are building for. Other AMD targets are still
   experimental.
-  - **gfx1151** — Strix Halo (RDNA). Runtime: INT8 DiT + rocWMMA SDPA.
-  - **gfx90a** — MI210 / MI250X (CDNA2). Runtime: BF16 DiT + MFMA flash SDPA.
-  - **gfx942** — MI300X (CDNA3). Same CDNA kernel paths as gfx90a.
+  - **Strix Halo (gfx1151)** — RDNA. Runtime: INT8 DiT + rocWMMA SDPA.
+  - **MI210 (gfx90a)** — CDNA2. Runtime: BF16 DiT + MFMA flash SDPA. MI250 / MI250X share this ISA; they were not timed.
+  - **MI300X (gfx942)** — CDNA3. Same CDNA kernel paths as MI210.
 - Official BF16 checkpoint at `MiniMax-H3/` (`FL2VA/*`, optional `Ref2VA/*`)
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)
@@ -244,9 +247,9 @@ Same fox preset as the T2VA showcase clip:
   -o outputs/fox.mp4
 ```
 
-First run pays model load from disk (~107 GiB on this T2VA path). On gfx1151
-the BIOS carveout leaves ~31 GiB host RAM, so repeat runs still miss most of
-the page cache. gfx90a is a discrete GPU; its E2E is still dominated by weight
+First run pays model load from disk (~107 GiB on this T2VA path). On Strix Halo
+(gfx1151) the BIOS carveout leaves ~31 GiB host RAM, so repeat runs still miss most of
+the page cache. MI210 (gfx90a) is a discrete GPU; its E2E is still dominated by weight
 I/O on fox-s2. For the tagged scoreboard commands, see
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 

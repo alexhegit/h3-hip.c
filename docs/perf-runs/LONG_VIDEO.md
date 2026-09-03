@@ -1,12 +1,12 @@
-# Long T2VA timings (864×480, gfx1151)
+# Long T2VA timings (864×480, Strix Halo)
 
-Halo ledger for the 10 s / 15 s cinematic clips. Same knobs on gfx90a
+Halo ledger for the 10 s / 15 s cinematic clips. Same knobs on MI210 (gfx90a)
 (`main` 2026-09-02) run the 15 s clip in **12 min 11 s** — see
 [`../PERFORMANCE.md`](../PERFORMANCE.md) and
 [`../perf-mi210/STATUS.md`](../perf-mi210/STATUS.md). 10 s was not re-timed
 on MI210.
 
-Measured on AMD Ryzen AI MAX+ 395 / Radeon 8060S (`gfx1151`), official
+Measured on **Strix Halo (gfx1151)** (AMD Ryzen AI MAX+ 395 / Radeon 8060S), official
 MiniMax-H3 at `/home/amd/HF-MODELS/MiniMax-H3`. v0.9.0 numbers (26 Aug) stay
 below; **`main` 2026-09-03** retimes the 15 s quality path.
 

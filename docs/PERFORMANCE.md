@@ -1,9 +1,11 @@
 # Performance
 
-Headline numbers. Three HIP ISAs share this tree; build with an explicit
-`HIP_ARCH` ([Getting started](wiki/Getting-started.md)). Wall time moves with
-page-cache state; treat E2E as a band, denoise GPU time as the stable GPU
-figure. Peak VRAM is the high-water mark across the entire pipeline.
+Headline numbers. Timed SKUs: **Strix Halo (gfx1151)**, **MI210 (gfx90a)**,
+**MI300X (gfx942)**. Build with an explicit `HIP_ARCH`
+([Getting started](wiki/Getting-started.md)). MI250 / MI250X share `gfx90a`
+with MI210 but are not these numbers. Wall time moves with page-cache state;
+treat E2E as a band, denoise GPU time as the stable GPU figure. Peak VRAM is
+the high-water mark across the entire pipeline.
 
 Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
@@ -11,22 +13,21 @@ Engineering logs (phase tables, rejected experiments) live under
 
 ## Current release — v0.11.0 (2026-09-03)
 
-One tree, three ISAs: gfx942, 512 px VAE tiles, INT8 workspace reuse, and
-opt-in TR / INT8 VAE / GPU sampler. `h3 --info` prints `h3-hip 0.11.0`.
+One tree, three timed products. `h3 --info` prints `h3-hip 0.11.0`.
 Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
-| Preset | gfx1151 | gfx90a | gfx942 |
-|--------|--------:|-------:|-------:|
+| Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
+|--------|---------------------:|---------------:|----------------:|
 | fox-s2 E2E | ~85–90 s (I/O) | **~10.8 s** | **~16 s** |
 | fox-fast E2E | ~2 min (I/O) | **~18 s** | **~12 s** |
-| 15 s cinematic E2E | **40 min 46 s** | **12 min 11 s** | **~2.5 min** |
+| 15 s cinematic E2E | **40 min 46 s** | **12 min 11 s** | **3 min 46 s** |
 
-gfx1151 fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
+Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
 `34507f072c5cabbde6592b3f70b8fa35` (2026-09-03). `halo-regression` still
 expects the v0.9.0 hash unless you set `H3_FOX_S2_MD5` / `H3_VAE_TILE_PIXELS`.
 
-## gfx1151 — v0.11.0 (2026-09-03)
+## Strix Halo (gfx1151) — v0.11.0 (2026-09-03)
 
 AMD Ryzen AI MAX+ 395 / Radeon 8060S. `h3 --info`: **31 GiB** host, **96 GiB**
 max HIP buffer, unified memory. Build: `make HIP_ARCH=gfx1151`. Default DiT is
@@ -64,7 +65,7 @@ Not a Halo win. fox-s2 denoise 3.36 → **3.51 s**; fox-fast 24.5 → **25.1 s**
 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 ```
 
-INT8 DiT is already the gfx1151 default.
+INT8 DiT is already the Strix Halo (gfx1151) default.
 
 | Preset | E2E | Denoise wall | Video VAE | Peak VRAM |
 |--------|----:|-------------:|----------:|----------:|
@@ -123,7 +124,7 @@ wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
 figure is 16.7 s; HIP fox-fast denoise wall here is **24.5 s**. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
-## gfx90a / MI210 — v0.11.0 (2026-09-02)
+## MI210 (gfx90a) — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
 **BF16 hipBLAS** (not INT8). Four-GPU box: fox gates on `H3_HIP_DEVICE=1`,
@@ -208,7 +209,7 @@ Token reduction is the 15 s speed path. INT8 VAE is the VRAM path.
 INT8 DiT is the pipeline-peak cut. INT8 VAE is the VAE-peak cut. Default 15 s
 already fits a 64 GiB card; all-opts is headroom, not an enablement story.
 
-## gfx942 / MI300X — v0.11.0 (2026-09-02)
+## MI300X (gfx942) — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
 **BF16 hipBLAS** (same as gfx90a). 192 GiB VRAM; weight I/O dominates E2E on
@@ -240,7 +241,7 @@ H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 | **fox-s2** | **~8 s** | **0.34 s** | **~1.3 s** | **~30 GiB** |
 | **15 s cinematic** | **~2.4 min** | **113 s** | **24.6 s** | **~32 GiB** |
 
-Commands are the same as the gfx1151 block above. INT8 is opt-in on CDNA (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise
+Commands are the same as the Strix Halo block above. INT8 is opt-in on CDNA (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise
 is ~3× faster than MI210 on the same BF16 15 s path (186 s vs 647 s). fox-s2 /
 fox-fast E2E is I/O-bound on both CDNA cards.
 
@@ -298,7 +299,7 @@ Drops half spatial width in middle layers (blocks 4–30). 15 s cinematic denois
 185.7 s → 116.8 s (37% faster). Quality impact: slight detail loss in fine
 textures.
 
-**VRAM impact:** gfx1151 15 s default peak is **27.9 GiB** (not ~48 GiB).
+**VRAM impact:** Strix Halo (gfx1151) 15 s default peak is **27.9 GiB** (not ~48 GiB).
 The 2026-09-02 TR run peaked at **25.7 GiB** in denoise.
 
 ### Optimization: Video VAE INT8 (`H3_INT8_VAE=1`)
@@ -357,11 +358,11 @@ pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
-| gfx1151 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts / TR+INT8 VAE) |
-| gfx90a 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
-| gfx942 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
+| Strix Halo (gfx1151) 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts / TR+INT8 VAE) |
+| MI210 (gfx90a) 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
+| MI300X (gfx942) 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
 
-gfx1151 fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
+Strix Halo fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 
 ## VRAM optimization summary (MI300X, 15 s cinematic)
 

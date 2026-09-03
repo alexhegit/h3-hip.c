@@ -3,14 +3,17 @@
 One source tree. Three supported HIP offload ISAs. You pass `HIP_ARCH` yourself;
 the Makefile does **not** probe the GPU.
 
-| `HIP_ARCH` | GPU | Runtime DiT | Runtime SDPA |
+| Product | `HIP_ARCH` | Runtime DiT | Runtime SDPA |
 |---|---|---|---|
-| `gfx1151` | Strix Halo (RDNA, wave32) | INT8 weights (hipBLAS), BF16 activations | rocWMMA |
-| `gfx90a` | MI210 / MI250X (CDNA2, wave64) | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
-| `gfx942` | MI300X (CDNA3, wave64) | same as gfx90a | same as gfx90a |
+| **Strix Halo** (RDNA, wave32) | `gfx1151` | INT8 weights (hipBLAS), BF16 activations | rocWMMA |
+| **MI210** (CDNA2, wave64) | `gfx90a` | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
+| **MI300X** (CDNA3, wave64) | `gfx942` | same as MI210 | same as MI210 |
 
-Tagged **v0.11.0** is the three-ISA line plus VAE/INT8/sampler knobs. gfx1151
-fox-s2 **v0.9.0** md5 `1731f95c4aa582597cf83d57f46b8f9e` is the historical
+Timed scoreboard SKUs are Strix Halo, MI210, and MI300X. MI250 / MI250X share
+`gfx90a` with MI210 but were not timed.
+
+Tagged **v0.11.0** is the three-product line plus VAE/INT8/sampler knobs. Strix Halo
+(gfx1151) fox-s2 **v0.9.0** md5 `1731f95c4aa582597cf83d57f46b8f9e` is the historical
 gate. On v0.11.0 the default 512 px VAE tile changes fox-s2 to
 `34507f072c5cabbde6592b3f70b8fa35`.
 

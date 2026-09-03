@@ -2,7 +2,7 @@
 
 Text-to-video+audio on official [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3)
 weights. There is no separate FP32 dump of Qwen/DiT and no INT8/FP8 checkpoint.
-Runtime INT8 exists for DiT on RDNA (`gfx1151`); on MI210 (`gfx90a`) it is off
+Runtime INT8 exists for DiT on Strix Halo (gfx1151); on MI210 (gfx90a) it is off
 unless `H3_INT8_MLP=1`.
 
 T2VA does not load `FL2VA/`, `Ref2VA/`, or `transformer_ref`. Vision encoder and
@@ -31,11 +31,11 @@ flowchart LR
 
 Blue = BF16 weights. Orange = F32 weights. Gray = no neural-net weights.
 
-## Disk vs compute (both ISAs)
+## Disk vs compute
 
 Checkpoint dtypes do not change with `HIP_ARCH`. Runtime compute does.
 
-| Stage | Disk dtype | Size (approx.) | gfx1151 compute | gfx90a compute |
+| Stage | Disk dtype | Size (approx.) | Strix Halo (gfx1151) | MI210 (gfx90a) |
 |---|---|---:|---|---|
 | Tokenizer | — | — | CPU | CPU |
 | Text encoder | **BF16** | 62.1 GiB | BF16 RMS / hipBLAS / causal GQA | same (no INT8) |
@@ -54,8 +54,8 @@ Build: `make HIP_ARCH=gfx1151` or `make HIP_ARCH=gfx90a`
 ## Knobs that change DiT dtype at runtime
 
 ```text
-H3_INT8_MLP=1          # gfx90a: INT8 DiT (already the gfx1151 default)
-H3_INT8_MLP=0          # gfx1151: keep BF16 DiT weights
+H3_INT8_MLP=1          # MI210/MI300X: INT8 DiT (already the Strix Halo default)
+H3_INT8_MLP=0          # Strix Halo: keep BF16 DiT weights
 H3_SDPA_CDNA_FP16_PV=0 # gfx90a flash: BF16 PV instead of default FP16
 H3_SDPA_CDNA_FLASH=0   # gfx90a: hipBLAS score-matrix fallback
 ```
