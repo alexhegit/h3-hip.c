@@ -9,10 +9,10 @@ the Makefile does **not** probe the GPU.
 | `gfx90a` | MI210 / MI250X (CDNA2, wave64) | BF16 weights (hipBLAS BF16 GEMM) | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 | `gfx942` | MI300X (CDNA3, wave64) | same as gfx90a | same as gfx90a |
 
-Tagged **v0.10.1** on `main` covers the dual-ISA line; `main` after that adds
-gfx942 plus VAE/INT8/sampler knobs. gfx1151 fox-s2 **v0.9.0** md5
-`1731f95c4aa582597cf83d57f46b8f9e` is the historical gate. On current `main`
-the default 512 px VAE tile changes fox-s2 to
+Last tag **v0.10.1** is dual-ISA only. Current `main` adds gfx942 plus
+VAE/INT8/sampler knobs and is what the scoreboard was timed on. gfx1151
+fox-s2 **v0.9.0** md5 `1731f95c4aa582597cf83d57f46b8f9e` is the historical
+gate. On current `main` the default 512 px VAE tile changes fox-s2 to
 `34507f072c5cabbde6592b3f70b8fa35`.
 
 ## Build
@@ -20,7 +20,7 @@ the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.10.1
+# clone tracks main. Last tag: git checkout v0.10.1
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

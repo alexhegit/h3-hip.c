@@ -9,11 +9,12 @@ One tree, three supported HIP ISAs — pass `HIP_ARCH` to match the GPU:
 | `gfx90a` | MI210 / MI250X (CDNA2) | BF16 GEMM | wave64 MFMA flash |
 | `gfx942` | MI300X (CDNA3) | BF16 GEMM | wave64 MFMA flash |
 
-Tagged **v0.10.1** on `main` is the dual-ISA line (`gfx1151` and `gfx90a`).
-v0.10.0 is the same kernels; 0.10.1 adds preset/docs clarifications.
-v0.9.x remains the gfx1151-only history. The original project is a native
-MiniMax-H3 inference engine (Apple Metal / macOS); this repository reimplements
-the GPU backend in pure HIP so the same CLI and model stack run on ROCm.
+Last tag **v0.10.1** is the dual-ISA line (`gfx1151` and `gfx90a`). Current
+`main` adds **gfx942**, 512 px VAE tiles, INT8 workspace reuse, and opt-in
+`--token-reduction` / `H3_INT8_VAE` / `H3_GPU_SAMPLER`. v0.9.x remains the
+gfx1151-only history. The original project is a native MiniMax-H3 inference
+engine (Apple Metal / macOS); this repository reimplements the GPU backend
+in pure HIP so the same CLI and model stack run on ROCm.
 
 [![h3-hip.c ident](assets/showcase/h3-hip-ident.jpg)](assets/showcase/h3-hip-ident.mp4)
 
@@ -146,7 +147,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.10.1**.
+Last tag is **v0.10.1**. The scoreboard above is **`main`**, not that tag.
 
 | Capability | Status |
 |------------|--------|
@@ -204,7 +205,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.10.1
+# clone tracks main (the scoreboard). Last tag: git checkout v0.10.1
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

@@ -9,10 +9,12 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.10.1 (2026-09-01)
+## Scoreboard — `main` (2026-09-03)
 
-One tree, three ISAs. Build with `make HIP_ARCH=gfx1151`, `make HIP_ARCH=gfx90a`,
-or `make HIP_ARCH=gfx942`. `h3 --info` prints `h3-hip 0.10.1`.
+Last GitHub tag is **v0.10.1** (2026-09-01, dual-ISA). Numbers below are
+`origin/main` after that: gfx942, larger VAE tiles, INT8 workspace reuse,
+opt-in TR / INT8 VAE / GPU sampler. `h3 --info` still prints `h3-hip 0.10.1`
+until the next tag. Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | gfx1151 | gfx90a | gfx942 |
 |--------|--------:|-------:|-------:|
