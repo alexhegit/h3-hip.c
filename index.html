@@ -183,10 +183,10 @@
       the GPU layer with HIP.
     </p>
     <p>
-      Two supported HIP offload ISAs, one source tree. <strong>gfx1151</strong> (Strix Halo / Radeon 8060S)
+      Three supported HIP offload ISAs, one source tree. <strong>gfx1151</strong> (Strix Halo / Radeon 8060S)
       is the original APU path: 96&nbsp;GiB VRAM carveout, ~31&nbsp;GiB host RAM, ~107&nbsp;GiB of weights
-      per T2VA run. <strong>gfx90a</strong> (MI210) is the discrete CDNA path: BF16 DiT GEMM and wave64
-      MFMA flash attention. You choose the ISA at compile time with
+      per T2VA run. <strong>gfx90a</strong> (MI210) and <strong>gfx942</strong> (MI300X) are the discrete
+      CDNA paths: BF16 DiT GEMM and wave64 MFMA flash attention. You choose the ISA at compile time with
       <span class="mono">make HIP_ARCH=…</span>.
     </p>
   </div>
@@ -197,10 +197,18 @@
     <div class="sec-num"><b>02</b> — Results</div>
     <h2>Where the speedup came from</h2>
     <p>
-      Every number below is this port measured against <em>itself</em> — first working HIP profile on
-      18&nbsp;Aug versus the v0.9.0 tag on 26&nbsp;Aug, same machine, same checkpoint, same CLI. Wall time on
-      this box moves with page-cache state, so end-to-end is quoted as a band and
-      <strong>denoise GPU time</strong> (HIP events) is the figure to trust.
+      Two eras, same Halo box, same checkpoint, same CLI. The cards and ladder below are this port
+      measured against <em>itself</em> on <strong>gfx1151</strong>. They are not AMD versus anyone else,
+      and they are not a Metal comparison. Wall time on this box moves with page-cache state, so
+      end-to-end is a band and <strong>denoise GPU time</strong> (HIP events) is the figure to trust.
+      MI210 / MI300X never ran the 18&nbsp;Aug first profile, so they belong in the tagged table, not in
+      these multipliers.
+    </p>
+
+    <h3>Era 1 — first HIP to v0.9.0 (18–26 Aug)</h3>
+    <p>
+      Make the GPU cheap, then stop page-locking the 31&nbsp;GiB host pool. After WMMA, short fox-s2
+      is no longer GPU-bound; the remaining wall clock is NVMe.
     </p>
 
     <div class="stats">
@@ -228,8 +236,9 @@
 
     <h3>Attribution ladder — fox-s2 denoise GPU</h3>
     <p>
-      Each rung is a dated session that kept something. Bar length is measured GPU time in the denoise phase;
+      Each rung is a dated gfx1151 session that kept something. Bar length is denoise GPU time;
       the number on the right is cumulative speedup against the first HIP profile.
+      The last rung is v0.11.0, not v0.9.0.
     </p>
 
     <div class="ladder">
@@ -268,22 +277,61 @@
         </div>
         <div class="mult">5.4&times;</div>
       </div>
-      <div class="row final">
+      <div class="row">
         <div>
-          <div class="label"><b>WMMA rearchitecture</b> — tiled d128 SDPA, f32 on the bf16 matrix cores</div>
+          <div class="label"><b>WMMA rearchitecture</b> — tiled d128 SDPA, f32 on the bf16 matrix cores · v0.9.0</div>
           <div class="bar" style="width:15.9%"><span>6.4 s</span></div>
         </div>
         <div class="mult">6.3&times;</div>
+      </div>
+      <div class="row final">
+        <div>
+          <div class="label"><b>INT8 workspace reuse</b> — v0.11.0; short fox is still I/O-bound after this</div>
+          <div class="bar" style="width:8.3%"><span>3.36 s</span></div>
+        </div>
+        <div class="mult">12&times;</div>
       </div>
     </div>
 
     <div class="callout">
       <div class="h">The interesting part</div>
       <p>
-        Hand-written INT8 tiles topped out at roughly <strong>4% of BF16 WMMA peak</strong>. That is why the last
-        rung is not another tuning pass but an architecture change: move the hot kernels onto the matrix cores.
-        After it, fox-s2 is <strong>no longer GPU-bound at all</strong> — and the remaining wall clock is NVMe.
+        Hand-written INT8 tiles topped out at roughly <strong>4% of BF16 WMMA peak</strong>. That is why the
+        v0.9.0 rung is not another tuning pass but an architecture change: move the hot kernels onto the
+        matrix cores. After it, fox-s2 E2E <strong>stopped moving</strong> (~83–90&nbsp;s, NVMe).
+        v0.11.0 is a different job: INT8 workspace (denoise 6.4&nbsp;s → <strong>3.36&nbsp;s</strong>),
+        larger VAE tiles, and long T2VA — the clip that is still DiT-bound.
       </p>
+    </div>
+
+    <h3>Era 2 — v0.9.0 to v0.11.0 (same gfx1151)</h3>
+    <p>
+      Do not retarget the 3.0&times; fox-s2 E2E card: cold E2E is still the 31&nbsp;GiB host vs ~107&nbsp;GiB
+      weights. The GPU work that landed after WMMA shows up in denoise and in the 15&nbsp;s cinematic
+      (which did not exist as a scoreboard clip in August).
+    </p>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="k red">12&times;</div>
+        <div class="t">fox-s2 denoise vs first HIP</div>
+        <div class="d">40.3 s → 3.36 s</div>
+      </div>
+      <div class="stat">
+        <div class="k red">1.9&times;</div>
+        <div class="t">fox-s2 denoise vs v0.9.0</div>
+        <div class="d">6.3–6.5 s → 3.36 s</div>
+      </div>
+      <div class="stat">
+        <div class="k">−9%</div>
+        <div class="t">15 s quality E2E vs v0.9.0</div>
+        <div class="d">45.0 min → 40 min 46 s</div>
+      </div>
+      <div class="stat">
+        <div class="k red">1.7&times;</div>
+        <div class="t">15 s all-opts vs v0.9.0 quality</div>
+        <div class="d">45.0 min → 27 min 3 s</div>
+      </div>
     </div>
 
     <h3>Tagged baseline — v0.11.0</h3>
