@@ -1012,7 +1012,14 @@ int h3_gpu_has_fp8_mlp(const h3_gpu *gpu) {
     (void)gpu;
     const char *e = getenv("H3_FP8_MLP");
     if (!e || strcmp(e, "0") == 0) return 0;
-    if (strcmp(e, "1") == 0) return 1;
+    if (strcmp(e, "1") != 0) return 0;
+    hipDeviceProp_t props;
+    int device = 0;
+    if (hipGetDevice(&device) == hipSuccess &&
+        hipGetDeviceProperties(&props, device) == hipSuccess) {
+        if (strstr(props.gcnArchName, "gfx942")) return 1;
+    }
+    fprintf(stderr, "warning: H3_FP8_MLP=1 ignored on non-gfx942 GPU\n");
     return 0;
 }
 

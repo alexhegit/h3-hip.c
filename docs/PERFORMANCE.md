@@ -402,31 +402,53 @@ which was previously impossible (required ~50 GiB). The INT8 VAE path
 
 FP8 (`H3_FP8_MLP=1`) uses E4M3 FNUZ format with hipBLASLt GEMM.
 Default weight quantization clip=0.95 (`H3_FP8_CLIP` env var, range 0.5–1.0).
+FP8 only runs on gfx942; on other ISAs the flag is ignored with a warning.
 
-**15 s cinematic (864×480, 20 steps, 45 layers, reuse 2):**
+### Quick start
 
-| Metric | BF16 | INT8 | FP8 (clip=0.95) |
-|--------|-----:|-----:|-----------------:|
-| DiT denoise | 186.3 s | 179.6 s | **175.7 s** |
-| Video VAE | 34.6 s | 30.4 s | **27.2 s** |
-| Text | 2.6 s | 2.6 s | 2.5 s |
-| Audio | 1.9 s | 1.9 s | 1.9 s |
-| E2E | ~225 s | ~215 s | **~207 s** |
-| DiT peak VRAM | 41.1 GiB | 27.8 GiB | **30.9 GiB** |
+```bash
+# FP8 DiT on MI300X (all opts)
+H3_FP8_MLP=1 H3_INT8_VAE=1 H3_TOKEN_REDUCTION=1 ./h3 ...
 
-FP8 is 6% faster than BF16, 2% faster than INT8 in DiT denoise.
-FP8 peak VRAM is 25% less than BF16, 11% more than INT8.
+# FP8 DiT + INT8 VAE (recommended for long video)
+H3_FP8_MLP=1 H3_INT8_VAE=1 ./h3 ...
 
-**Precision (fox-s2, frame 0, vs BF16):**
+# Fine-tune clip factor (optional, default 0.95)
+H3_FP8_MLP=1 H3_FP8_CLIP=0.90 ./h3 ...
+```
 
-| Metric | INT8 | FP8 (clip=1.0) | FP8 (clip=0.95) |
-|--------|-----:|----------------:|-----------------:|
+### 15 s cinematic full T2VA E2E (864×480, 362 frames, 20 steps, 45 layers)
+
+| Phase | BF16 | INT8 (all opts) | FP8 (clip=0.95) |
+|-------|-----:|----------------:|----------------:|
+| Text encoder | 2.8 s | 2.6 s | 2.5 s |
+| DiT load | 3.9 s | 3.2 s | 3.1 s |
+| DiT denoise | 185.8 s | 180.7 s | **175.9 s** |
+| DiT total | 189.7 s | 183.9 s | **179.1 s** |
+| Audio VAE | 0.8 s | 1.4 s | 0.8 s |
+| Video VAE | 28.1 s | 25.0 s | **25.0 s** |
+| **E2E** | **~221 s** | **~213 s** | **~207 s** |
+| Peak VRAM | 41.1 GiB | 27.8 GiB | **30.9 GiB** |
+
+FP8 E2E **−6% vs BF16**, **−3% vs INT8**. Peak VRAM **−25% vs BF16**.
+
+### Precision (fox-s2, frame 0, vs BF16 baseline)
+
+| Metric | INT8 | FP8 clip=1.0 | FP8 clip=0.95 |
+|--------|-----:|-------------:|--------------:|
 | PSNR | 29.51 dB | 24.65 dB | **25.85 dB** |
 | SSIM | 0.927 | 0.903 | **0.910** |
 
-FP8 clip=0.95 improves PSNR by +1.2 dB over clip=1.0 baseline.
-INT8 remains higher quality (29.5 vs 25.9 dB) due to 7-bit integer precision
-vs FP8 E4M3's 3-bit mantissa.
+FP8 clip=0.95 improves PSNR +1.2 dB over clip=1.0. INT8 remains higher quality
+(29.5 vs 25.9 dB) due to 7-bit integer vs FP8 E4M3 3-bit mantissa.
+
+### ISA compatibility
+
+| ISA | `H3_FP8_MLP=1` behaviour | Recommended path |
+|-----|--------------------------|------------------|
+| gfx942 (MI300X) | FP8 enabled (hipBLASLt) | `H3_FP8_MLP=1` |
+| gfx90a (MI210) | **ignored** with warning | `H3_INT8_MLP=1` |
+| gfx1151 (Strix Halo) | **ignored** with warning | `H3_INT8_MLP=1` |
 
 Note: FP8 QKV projection disabled (`fp8_qkv = 0`) — fused QKV+RoPE+norm path
 needs special FP8 handling not yet implemented.
