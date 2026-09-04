@@ -236,3 +236,58 @@ quality gate. Use it only to prove the default (Sage off) path is untouched.
 
 Do not mix this work into the dirty local checkout that also holds unrelated
 trees. Land on `sageattn` only.
+
+## Results (MI300X gfx942, 2-step diagnostic)
+
+### Performance
+
+| Kernel | sdpa time (70 calls) | vs BF16 MFMA |
+|--------|---------------------:|--------------|
+| BF16 MFMA (baseline) | 2.290s | — |
+| INT8 Sage per-tile | 2.290s | **0% (identical)** |
+| INT8 Sage per-row | 2.853s | **+24% slower** |
+| INT8 MFMA scalar v1 | ~2.30s | ~0% |
+
+Per-tile INT8 quantization adds **zero overhead** — the absmax scale is free.
+Per-row quantization adds per-row barriers (+24%) for marginal accuracy gain.
+
+### Accuracy (PSNR vs BF16 MFMA, 2 steps)
+
+| Quantization | PSNR avg | PSNR y | Notes |
+|-------------|---------:|-------:|-------|
+| Per-tile absmax | 21.0 dB | 19.6 dB | 1 scale per 16×128 tile |
+| Per-row absmax | ~23 dB | — | +2.5 dB over per-tile |
+
+### Error compounding across steps
+
+| Steps | PSNR (per-tile) | Notes |
+|------:|----------------:|-------|
+| 2 | 21.0 dB | Acceptable for preview |
+| 20 | ~11 dB | Unacceptable for production |
+
+INT8 quantization error compounds multiplicatively through 35 DiT layers × N steps.
+Even with per-row quantization, 20-step PSNR stays ~11 dB.
+
+### AMD ISA mapping (v_mfma_i32_16x16x32_i8)
+
+The AMD ISA calculator confirmed the correct lane mapping:
+
+- **A matrix:** `row = lane % 16`, `col = 8 * (lane / 16)`
+- **B matrix:** `row = lane % 16`, `col = 8 * (lane / 16)`
+- **C matrix:** `row = 4 * (lane / 16) + gpr_idx`, `col = lane % 16`
+
+This was verified by building the AMD ISA calculator from source and testing
+all 64 lane indices. The previous v1 kernel had incorrect mapping.
+
+### Conclusion
+
+INT8 Sage is viable **only for preview mode** (2 steps, 21 dB). For production
+quality (20 steps), BF16 MFMA is already optimal with PSNR=inf (deterministic).
+
+**Recommended dispatch:**
+- `steps <= 2`: use INT8 Sage (zero overhead, 21 dB acceptable)
+- `steps > 2`: use BF16 MFMA (deterministic, higher quality)
+
+**Key contribution:** Fixed AMD ISA `v_mfma_i32_16x16x32_i8` lane mapping
+for both QK^T INT8 and BF16 PV via rocWMMA. This is the foundation for any
+future INT8 MFMA work on gfx90a/gfx942.

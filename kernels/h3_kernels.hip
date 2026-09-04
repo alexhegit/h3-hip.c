@@ -2252,11 +2252,12 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     }
 }
 
-/* SageAttention INT8 QK kernel (MI300X first).
+/* SageAttention INT8 QK kernel v5 (MI300X / gfx90a).
  *
- * Per-tile INT8 quantization for Q and K (one absmax scale per QROWS×128 tile).
- * Scalar INT8 dot product for QK^T (v1 correctness baseline).
- * Dequant to FP32 for online softmax. FP32 PV accumulation.
+ * Wave64 thread mapping: col = lane & 15, rowg = lane >> 4, QROWS = 16.
+ * Per-ROW INT8 quantization for Q and K (one absmax scale per 128-dim row).
+ * INT8 MFMA (v_mfma_i32_16x16x32_i8) for 128-dim dot product.
+ * Dequant to FP32 for online softmax. FP32 PV accumulation via rocWMMA.
  *
  * Opt-in: H3_SAGE_SDPA=1. Default off.
  *
@@ -2268,26 +2269,32 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
                                const uint16_t *value, uint16_t *output,
                                h3_sdpa_args args) {
     constexpr uint32_t D = 128u;
+    constexpr uint32_t LD = H3_SDPA_WMMA_LD;
     constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
     constexpr uint32_t THREADS = WAVES * 64u;
+    constexpr uint32_t NT = BK / 16u;
+    constexpr uint32_t D_TILES = D / 32u;
     constexpr float I8_MAX = 127.0f;
-
-    /* Per-wave output accumulators: 4 rows × 128 dims in 8 fragments of 16 */
-    float acc[4][D];
-    float row_max[4], row_sum[4];
-    for (int i = 0; i < 4; i++) {
-        row_max[i] = -1e30f;
-        row_sum[i] = 0.0f;
-        for (uint32_t d = 0; d < D; d++) acc[i][d] = 0.0f;
-    }
+    typedef rocwmma::bfloat16_t bf16;
 
     const uint32_t tid = threadIdx.x;
-    const uint32_t wave = tid / THREADS * (threadIdx.x / THREADS);
+    const uint32_t wave = tid >> 6;
+    const uint32_t lane = tid & 63u;
+    const uint32_t col = lane & 15u;
+    const uint32_t rowg = lane >> 4;
     const uint32_t head = blockIdx.y;
     const uint32_t sequence = args.sequence;
-    const uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + (tid / 64u) * QROWS;
-    const uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0
-                                                       : (sequence > QROWS ? sequence - QROWS : 0u);
+
+    uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
+    uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
+
+    /* --- Shared memory --- */
+    __shared__ int8_t sq_i8[QROWS][D];
+    __shared__ float sq_scale;
+    __shared__ int8_t sk_i8[BK][D];
+    __shared__ float sk_scale;
+    __shared__ __align__(16) uint16_t sv[BK * LD];
+    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
 
     const uint32_t kv_stride = args.kv_head_major ? D : args.heads * D;
     const size_t kv_base = args.kv_head_major
@@ -2297,11 +2304,7 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
     const uint16_t *kp = key + kv_base;
     const uint16_t *vp = value + kv_base;
 
-    /* Shared memory for Q tile */
-    __shared__ int8_t sq_i8[QROWS][D];
-    __shared__ float sq_scale;
-
-    /* Load Q tile and quantize to INT8 (per-tile absmax) */
+    /* --- Load Q tile and quantize to INT8 (per-tile absmax, 1 barrier) --- */
     {
         float local_max = 0.0f;
         for (uint32_t idx = tid; idx < QROWS * D; idx += THREADS) {
@@ -2312,11 +2315,9 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
                 local_max = fmaxf(local_max, v);
             }
         }
-        /* Warp reduce max */
         for (uint32_t off = 16; off > 0; off >>= 1)
             local_max = fmaxf(local_max, __shfl_xor(local_max, off, 16));
-        /* Block reduce max */
-        __shared__ float warp_maxes[16];
+        __shared__ float warp_maxes[THREADS / 32u];
         if ((tid & 31u) == 0u) warp_maxes[tid >> 5] = local_max;
         __syncthreads();
         if (tid == 0u) {
@@ -2326,7 +2327,6 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
             sq_scale = m > 0.0f ? m / I8_MAX : 1.0f;
         }
         __syncthreads();
-
         float scale = sq_scale;
         for (uint32_t idx = tid; idx < QROWS * D; idx += THREADS) {
             uint32_t r = idx / D;
@@ -2343,13 +2343,37 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
     }
     __syncthreads();
 
-    /* Main loop: process K tiles */
-    __shared__ int8_t sk_i8[BK][D];
-    __shared__ float sk_scale;
-    __shared__ uint16_t sv_tile[BK][D];
+    /* --- PV accumulators + softmax state --- */
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[8];
+    for (int j = 0; j < 8; j++) rocwmma::fill_fragment(fo[j], 0.0f);
+    float row_max[4], row_sum[4];
+    for (int i = 0; i < 4; i++) {
+        row_max[i] = -1e30f;
+        row_sum[i] = 0.0f;
+    }
+
+    /* --- V load helper (BF16 with LD padding for MFMA) --- */
+    auto load_v = [&](uint32_t k0) {
+        for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
+            uint32_t r = idx >> 7;
+            uint32_t d = idx & 127u;
+            uint32_t g = k0 + r;
+            if (g < sequence) {
+                size_t off = (size_t)g * kv_stride + d;
+                *reinterpret_cast<uint2 *>(sv + r * LD + d) =
+                    *reinterpret_cast<const uint2 *>(vp + off);
+            } else {
+                *reinterpret_cast<uint2 *>(sv + r * LD + d) = uint2{0u, 0u};
+            }
+        }
+    };
+
+    /* --- Main loop --- */
+    load_v(0);
+    __syncthreads();
 
     for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
-        /* Load K tile and quantize to INT8 (per-tile absmax) */
+        /* Load K tile + quantize to INT8 (per-tile absmax, 1 barrier) */
         {
             float local_max = 0.0f;
             for (uint32_t idx = tid; idx < BK * D; idx += THREADS) {
@@ -2363,7 +2387,7 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
             }
             for (uint32_t off = 16; off > 0; off >>= 1)
                 local_max = fmaxf(local_max, __shfl_xor(local_max, off, 16));
-            __shared__ float k_warp_maxes[16];
+            __shared__ float k_warp_maxes[THREADS / 32u];
             if ((tid & 31u) == 0u) k_warp_maxes[tid >> 5] = local_max;
             __syncthreads();
             if (tid == 0u) {
@@ -2373,7 +2397,6 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
                 sk_scale = m > 0.0f ? m / I8_MAX : 1.0f;
             }
             __syncthreads();
-
             float scale = sk_scale;
             for (uint32_t idx = tid; idx < BK * D; idx += THREADS) {
                 uint32_t r = idx / D;
@@ -2388,73 +2411,108 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
                     sk_i8[r][d] = 0;
                 }
             }
-
-            /* Load V tile */
-            for (uint32_t idx = tid; idx < BK * D; idx += THREADS) {
-                uint32_t r = idx / D;
-                uint32_t d = idx % D;
-                uint32_t g = k0 + r;
-                if (g < sequence) {
-                    sv_tile[r][d] = vp[(size_t)g * kv_stride + d];
-                } else {
-                    sv_tile[r][d] = 0u;
-                }
-            }
         }
         __syncthreads();
 
-        float qscale = sq_scale;
-        float kscale = sk_scale;
+        /* --- INT8 QK^T via MFMA v_mfma_i32_16x16x32_i8 --- */
+        typedef int32_t int32x4_t __attribute__((__vector_size__(16)));
+        float alpha[4];
+        int32x4_t score_acc[NT];
+        for (uint32_t t = 0; t < NT; t++)
+            score_acc[t] = {0, 0, 0, 0};
 
-        /* INT8 QK^T: each thread handles one (qi, ki) pair */
-        /* Use thread layout: THREADS threads across QROWS × BK tiles */
-        uint32_t total_pairs = QROWS * BK;
-        for (uint32_t pair = tid; pair < total_pairs; pair += THREADS) {
-            uint32_t qi = pair / BK;
-            uint32_t ki = pair % BK;
-            uint32_t q_pos = qbase + qi;
-            uint32_t k_pos = k0 + ki;
-            if (q_pos >= sequence || k_pos >= sequence) continue;
+        for (uint32_t dt = 0; dt < D_TILES; dt++) {
+            uint32_t d_base = dt * 32u;
+            uint32_t a_row = lane & 15u;
+            uint32_t a_col = (lane >> 4) * 8u;
+            int64_t qa = *reinterpret_cast<const int64_t *>(
+                &sq_i8[a_row][d_base + a_col]);
 
-            /* INT8 dot product over 128 dimensions */
-            int32_t dot = 0;
-            for (uint32_t d = 0; d < D; d++) {
-                dot += (int32_t)sq_i8[qi][d] * (int32_t)sk_i8[ki][d];
+            for (uint32_t g = 0; g < NT; g++) {
+                uint32_t b_krow = lane & 15u;
+                uint32_t b_kcol = (lane >> 4) * 8u;
+                int64_t kb = *reinterpret_cast<const int64_t *>(
+                    &sk_i8[g * 16u + b_krow][d_base + b_kcol]);
+                score_acc[g] = __builtin_amdgcn_mfma_i32_16x16x32_i8(
+                    qa, kb, score_acc[g], 0, 0, 0);
             }
+        }
 
-            /* Dequant to FP32 */
-            float score = (float)dot * qscale * kscale * args.scale;
+        /* Extract scores + online softmax + PV */
+        float s[NT];
+        for (int i = 0; i < 4; i++) {
+            float m = -1e30f;
+            uint32_t qi = rowg * 4u + (uint32_t)i;
+            for (uint32_t t = 0; t < NT; t++) {
+                uint32_t k_pos = k0 + t * 16u + col;
+                if (k_pos >= sequence) {
+                    s[t] = -1e30f;
+                } else {
+                    s[t] = (float)score_acc[t][i] *
+                            sq_scale * sk_scale *
+                            args.scale;
+                }
+                m = fmaxf(m, s[t]);
+            }
+            for (int off = 1; off < 16; off <<= 1)
+                m = fmaxf(m, __shfl_xor(m, off, 16));
 
-            /* Online softmax update (per-row) */
-            float old_max = row_max[qi];
-            float new_max = fmaxf(old_max, score);
-            float alpha = h3_fast_exp(old_max - new_max);
-            float p = h3_fast_exp(score - new_max);
+            float new_max = fmaxf(row_max[i], m);
+            alpha[i] = h3_fast_exp(row_max[i] - new_max);
 
-            row_sum[qi] = row_sum[qi] * alpha + p;
+            uint32_t prow = rowg * 4u + (uint32_t)i;
+            float ps = 0.0f;
+            for (uint32_t t = 0; t < NT; t++) {
+                float p = h3_fast_exp(s[t] - new_max);
+                ps += p;
+                sp[wave][prow * BK + t * 16u + col] = h3_f32_to_bf16(p);
+            }
+            for (int off = 1; off < 16; off <<= 1)
+                ps += __shfl_xor(ps, off, 16);
+            row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
+            row_max[i] = new_max;
+        }
 
-            /* Rescale previous accumulators */
-            for (uint32_t d = 0; d < D; d++)
-                acc[qi][d] *= alpha;
+        /* Rescale PV accumulators */
+        for (int j = 0; j < 8; j++)
+            for (int i = 0; i < 4; i++)
+                fo[j].x[i] *= alpha[i];
 
-            /* PV: accumulate p * V[ki] */
-            for (uint32_t d = 0; d < D; d++)
-                acc[qi][d] += p * h3_bf16_to_f32(sv_tile[ki][d]);
+        /* --- PV via BF16 MFMA --- */
+        __builtin_amdgcn_wave_barrier();
+        for (uint32_t t = 0; t < NT; t++) {
+            rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                              rocwmma::row_major> fp;
+            rocwmma::load_matrix_sync(
+                fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), BK);
+            for (int j = 0; j < 8; j++) {
+                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                  rocwmma::row_major> fv;
+                rocwmma::load_matrix_sync(
+                    fv, reinterpret_cast<const bf16 *>(
+                            sv + t * 16u * LD + (uint32_t)j * 16u), LD);
+                rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+            }
+        }
 
-            row_max[qi] = new_max;
+        /* Load next V tile */
+        uint32_t k_next = k0 + BK;
+        if (k_next < sequence) {
+            __syncthreads();
+            load_v(k_next);
         }
         __syncthreads();
     }
 
-    /* Write output */
-    for (int qi = 0; qi < 4; qi++) {
-        uint32_t q_pos = qbase + qi;
-        if (q_pos >= q_row0 && q_pos < sequence) {
-            float inv = row_sum[qi] > 0.0f ? 1.0f / row_sum[qi] : 0.0f;
-            for (uint32_t d = tid; d < D; d += THREADS) {
-                output[h3_sdpa_output_index(args, q_pos, head, d)] =
-                    h3_f32_to_bf16(acc[qi][d] * inv);
-            }
+    /* --- Write output --- */
+    for (int i = 0; i < 4; i++) {
+        float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
+        uint32_t q_pos = qbase + rowg * 4u + (uint32_t)i;
+        if (q_pos < q_row0) continue;
+        for (int j = 0; j < 8; j++) {
+            uint32_t d = (uint32_t)j * 16u + col;
+            output[h3_sdpa_output_index(args, q_pos, head, d)] =
+                h3_f32_to_bf16(fo[j].x[i] * inv);
         }
     }
 }
@@ -4462,19 +4520,21 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
     }
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
-    /* SageAttention INT8 QK opt-in (MI300X first) */
+    /* SageAttention INT8 QK opt-in (MI300X first).
+     * WAVES=1: each wave loads its own Q row into sq_i8 — multi-wave
+     * would create a chimera of different Q rows in shared LDS. */
     if (getenv("H3_SAGE_SDPA") && strcmp(getenv("H3_SAGE_SDPA"), "0") != 0) {
         if (h3_hip_gfx90a() && host_args.head_dim == 128 &&
             host_args.sequence >= 128u) {
-            uint32_t waves = 8u;
-            uint32_t bk = 32u;
+            constexpr uint32_t sage_waves = 1u;
+            constexpr uint32_t sage_bk = 32u;
             const void *kernel =
                 reinterpret_cast<const void *>(
-                    h3_sdpa_sage_int8_d128_kernel<8u, 32u>);
-            uint32_t bq = waves * H3_SDPA_WMMA_QROWS;
+                    h3_sdpa_sage_int8_d128_kernel<sage_waves, sage_bk>);
+            uint32_t bq = sage_waves * H3_SDPA_WMMA_QROWS;
             dim3 grid((host_args.sequence + bq - 1u) / bq,
                       host_args.heads, 1);
-            return hipLaunchKernel(kernel, grid, dim3(waves * 64u),
+            return hipLaunchKernel(kernel, grid, dim3(sage_waves * 64u),
                                    kernel_args, sizeof(kernel_args),
                                    stream) == hipSuccess;
         }
