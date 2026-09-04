@@ -1998,6 +1998,7 @@ __global__ void h3_quantize_bf16_fp8_rows_kernel(
     const uint16_t *input, void *output, float *scales,
     h3_int8_quant_args args) {
     __shared__ float warp_max[16];
+    __shared__ float warp_sum[16];
     uint32_t row = blockIdx.x;
     uint32_t tid = threadIdx.x;
     uint32_t threads = blockDim.x;
@@ -2009,6 +2010,7 @@ __global__ void h3_quantize_bf16_fp8_rows_kernel(
         return;
     }
     float local_max = 0.0f;
+    float local_sum = 0.0f;
     if ((args.columns & 3u) == 0u) {
         for (uint32_t column = tid * 4u; column < args.columns;
              column += threads * 4u) {
@@ -2018,31 +2020,49 @@ __global__ void h3_quantize_bf16_fp8_rows_kernel(
             uint16_t a1 = (uint16_t)(packed.x >> 16);
             uint16_t a2 = (uint16_t)(packed.y & 0xffffu);
             uint16_t a3 = (uint16_t)(packed.y >> 16);
-            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a0)));
-            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a1)));
-            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a2)));
-            local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(a3)));
+            float v0 = fabsf(h3_bf16_to_f32(a0));
+            float v1 = fabsf(h3_bf16_to_f32(a1));
+            float v2 = fabsf(h3_bf16_to_f32(a2));
+            float v3 = fabsf(h3_bf16_to_f32(a3));
+            local_max = fmaxf(local_max, fmaxf(fmaxf(v0, v1), fmaxf(v2, v3)));
+            local_sum += v0 + v1 + v2 + v3;
         }
     } else {
-        for (uint32_t column = tid; column < args.columns; column += threads)
-            local_max = fmaxf(local_max,
-                              fabsf(h3_bf16_to_f32(input[base + column])));
+        for (uint32_t column = tid; column < args.columns; column += threads) {
+            float v = fabsf(h3_bf16_to_f32(input[base + column]));
+            local_max = fmaxf(local_max, v);
+            local_sum += v;
+        }
     }
 #pragma unroll
-    for (int offset = 16; offset > 0; offset >>= 1)
+    for (int offset = 16; offset > 0; offset >>= 1) {
         local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
-    if ((tid & 31u) == 0u) warp_max[tid >> 5] = local_max;
+        local_sum += h3_shfl_xor32(local_sum, offset);
+    }
+    if ((tid & 31u) == 0u) {
+        warp_max[tid >> 5] = local_max;
+        warp_sum[tid >> 5] = local_sum;
+    }
     __syncthreads();
     if (tid < 16u) {
-        float value = (tid < (threads >> 5)) ? warp_max[tid] : 0.0f;
+        float value_max = (tid < (threads >> 5)) ? warp_max[tid] : 0.0f;
+        float value_sum = (tid < (threads >> 5)) ? warp_sum[tid] : 0.0f;
 #pragma unroll
-        for (int offset = 8; offset > 0; offset >>= 1)
-            value = fmaxf(value, h3_shfl_xor32(value, offset));
-        if (tid == 0) warp_max[0] = value;
+        for (int offset = 8; offset > 0; offset >>= 1) {
+            value_max = fmaxf(value_max, h3_shfl_xor32(value_max, offset));
+            value_sum += h3_shfl_xor32(value_sum, offset);
+        }
+        if (tid == 0) {
+            warp_max[0] = value_max;
+            warp_sum[0] = value_sum;
+        }
     }
     __syncthreads();
+    /* Use per-row absmax with clip factor. For FP8 E4M3 FNUZ, the wider
+     * range (±240) means we can afford a conservative clip. The clip factor
+     * reduces the impact of single-element outliers that would otherwise
+     * compress the entire row's dynamic range. */
     float clipped_max = warp_max[0] * args.clip;
-    /* FP8 E4M3 FNUZ max is 240.0, not 127.0 as INT8. */
     static const float FP8_MAX = 240.0f;
     float scale = clipped_max > 0.0f ? clipped_max / FP8_MAX : 1.0f / FP8_MAX;
     float inverse = clipped_max > 0.0f ? FP8_MAX / clipped_max : FP8_MAX;
