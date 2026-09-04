@@ -592,6 +592,11 @@ struct h3_gpu {
     /* Total denoise steps (set by h3_dit_forward). Used by Sage dispatch to
      * decide INT8 (preview, steps<=2) vs BF16 MFMA (production, steps>2). */
     uint32_t dit_steps;
+    /* SageAttention v7 scratch: pre-quantized INT8 K + per-tile scales. */
+    void *sage_k_i8;
+    size_t sage_k_i8_bytes;
+    float *sage_k_scales;
+    size_t sage_k_scales_bytes;
     void *nax_fc1_temp;
     size_t nax_fc1_temp_elems;
 };
@@ -986,6 +991,8 @@ void h3_gpu_free(h3_gpu *gpu) {
     h3_hip_profile_emit_load(ctx);
     h3_hip_profile_destroy_ops(ctx);
     if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
+    if (ctx->sage_k_i8) hipFree(ctx->sage_k_i8);
+    if (ctx->sage_k_scales) hipFree(ctx->sage_k_scales);
     if (ctx->nax_fc1_temp) h3_gpu_tensor_free((h3_gpu_tensor *)ctx->nax_fc1_temp);
     hipStreamDestroy(ctx->stream);
     free(ctx);
@@ -2702,9 +2709,65 @@ int h3_gpu_vae_encoder_group_norm_silu_f32(
 void h3_gpu_set_dit_steps(h3_gpu *gpu, uint32_t steps) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     if (ctx) ctx->dit_steps = steps;
-    /* Also set a global for h3_launch_sdpa_bf16 to read (Sage dispatch). */
-    extern uint32_t h3_sage_dit_steps;
-    h3_sage_dit_steps = steps;
+}
+
+/* SageAttention v7 dispatch: pre-quantize K to INT8 global scratch once,
+ * then run the multi-wave INT8 QK^T kernel. Returns 1 if dispatched.
+ * Requires head-major K/V (args->kv_head_major already set by caller). */
+static int h3_hip_try_sage_sdpa(struct h3_gpu *ctx, const uint16_t *query,
+                                const uint16_t *key_hm,
+                                const uint16_t *value_hm, uint16_t *output,
+                                h3_sdpa_args *args) {
+    const char *env = getenv("H3_SAGE_SDPA");
+    if (!env || strcmp(env, "0") == 0) return 0;
+    if (!args->kv_head_major) return 0;
+    if (args->head_dim != 128u || args->sequence < 128u) return 0;
+    /* INT8 Sage quality compounds across steps; default to preview (<=2).
+     * Override with H3_SAGE_MAX_STEPS=N. */
+    uint32_t max_steps = 2u;
+    const char *ms = getenv("H3_SAGE_MAX_STEPS");
+    if (ms && *ms) {
+        unsigned long v = strtoul(ms, NULL, 10);
+        if (v > 0 && v < 1000) max_steps = (uint32_t)v;
+    }
+    if (ctx->dit_steps > max_steps) return 0;
+    static int is_cdna = -1;
+    if (is_cdna < 0) {
+        hipDeviceProp_t props;
+        int device = 0;
+        is_cdna = hipGetDevice(&device) == hipSuccess &&
+                  hipGetDeviceProperties(&props, device) == hipSuccess &&
+                  (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
+                   strncmp(props.gcnArchName, "gfx942", 6) == 0);
+    }
+    if (!is_cdna) return 0;
+    size_t k_i8_need = (size_t)args->sequence * args->heads * args->head_dim;
+    size_t sc_need = (size_t)args->heads *
+                     ((args->sequence + 31u) / 32u) * sizeof(float);
+    if (k_i8_need > ctx->sage_k_i8_bytes) {
+        void *p = NULL;
+        if (hipMalloc(&p, k_i8_need) != hipSuccess) return 0;
+        if (ctx->sage_k_i8) hipFree(ctx->sage_k_i8);
+        ctx->sage_k_i8 = p;
+        ctx->sage_k_i8_bytes = k_i8_need;
+    }
+    if (sc_need > ctx->sage_k_scales_bytes) {
+        void *p = NULL;
+        if (hipMalloc(&p, sc_need) != hipSuccess) return 0;
+        if (ctx->sage_k_scales) hipFree(ctx->sage_k_scales);
+        ctx->sage_k_scales = (float *)p;
+        ctx->sage_k_scales_bytes = sc_need;
+    }
+    if (!h3_launch_sage_quant_k_int8(key_hm, (int8_t *)ctx->sage_k_i8,
+                                     ctx->sage_k_scales, args->sequence,
+                                     args->heads, args->head_dim,
+                                     ctx->stream))
+        return 0;
+    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_sage_int8(
+                                  query, (const int8_t *)ctx->sage_k_i8,
+                                  ctx->sage_k_scales, value_hm, output, args,
+                                  ctx->stream),
+                              "h3_sdpa_sage_int8");
 }
 
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -2760,6 +2823,11 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         value_ptr = value_hm;
         args.kv_head_major = 1u;
     }
+    if (args.kv_head_major &&
+        h3_hip_try_sage_sdpa(ctx, (const uint16_t *)tensor_ptr(query)->data,
+                             key_ptr, value_ptr,
+                             (uint16_t *)tensor_ptr(output)->data, &args))
+        return 1;
     return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
         (const uint16_t *)tensor_ptr(query)->data, key_ptr, value_ptr,
         (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
@@ -2874,6 +2942,11 @@ int h3_gpu_sdpa_bf16_head_major_output(h3_gpu *gpu, h3_gpu_tensor *output,
         value_ptr = value_hm;
         args.kv_head_major = 1u;
     }
+    if (args.kv_head_major &&
+        h3_hip_try_sage_sdpa(ctx, (const uint16_t *)tensor_ptr(query)->data,
+                             key_ptr, value_ptr,
+                             (uint16_t *)tensor_ptr(output)->data, &args))
+        return 1;
     return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
         (const uint16_t *)tensor_ptr(query)->data, key_ptr, value_ptr,
         (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),

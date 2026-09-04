@@ -2252,22 +2252,82 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     }
 }
 
-/* SageAttention INT8 QK kernel v5 (MI300X / gfx90a).
+/* SageAttention INT8 QK kernel v7 — multi-wave, pre-quantized K.
+ *
+ * Design (v7 fixes vs v6):
+ *   1. Q addressing fixed: query row stride is heads*D (v6 used D — wrong rows!).
+ *   2. K pre-quantized ONCE per call into global INT8 (v6 re-quantized K per
+ *      Q block — S/128x redundant).
+ *   3. Q lives in registers (4x int64 per lane), not LDS — saves 16KB LDS and
+ *      removes Q barriers.
+ *   4. LDS footprint ~20KB (same as BF16 baseline) -> 3 blocks/CU occupancy.
+ *
+ * Multi-wave (mirrors BF16 MFMA baseline):
+ *   - Q: per-wave registers, quantize once per block, zero barriers
+ *   - K: shared LDS sk_i8[BK][D] copied from global INT8, 1 barrier per tile
+ *   - V: shared LDS sv[BK*LD] BF16 (unchanged from baseline)
+ *   - Grid: bq = WAVES * QROWS (128 rows per block with WAVES=8)
  *
  * Wave64 thread mapping: col = lane & 15, rowg = lane >> 4, QROWS = 16.
- * Per-ROW INT8 quantization for Q and K (one absmax scale per 128-dim row).
- * INT8 MFMA (v_mfma_i32_16x16x32_i8) for 128-dim dot product.
- * Dequant to FP32 for online softmax. FP32 PV accumulation via rocWMMA.
- *
+ * gfx942: v_mfma_i32_16x16x32_i8 (K=32). gfx90a: v_mfma_i32_16x16x16i8 (K=16).
  * Opt-in: H3_SAGE_SDPA=1. Default off.
- *
- * Data layout: [sequence, heads, head_dim] (row-major, head_dim=128)
  */
+
+/* Pre-quantize head-major BF16 K to INT8 + per-tile absmax scales.
+ * Grid: (ceil(sequence/BK), heads). Block: 256 threads.
+ * key_hm: [head][sequence][D] BF16.  k_i8: same layout INT8.
+ * scales: [head][ceil(sequence/BK)] float (absmax/127). */
+__global__ void __launch_bounds__(256)
+h3_sage_quant_k_int8_kernel(const uint16_t *key_hm, int8_t *k_i8,
+                            float *scales, uint32_t sequence,
+                            uint32_t head_dim) {
+    constexpr uint32_t TILE = 32u;
+    const uint32_t tile = blockIdx.x;
+    const uint32_t head = blockIdx.y;
+    const uint32_t D = head_dim;
+    const size_t base = ((size_t)head * sequence + tile * TILE) * D;
+    const uint16_t *kp = key_hm + base;
+    int8_t *out = k_i8 + base;
+    const uint32_t rows = min(TILE, sequence - tile * TILE);
+
+    float local = 0.0f;
+    for (uint32_t idx = threadIdx.x; idx < TILE * D; idx += 256u) {
+        uint32_t r = idx / D;
+        if (r < rows) {
+            float v = fabsf(h3_bf16_to_f32(kp[idx]));
+            local = fmaxf(local, v);
+        }
+    }
+    for (uint32_t off = 16; off > 0; off >>= 1)
+        local = fmaxf(local, __shfl_xor(local, off, 16));
+    __shared__ float warp_maxes[8];
+    if ((threadIdx.x & 31u) == 0u) warp_maxes[threadIdx.x >> 5] = local;
+    __syncthreads();
+    if (threadIdx.x == 0u) {
+        float m = 0.0f;
+        for (uint32_t i = 0; i < 8u; i++) m = fmaxf(m, warp_maxes[i]);
+        scales[head * gridDim.x + tile] = m > 0.0f ? m / 127.0f : 1.0f;
+    }
+    __syncthreads();
+    float scale = scales[head * gridDim.x + tile];
+    for (uint32_t idx = threadIdx.x; idx < TILE * D; idx += 256u) {
+        uint32_t r = idx / D;
+        if (r < rows) {
+            float v = h3_bf16_to_f32(kp[idx]);
+            float q = roundf(v / scale);
+            q = fminf(fmaxf(q, -127.0f), 127.0f);
+            out[idx] = (int8_t)q;
+        } else {
+            out[idx] = 0;
+        }
+    }
+}
+
 template <uint32_t WAVES, uint32_t BK>
 __global__ void __launch_bounds__(WAVES * 64u)
-h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
-                               const uint16_t *value, uint16_t *output,
-                               h3_sdpa_args args) {
+h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
+                              const float *k_scales, const uint16_t *value,
+                              uint16_t *output, h3_sdpa_args args) {
     constexpr uint32_t D = 128u;
     constexpr uint32_t LD = H3_SDPA_WMMA_LD;
     constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
@@ -2275,20 +2335,15 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
     constexpr uint32_t NT = BK / 16u;
     constexpr float I8_MAX = 127.0f;
     typedef rocwmma::bfloat16_t bf16;
-    /* ISA-specific INT8 MFMA parameters:
-     * gfx942 (CDNA3): v_mfma_i32_16x16x32_i8, K=32, D_TILES=4
-     * gfx90a (CDNA2): v_mfma_i32_16x16x16_i8, K=16, D_TILES=8
-     */
 #if defined(__gfx942__)
     constexpr uint32_t MFMA_K = 32u;
-    constexpr uint32_t D_TILES = D / MFMA_K;  /* 4 */
 #elif defined(__gfx90a__)
     constexpr uint32_t MFMA_K = 16u;
-    constexpr uint32_t D_TILES = D / MFMA_K;  /* 8 */
 #else
     constexpr uint32_t MFMA_K = 32u;
-    constexpr uint32_t D_TILES = D / MFMA_K;
 #endif
+    constexpr uint32_t D_TILES = D / MFMA_K;
+    constexpr uint32_t TILES_TOTAL = 0; /* unused, placate compilers */
 
     const uint32_t tid = threadIdx.x;
     const uint32_t wave = tid >> 6;
@@ -2297,15 +2352,16 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
     const uint32_t rowg = lane >> 4;
     const uint32_t head = blockIdx.y;
     const uint32_t sequence = args.sequence;
+    const uint32_t num_tiles = (sequence + BK - 1u) / BK;
 
     uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
     uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
 
-    /* --- Shared memory --- */
-    __shared__ int8_t sq_i8[QROWS][D];
-    __shared__ float sq_scale;
-    __shared__ int8_t sk_i8[BK][D];
-    __shared__ float sk_scale;
+    /* --- Shared memory (K int8 + V bf16 + P bf16): ~20KB for WAVES=8 ---
+     * SK_LD pads the K row stride to 136B so the 16-lane int64 MFMA reads
+     * hit distinct LDS banks (unpadded 128B stride = 16-way bank conflict). */
+    constexpr uint32_t SK_LD = D + 8u;
+    __shared__ int8_t sk_i8[BK * SK_LD];
     __shared__ __align__(16) uint16_t sv[BK * LD];
     __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
 
@@ -2313,48 +2369,63 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
     const size_t kv_base = args.kv_head_major
                                ? (size_t)head * sequence * D
                                : (size_t)head * D;
-    const uint16_t *qp = query + (size_t)(qbase * args.heads + head) * D;
-    const uint16_t *kp = key + kv_base;
+    /* query layout: [sequence][heads][D], row stride = heads * D */
+    const uint16_t *qp = query + ((size_t)qbase * args.heads + head) * D;
+    const int8_t *kp = key_i8 + (size_t)head * sequence * D;
     const uint16_t *vp = value + kv_base;
 
-    /* --- Load Q tile and quantize to INT8 (per-tile absmax, 1 barrier) --- */
+    /* --- Per-wave Q: load BF16 from global, quantize to INT8 in registers.
+     * Lane l holds row (l&15). Per MFMA tile the lane packs the columns it
+     * feeds to the instruction:
+     *   gfx942 (K=32): 8 int8 at cols dt*32 + (l>>4)*8   -> int64
+     *   gfx90a (K=16): 4 int8 at cols dt*16 + (l>>4)*4   -> int32
+     * No barrier: per-wave shuffle reduction only. --- */
+#if defined(__gfx90a__)
+    constexpr uint32_t QCOLS = 4u;
+    int32_t qreg[D_TILES];
+#else
+    constexpr uint32_t QCOLS = 8u;
+    int64_t qreg[D_TILES];
+#endif
     {
+        float qv[D_TILES][QCOLS];
         float local_max = 0.0f;
-        for (uint32_t idx = tid; idx < QROWS * D; idx += THREADS) {
-            uint32_t r = idx / D;
-            uint32_t d = idx % D;
-            if (qbase + r < sequence) {
-                float v = fabsf(h3_bf16_to_f32(qp[r * D + d]));
-                local_max = fmaxf(local_max, v);
+        uint32_t r = lane & 15u;
+        uint32_t c0 = (lane >> 4) * QCOLS;
+#pragma unroll
+        for (uint32_t dt = 0; dt < D_TILES; dt++) {
+            uint32_t d = dt * MFMA_K + c0;
+#pragma unroll
+            for (uint32_t c = 0; c < QCOLS; c++) {
+                float v = (qbase + r < sequence)
+                    ? h3_bf16_to_f32(qp[(size_t)r * args.heads * D + d + c])
+                    : 0.0f;
+                qv[dt][c] = v;
+                local_max = fmaxf(local_max, fabsf(v));
             }
         }
-        for (uint32_t off = 16; off > 0; off >>= 1)
-            local_max = fmaxf(local_max, __shfl_xor(local_max, off, 16));
-        __shared__ float warp_maxes[THREADS / 32u];
-        if ((tid & 31u) == 0u) warp_maxes[tid >> 5] = local_max;
-        __syncthreads();
-        if (tid == 0u) {
-            float m = 0.0f;
-            for (uint32_t i = 0; i < THREADS / 32u; i++)
-                m = fmaxf(m, warp_maxes[i]);
-            sq_scale = m > 0.0f ? m / I8_MAX : 1.0f;
-        }
-        __syncthreads();
-        float scale = sq_scale;
-        for (uint32_t idx = tid; idx < QROWS * D; idx += THREADS) {
-            uint32_t r = idx / D;
-            uint32_t d = idx % D;
-            if (qbase + r < sequence) {
-                float v = h3_bf16_to_f32(qp[r * D + d]);
-                float q = roundf(v / scale);
+        for (uint32_t off = 32; off > 0; off >>= 1)
+            local_max = fmaxf(local_max, __shfl_xor(local_max, off, 32));
+        float qscale = local_max > 0.0f ? local_max / I8_MAX : 1.0f;
+#pragma unroll
+        for (uint32_t dt = 0; dt < D_TILES; dt++) {
+#if defined(__gfx90a__)
+            int32_t packed = 0;
+#else
+            int64_t packed = 0;
+#endif
+#pragma unroll
+            for (uint32_t c = 0; c < QCOLS; c++) {
+                float q = roundf(qv[dt][c] / qscale);
                 q = fminf(fmaxf(q, -I8_MAX), I8_MAX);
-                sq_i8[r][d] = (int8_t)q;
-            } else {
-                sq_i8[r][d] = 0;
+                packed |= (int64_t)(uint8_t)(int8_t)q << (c * 8u);
             }
+            qreg[dt] = packed;
         }
+        if (lane == 0u) ((float *)sp[wave])[0] = qscale;
     }
     __syncthreads();
+    const float q_scale = ((const float *)sp[wave])[0];
 
     /* --- PV accumulators + softmax state --- */
     rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[8];
@@ -2365,8 +2436,20 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
         row_sum[i] = 0.0f;
     }
 
-    /* --- V load helper (BF16 with LD padding for MFMA) --- */
-    auto load_v = [&](uint32_t k0) {
+    /* --- Cooperative tile load: K int8 (8B/thread) + V bf16 (8B/thread) --- */
+    auto load_kv = [&](uint32_t k0) {
+        /* K: BK*D = 4096 int8 = 4096 bytes; 512 threads x 8 bytes = 4096 */
+        for (uint32_t idx = tid; idx < (BK * D) / 8u; idx += THREADS) {
+            uint32_t r = (idx * 8u) / D;
+            uint32_t d = (idx * 8u) % D;
+            uint32_t g = k0 + r;
+            int64_t raw = 0;
+            if (g < sequence)
+                raw = *reinterpret_cast<const int64_t *>(
+                    kp + (size_t)g * D + d);
+            *reinterpret_cast<int64_t *>(&sk_i8[r * SK_LD + d]) = raw;
+        }
+        /* V: BK*D bf16, uint2 (8B) per thread per iter (same as baseline) */
         for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
             uint32_t r = idx >> 7;
             uint32_t d = idx & 127u;
@@ -2382,102 +2465,58 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
     };
 
     /* --- Main loop --- */
-    load_v(0);
+    load_kv(0);
     __syncthreads();
 
     for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
-        /* Load K tile + quantize to INT8 (per-tile absmax, 1 barrier) */
-        {
-            float local_max = 0.0f;
-            for (uint32_t idx = tid; idx < BK * D; idx += THREADS) {
-                uint32_t r = idx / D;
-                uint32_t d = idx % D;
-                uint32_t g = k0 + r;
-                if (g < sequence) {
-                    float v = fabsf(h3_bf16_to_f32(kp[(size_t)g * kv_stride + d]));
-                    local_max = fmaxf(local_max, v);
-                }
-            }
-            for (uint32_t off = 16; off > 0; off >>= 1)
-                local_max = fmaxf(local_max, __shfl_xor(local_max, off, 16));
-            __shared__ float k_warp_maxes[THREADS / 32u];
-            if ((tid & 31u) == 0u) k_warp_maxes[tid >> 5] = local_max;
-            __syncthreads();
-            if (tid == 0u) {
-                float m = 0.0f;
-                for (uint32_t i = 0; i < THREADS / 32u; i++)
-                    m = fmaxf(m, k_warp_maxes[i]);
-                sk_scale = m > 0.0f ? m / I8_MAX : 1.0f;
-            }
-            __syncthreads();
-            float scale = sk_scale;
-            for (uint32_t idx = tid; idx < BK * D; idx += THREADS) {
-                uint32_t r = idx / D;
-                uint32_t d = idx % D;
-                uint32_t g = k0 + r;
-                if (g < sequence) {
-                    float v = h3_bf16_to_f32(kp[(size_t)g * kv_stride + d]);
-                    float q = roundf(v / scale);
-                    q = fminf(fmaxf(q, -I8_MAX), I8_MAX);
-                    sk_i8[r][d] = (int8_t)q;
-                } else {
-                    sk_i8[r][d] = 0;
-                }
-            }
-        }
-        __syncthreads();
+        const float k_scale = k_scales[(size_t)head * num_tiles + k0 / BK];
 
-        /* --- INT8 QK^T via MFMA --- */
-        /* gfx942: v_mfma_i32_16x16x32_i8, K=32, loads int64 per thread
-         * gfx90a: v_mfma_i32_16x16x16_i8, K=16, loads int32 per thread */
+        /* --- INT8 QK^T via MFMA (Q from registers, K from LDS) --- */
         typedef int32_t int32x4_t __attribute__((__vector_size__(16)));
         float alpha[4];
         int32x4_t score_acc[NT];
         for (uint32_t t = 0; t < NT; t++)
             score_acc[t] = {0, 0, 0, 0};
 
+        uint32_t a_row = lane & 15u;
+        uint32_t b_krow = lane & 15u;
+#pragma unroll
         for (uint32_t dt = 0; dt < D_TILES; dt++) {
             uint32_t d_base = dt * MFMA_K;
-            uint32_t a_row = lane & 15u;
-            uint32_t a_col = (lane >> 4) * (MFMA_K / 4u);
 #if defined(__gfx942__)
-            int64_t qa = *reinterpret_cast<const int64_t *>(
-                &sq_i8[a_row][d_base + a_col]);
+            int64_t qa = qreg[dt];
+            uint32_t b_kcol = (lane >> 4) * 8u;
+#pragma unroll
             for (uint32_t g = 0; g < NT; g++) {
-                uint32_t b_krow = lane & 15u;
-                uint32_t b_kcol = (lane >> 4) * 8u;
                 int64_t kb = *reinterpret_cast<const int64_t *>(
-                    &sk_i8[g * 16u + b_krow][d_base + b_kcol]);
+                    &sk_i8[(g * 16u + b_krow) * SK_LD + d_base + b_kcol]);
                 score_acc[g] = __builtin_amdgcn_mfma_i32_16x16x32_i8(
                     qa, kb, score_acc[g], 0, 0, 0);
             }
 #elif defined(__gfx90a__)
-            int32_t qa = *reinterpret_cast<const int32_t *>(
-                &sq_i8[a_row][d_base + a_col]);
+            int32_t qa = qreg[dt];
+            uint32_t b_kcol = (lane >> 4) * 4u;
+#pragma unroll
             for (uint32_t g = 0; g < NT; g++) {
-                uint32_t b_krow = lane & 15u;
-                uint32_t b_kcol = (lane >> 4) * 4u;
                 int32_t kb = *reinterpret_cast<const int32_t *>(
-                    &sk_i8[g * 16u + b_krow][d_base + b_kcol]);
+                    &sk_i8[(g * 16u + b_krow) * SK_LD + d_base + b_kcol]);
                 score_acc[g] = __builtin_amdgcn_mfma_i32_16x16x16i8(
                     qa, kb, score_acc[g], 0, 0, 0);
             }
 #endif
         }
 
-        /* Extract scores + online softmax + PV */
+        /* Extract scores + online softmax */
         float s[NT];
         for (int i = 0; i < 4; i++) {
             float m = -1e30f;
-            uint32_t qi = rowg * 4u + (uint32_t)i;
             for (uint32_t t = 0; t < NT; t++) {
                 uint32_t k_pos = k0 + t * 16u + col;
                 if (k_pos >= sequence) {
                     s[t] = -1e30f;
                 } else {
                     s[t] = (float)score_acc[t][i] *
-                            sq_scale * sk_scale *
-                            args.scale;
+                            q_scale * k_scale * args.scale;
                 }
                 m = fmaxf(m, s[t]);
             }
@@ -2505,7 +2544,7 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
             for (int i = 0; i < 4; i++)
                 fo[j].x[i] *= alpha[i];
 
-        /* --- PV via BF16 MFMA --- */
+        /* --- PV via BF16 MFMA (unchanged from baseline) --- */
         __builtin_amdgcn_wave_barrier();
         for (uint32_t t = 0; t < NT; t++) {
             rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
@@ -2522,11 +2561,11 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
             }
         }
 
-        /* Load next V tile */
+        /* Load next K/V tile */
         uint32_t k_next = k0 + BK;
         if (k_next < sequence) {
             __syncthreads();
-            load_v(k_next);
+            load_kv(k_next);
         }
         __syncthreads();
     }
@@ -4537,9 +4576,45 @@ extern "C" int h3_hip_rdna_wmma_default(void) {
     return cached;
 }
 
-/* Global set by h3_gpu_set_dit_steps() before each forward pass.
- * h3_launch_sdpa_bf16 reads this to decide INT8 preview vs BF16 production. */
-uint32_t h3_sage_dit_steps = 0u;
+extern "C" int h3_launch_sage_quant_k_int8(const uint16_t *key_hm,
+                                           int8_t *k_i8, float *scales,
+                                           uint32_t sequence, uint32_t heads,
+                                           uint32_t head_dim,
+                                           hipStream_t stream) {
+    if (head_dim != 128u || !sequence || !heads) return 0;
+    constexpr uint32_t TILE = 32u;
+    dim3 grid((sequence + TILE - 1u) / TILE, heads, 1);
+    void *kernel_args[] = {&key_hm, &k_i8, &scales,
+                           (void *)&sequence, (void *)&head_dim};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_sage_quant_k_int8_kernel),
+               grid, dim3(256u, 1, 1), kernel_args, sizeof(kernel_args),
+               stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_sdpa_sage_int8(const uint16_t *query,
+                                        const int8_t *key_i8,
+                                        const float *k_scales,
+                                        const uint16_t *value,
+                                        uint16_t *output,
+                                        const h3_sdpa_args *args,
+                                        hipStream_t stream) {
+    if (!args->sequence || !args->heads || args->head_dim != 128u) return 0;
+    if (!h3_hip_gfx90a()) return 0;
+    h3_sdpa_args host_args = *args;
+    void *kernel_args[] = {&query, &key_i8, &k_scales, &value, &output,
+                           &host_args};
+    constexpr uint32_t sage_waves = 8u;
+    constexpr uint32_t sage_bk = 32u;
+    const void *kernel =
+        reinterpret_cast<const void *>(
+            h3_sdpa_sage_int8_d128_kernel<sage_waves, sage_bk>);
+    uint32_t bq = sage_waves * H3_SDPA_WMMA_QROWS;
+    dim3 grid((host_args.sequence + bq - 1u) / bq, host_args.heads, 1);
+    return hipLaunchKernel(kernel, grid, dim3(sage_waves * 64u),
+                           kernel_args, sizeof(kernel_args),
+                           stream) == hipSuccess;
+}
 
 extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, uint16_t *output,
@@ -4551,30 +4626,6 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
     }
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
-    /* SageAttention INT8 QK opt-in (MI300X first).
-     * Adaptive dispatch: INT8 for preview (steps<=2, PSNR ~21 dB),
-     * BF16 MFMA fallback for production (steps>2, deterministic).
-     * WAVES=1: each wave loads its own Q row into sq_i8 — multi-wave
-     * would create a chimera of different Q rows in shared LDS. */
-    if (getenv("H3_SAGE_SDPA") && strcmp(getenv("H3_SAGE_SDPA"), "0") != 0) {
-        /* INT8 Sage for preview mode (steps <= 2). BF16 MFMA fallback for
-         * production (steps > 2) — INT8 error compounds to ~11 dB at 20 steps. */
-        if (h3_hip_gfx90a() && host_args.head_dim == 128 &&
-            host_args.sequence >= 128u && h3_sage_dit_steps <= 2u) {
-            constexpr uint32_t sage_waves = 1u;
-            constexpr uint32_t sage_bk = 32u;
-            const void *kernel =
-                reinterpret_cast<const void *>(
-                    h3_sdpa_sage_int8_d128_kernel<sage_waves, sage_bk>);
-            uint32_t bq = sage_waves * H3_SDPA_WMMA_QROWS;
-            dim3 grid((host_args.sequence + bq - 1u) / bq,
-                      host_args.heads, 1);
-            return hipLaunchKernel(kernel, grid, dim3(sage_waves * 64u),
-                                   kernel_args, sizeof(kernel_args),
-                                   stream) == hipSuccess;
-        }
-        /* Fallback to BF16 flash for other ISAs or short sequences */
-    }
     if (!getenv("H3_SDPA_LEGACY")) {
         const char *cdna_flash = getenv("H3_SDPA_CDNA_FLASH");
         if (h3_hip_gfx90a() && host_args.head_dim == 128 &&

@@ -2996,6 +2996,7 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
     int previous_evaluated = -1;
     unsigned pending_evaluations = 0;
     int command_active = 0;
+    h3_gpu_set_dit_steps(dit->gpu, (uint32_t)dit->sigmas.steps);
     for (int step = 0; step < dit->sigmas.steps && ok; step++) {
         report(progress, progress_opaque, "denoise enqueue", step,
                dit->sigmas.steps);
