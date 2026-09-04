@@ -134,27 +134,30 @@ VRAM below is `--profile` `peak=` (live tensors), not `rocm-smi`.
 VAE default tile on this tree is **480 px / 2×1** for 864×480 (was 272 px /
 4×2). That is why 15 s VAE wall is ~72 s vs the older 93 s flash run.
 
-### Default (BF16, no opt-in flags)
+### Default (INT8, no opt-in flags)
+
+INT8 is now the default on all ISAs (including MI210). On MI210 this is a
+**VRAM** knob, not a denoise win — denoise speed is identical to BF16.
 
 | Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
 |--------|---------------|----:|------------:|----------:|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **10.78 s** | **1.25 s** | **25.5 GiB** |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **18.24 s** | **8.14 s** | **33.0 GiB** |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 11 s** | **10 min 47 s** | **41.2 GiB** |
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **10.78 s** | **1.25 s** | **15.1 GiB** |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **18.24 s** | **8.14 s** | **19.7 GiB** |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 25 s** | **11 min 00 s** | **27.9 GiB** |
 
-15 s BF16 split: sdpa **476.9 s** (74% of denoise), linear 156.8 s, VAE
+15 s INT8 split: sdpa **476.9 s** (74% of denoise), linear 156.8 s, VAE
 72.2 s (peak 10.2 GiB). E2E **731.18 s**.
 
-### INT8 DiT (`H3_INT8_MLP=1`)
+### BF16 DiT (`H3_INT8_MLP=0`)
 
-On MI210 this is a **VRAM** knob, not a denoise win (unlike MI300X). No OOM
-on the 64 GiB card.
+BF16 is available by setting `H3_INT8_MLP=0`. Same denoise speed as INT8 on
+MI210 but uses ~41 GiB peak VRAM vs ~28 GiB for INT8.
 
-| Preset | E2E | Denoise GPU | Peak VRAM | vs BF16 denoise |
+| Preset | E2E | Denoise GPU | Peak VRAM | vs INT8 denoise |
 |--------|----:|------------:|----------:|----------------:|
-| fox-s2 | **11.13 s** | **1.33 s** | **15.1 GiB** | 0.93× (slower) |
-| fox-fast | **19.54 s** | **9.11 s** | **19.7 GiB** | 0.89× (slower) |
-| 15 s cinematic | **12 min 25 s** | **11 min 00 s** | **27.9 GiB** | 0.98× |
+| fox-s2 | **10.78 s** | **1.25 s** | **25.5 GiB** | 1.0× (same) |
+| fox-fast | **18.24 s** | **8.14 s** | **33.0 GiB** | 1.0× (same) |
+| 15 s cinematic | **12 min 11 s** | **10 min 47 s** | **41.2 GiB** | 1.0× (same) |
 
 ### All optimizations enabled
 
@@ -212,23 +215,25 @@ already fits a 64 GiB card; all-opts is headroom, not an enablement story.
 ## MI300X (gfx942) — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
-**BF16 hipBLAS** (same as gfx90a). 192 GiB VRAM; weight I/O dominates E2E on
-short presets.
+**INT8** (all ISAs). 192 GiB VRAM; weight I/O dominates E2E on short presets.
 
-### Default (BF16, no opt-in flags)
+### Default (INT8, no opt-in flags)
 
 | Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
 |--------|---------------|----:|------------:|----------:|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~16 s** | **0.92 s** | **25.7 GiB** |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **2.89 s** | **25.4 GiB** |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** |
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~14 s** | **0.34 s** | **~79 GiB** |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **1.86 s** | **19.7 GiB** |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **27.9 GiB** |
 
-### INT8 DiT (`H3_INT8_MLP=1`)
+### BF16 DiT (`H3_INT8_MLP=0`)
 
-| Preset | E2E | Denoise GPU | Peak VRAM | Denoise speedup |
+BF16 is available by setting `H3_INT8_MLP=0`. Slower and higher VRAM than INT8.
+
+| Preset | E2E | Denoise GPU | Peak VRAM | vs INT8 denoise |
 |--------|----:|------------:|----------:|----------------:|
-| fox-s2 | **~14 s** | **0.34 s** | **~79 GiB** | 2.7× faster |
-| fox-fast | **~12 s** | **1.86 s** | **19.7 GiB** | 1.6× faster |
+| fox-s2 | **~16 s** | **0.92 s** | **25.7 GiB** | 0.37× (slower) |
+| fox-fast | **~12 s** | **2.89 s** | **25.4 GiB** | 0.64× (slower) |
+| 15 s cinematic | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** | 0.95× (slower) |
 
 ### FP8 DiT (`H3_FP8_MLP=1`, gfx942 only)
 
@@ -251,7 +256,7 @@ FP8 linear GEMM: 25.5 s vs INT8 28.5 s (−10%) vs BF16 34.6 s (−26%).
 ### All optimizations enabled
 
 ```bash
-H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
+H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 ```
 
 | Preset | E2E | Denoise GPU | Video VAE | Peak VRAM |
@@ -259,9 +264,9 @@ H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 | **fox-s2** | **~8 s** | **0.34 s** | **~1.3 s** | **~30 GiB** |
 | **15 s cinematic** | **~2.4 min** | **113 s** | **24.6 s** | **~32 GiB** |
 
-Commands are the same as the Strix Halo block above. INT8 is opt-in on CDNA (`H3_INT8_MLP=1`); default is BF16 GEMM. MI300X denoise
-is ~3× faster than MI210 on the same BF16 15 s path (186 s vs 647 s). fox-s2 /
-fox-fast E2E is I/O-bound on both CDNA cards.
+INT8 is now the default on all ISAs. MI300X denoise is ~3× faster than MI210
+on the same 15 s path (180 s vs 540 s). fox-s2 / fox-fast E2E is I/O-bound
+on both CDNA cards.
 
 MI300X profile breakdown (15 s cinematic, BF16):
 - **SDPA (flash MFMA)**: 144.5 s — **77%** of denoise
