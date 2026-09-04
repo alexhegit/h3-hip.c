@@ -2273,52 +2273,67 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
  * Opt-in: H3_SAGE_SDPA=1. Default off.
  */
 
-/* Pre-quantize head-major BF16 K to INT8 + per-tile absmax scales.
- * Grid: (ceil(sequence/BK), heads). Block: 256 threads.
- * key_hm: [head][sequence][D] BF16.  k_i8: same layout INT8.
- * scales: [head][ceil(sequence/BK)] float (absmax/127). */
-__global__ void __launch_bounds__(256)
-h3_sage_quant_k_int8_kernel(const uint16_t *key_hm, int8_t *k_i8,
-                            float *scales, uint32_t sequence,
-                            uint32_t head_dim) {
-    constexpr uint32_t TILE = 32u;
-    const uint32_t tile = blockIdx.x;
-    const uint32_t head = blockIdx.y;
-    const uint32_t D = head_dim;
-    const size_t base = ((size_t)head * sequence + tile * TILE) * D;
-    const uint16_t *kp = key_hm + base;
-    int8_t *out = k_i8 + base;
-    const uint32_t rows = min(TILE, sequence - tile * TILE);
+/* Sage v8 Phase 1: K-smoothing (per-channel mean subtraction).
+ *
+ * Transformer K has per-channel outlier biases; quantizing (K - mean_K)
+ * removes them and recovers most of INT8's accuracy loss (Sage paper).
+ *   QK^T = Q(K-mu)^T + Q.mu^T      (Q.mu is one scalar per Q row)
+ *
+ * Kernel 1: per-channel mean of K over the whole sequence.
+ * Grid: (heads). Block: 128 threads (one per channel).
+ * Each thread strides over rows accumulating its channel sum.
+ * k_mean: [heads][D] float. */
+__global__ void __launch_bounds__(128)
+h3_sage_k_mean_kernel(const uint16_t *key_hm, float *k_mean,
+                      uint32_t sequence, uint32_t head_dim) {
+    const uint32_t head = blockIdx.x;
+    const uint32_t c = threadIdx.x;
+    if (c >= head_dim) return;
+    const uint16_t *kp = key_hm + (size_t)head * sequence * head_dim + c;
+    float sum = 0.0f;
+    /* Row stride head_dim: uncoalesced per-thread but each CU gets a full
+     * cacheline stream across the 128 threads (row-major neighbours). */
+    for (uint32_t r = 0; r < sequence; r++)
+        sum += h3_bf16_to_f32(kp[(size_t)r * head_dim]);
+    k_mean[head * head_dim + c] = sum / (float)sequence;
+}
 
+/* Kernel 2: quantize (K - mu) to INT8 with PER-ROW absmax scales.
+ * Grid: (ceil(sequence/8), heads). Block: 256 = 8 warps, warp per row.
+ * scales: [head][sequence] float (absmax/127 of the smoothed row). */
+__global__ void __launch_bounds__(256)
+h3_sage_quant_k_int8_kernel(const uint16_t *key_hm, const float *k_mean,
+                            int8_t *k_i8, float *scales,
+                            uint32_t sequence, uint32_t head_dim) {
+    const uint32_t head = blockIdx.y;
+    const uint32_t row = blockIdx.x * 8u + (threadIdx.x >> 5);
+    if (row >= sequence) return;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t D = head_dim;
+    const uint16_t *kp = key_hm + ((size_t)head * sequence + row) * D;
+    const float *mu = k_mean + head * D;
+    int8_t *out = k_i8 + ((size_t)head * sequence + row) * D;
+
+    /* lane covers channels [lane*4, lane*4+4) for D=128 */
+    float v[4];
     float local = 0.0f;
-    for (uint32_t idx = threadIdx.x; idx < TILE * D; idx += 256u) {
-        uint32_t r = idx / D;
-        if (r < rows) {
-            float v = fabsf(h3_bf16_to_f32(kp[idx]));
-            local = fmaxf(local, v);
-        }
+#pragma unroll
+    for (uint32_t i = 0; i < 4u; i++) {
+        uint32_t c = lane * 4u + i;
+        v[i] = c < D ? h3_bf16_to_f32(kp[c]) - mu[c] : 0.0f;
+        local = fmaxf(local, fabsf(v[i]));
     }
     for (uint32_t off = 16; off > 0; off >>= 1)
-        local = fmaxf(local, __shfl_xor(local, off, 16));
-    __shared__ float warp_maxes[8];
-    if ((threadIdx.x & 31u) == 0u) warp_maxes[threadIdx.x >> 5] = local;
-    __syncthreads();
-    if (threadIdx.x == 0u) {
-        float m = 0.0f;
-        for (uint32_t i = 0; i < 8u; i++) m = fmaxf(m, warp_maxes[i]);
-        scales[head * gridDim.x + tile] = m > 0.0f ? m / 127.0f : 1.0f;
-    }
-    __syncthreads();
-    float scale = scales[head * gridDim.x + tile];
-    for (uint32_t idx = threadIdx.x; idx < TILE * D; idx += 256u) {
-        uint32_t r = idx / D;
-        if (r < rows) {
-            float v = h3_bf16_to_f32(kp[idx]);
-            float q = roundf(v / scale);
+        local = fmaxf(local, __shfl_xor(local, off, 32));
+    float scale = local > 0.0f ? local / 127.0f : 1.0f;
+    if (lane == 0u) scales[head * sequence + row] = scale;
+#pragma unroll
+    for (uint32_t i = 0; i < 4u; i++) {
+        uint32_t c = lane * 4u + i;
+        if (c < D) {
+            float q = roundf(v[i] / scale);
             q = fminf(fmaxf(q, -127.0f), 127.0f);
-            out[idx] = (int8_t)q;
-        } else {
-            out[idx] = 0;
+            out[c] = (int8_t)q;
         }
     }
 }
@@ -2326,8 +2341,9 @@ h3_sage_quant_k_int8_kernel(const uint16_t *key_hm, int8_t *k_i8,
 template <uint32_t WAVES, uint32_t BK>
 __global__ void __launch_bounds__(WAVES * 64u)
 h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
-                              const float *k_scales, const uint16_t *value,
-                              uint16_t *output, h3_sdpa_args args) {
+                              const float *k_scales, const float *k_mean,
+                              const uint16_t *value, uint16_t *output,
+                              h3_sdpa_args args) {
     constexpr uint32_t D = 128u;
     constexpr uint32_t LD = H3_SDPA_WMMA_LD;
     constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
@@ -2352,7 +2368,6 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
     const uint32_t rowg = lane >> 4;
     const uint32_t head = blockIdx.y;
     const uint32_t sequence = args.sequence;
-    const uint32_t num_tiles = (sequence + BK - 1u) / BK;
 
     uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
     uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
@@ -2362,6 +2377,7 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
      * hit distinct LDS banks (unpadded 128B stride = 16-way bank conflict). */
     constexpr uint32_t SK_LD = D + 8u;
     __shared__ int8_t sk_i8[BK * SK_LD];
+    __shared__ float sk_scales_tile[BK];
     __shared__ __align__(16) uint16_t sv[BK * LD];
     __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
 
@@ -2375,11 +2391,13 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
     const uint16_t *vp = value + kv_base;
 
     /* --- Per-wave Q: load BF16 from global, quantize to INT8 in registers.
-     * Lane l holds row (l&15). Per MFMA tile the lane packs the columns it
-     * feeds to the instruction:
+     * Lane l holds row (l&15); 4 lanes (l, l+16, l+32, l+48) share a row.
+     * Per MFMA tile the lane packs the columns it feeds to the instruction:
      *   gfx942 (K=32): 8 int8 at cols dt*32 + (l>>4)*8   -> int64
      *   gfx90a (K=16): 4 int8 at cols dt*16 + (l>>4)*4   -> int32
-     * No barrier: per-wave shuffle reduction only. --- */
+     * Per-ROW scales: absmax reduced over the 4 lanes of a row (xor 16/32).
+     * Smoothing correction cor[r] = sum_c Q[r,c]*mu[c] reduced the same way.
+     * No barrier: shuffle reductions only. --- */
 #if defined(__gfx90a__)
     constexpr uint32_t QCOLS = 4u;
     int32_t qreg[D_TILES];
@@ -2387,11 +2405,14 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
     constexpr uint32_t QCOLS = 8u;
     int64_t qreg[D_TILES];
 #endif
+    float q_row_scale, q_cor;
     {
         float qv[D_TILES][QCOLS];
         float local_max = 0.0f;
+        float local_cor = 0.0f;
         uint32_t r = lane & 15u;
         uint32_t c0 = (lane >> 4) * QCOLS;
+        const float *mu = k_mean + (size_t)head * D;
 #pragma unroll
         for (uint32_t dt = 0; dt < D_TILES; dt++) {
             uint32_t d = dt * MFMA_K + c0;
@@ -2402,11 +2423,17 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
                     : 0.0f;
                 qv[dt][c] = v;
                 local_max = fmaxf(local_max, fabsf(v));
+                local_cor += v * mu[d + c];
             }
         }
-        for (uint32_t off = 32; off > 0; off >>= 1)
-            local_max = fmaxf(local_max, __shfl_xor(local_max, off, 32));
-        float qscale = local_max > 0.0f ? local_max / I8_MAX : 1.0f;
+        /* Reduce across the 4 lanes sharing this row (r, r+16, r+32, r+48).
+         * width=64: xor32 must cross the two 32-lane halves of wave64. */
+        local_max = fmaxf(local_max, __shfl_xor(local_max, 16, 64));
+        local_max = fmaxf(local_max, __shfl_xor(local_max, 32, 64));
+        local_cor += __shfl_xor(local_cor, 16, 64);
+        local_cor += __shfl_xor(local_cor, 32, 64);
+        q_row_scale = local_max > 0.0f ? local_max / I8_MAX : 1.0f;
+        q_cor = local_cor;
 #pragma unroll
         for (uint32_t dt = 0; dt < D_TILES; dt++) {
 #if defined(__gfx90a__)
@@ -2416,16 +2443,13 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
 #endif
 #pragma unroll
             for (uint32_t c = 0; c < QCOLS; c++) {
-                float q = roundf(qv[dt][c] / qscale);
+                float q = roundf(qv[dt][c] / q_row_scale);
                 q = fminf(fmaxf(q, -I8_MAX), I8_MAX);
                 packed |= (int64_t)(uint8_t)(int8_t)q << (c * 8u);
             }
             qreg[dt] = packed;
         }
-        if (lane == 0u) ((float *)sp[wave])[0] = qscale;
     }
-    __syncthreads();
-    const float q_scale = ((const float *)sp[wave])[0];
 
     /* --- PV accumulators + softmax state --- */
     rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[8];
@@ -2438,6 +2462,11 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
 
     /* --- Cooperative tile load: K int8 (8B/thread) + V bf16 (8B/thread) --- */
     auto load_kv = [&](uint32_t k0) {
+        if (tid < BK) {
+            uint32_t g = k0 + tid;
+            sk_scales_tile[tid] =
+                g < sequence ? k_scales[(size_t)head * sequence + g] : 1.0f;
+        }
         /* K: BK*D = 4096 int8 = 4096 bytes; 512 threads x 8 bytes = 4096 */
         for (uint32_t idx = tid; idx < (BK * D) / 8u; idx += THREADS) {
             uint32_t r = (idx * 8u) / D;
@@ -2469,8 +2498,6 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
     __syncthreads();
 
     for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
-        const float k_scale = k_scales[(size_t)head * num_tiles + k0 / BK];
-
         /* --- INT8 QK^T via MFMA (Q from registers, K from LDS) --- */
         typedef int32_t int32x4_t __attribute__((__vector_size__(16)));
         float alpha[4];
@@ -2506,17 +2533,24 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
 #endif
         }
 
-        /* Extract scores + online softmax */
+        /* Extract scores + online softmax.
+         * score[q,t] = (int8_dot * q_scale[q] * k_scale[t] + cor[q]) * scale
+         * C fragment row prow=(lane>>4)*4+i is held by lane prow in the
+         * Q-load layout, so broadcast per-row scale/cor with shuffles. */
         float s[NT];
         for (int i = 0; i < 4; i++) {
+            uint32_t prow = rowg * 4u + (uint32_t)i;
+            float qs_i = __shfl(q_row_scale, prow, 32);
+            float cor_i = __shfl(q_cor, prow, 32);
             float m = -1e30f;
             for (uint32_t t = 0; t < NT; t++) {
                 uint32_t k_pos = k0 + t * 16u + col;
                 if (k_pos >= sequence) {
                     s[t] = -1e30f;
                 } else {
-                    s[t] = (float)score_acc[t][i] *
-                            q_scale * k_scale * args.scale;
+                    float ks = sk_scales_tile[t * 16u + col];
+                    s[t] = ((float)score_acc[t][i] * qs_i * ks + cor_i) *
+                            args.scale;
                 }
                 m = fmaxf(m, s[t]);
             }
@@ -2526,7 +2560,6 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const int8_t *key_i8,
             float new_max = fmaxf(row_max[i], m);
             alpha[i] = h3_fast_exp(row_max[i] - new_max);
 
-            uint32_t prow = rowg * 4u + (uint32_t)i;
             float ps = 0.0f;
             for (uint32_t t = 0; t < NT; t++) {
                 float p = h3_fast_exp(s[t] - new_max);
@@ -4576,15 +4609,26 @@ extern "C" int h3_hip_rdna_wmma_default(void) {
     return cached;
 }
 
+extern "C" int h3_launch_sage_k_mean(const uint16_t *key_hm, float *k_mean,
+                                     uint32_t sequence, uint32_t heads,
+                                     uint32_t head_dim, hipStream_t stream) {
+    if (head_dim != 128u || !sequence || !heads) return 0;
+    void *kernel_args[] = {&key_hm, &k_mean,
+                           (void *)&sequence, (void *)&head_dim};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_sage_k_mean_kernel),
+               dim3(heads, 1, 1), dim3(128u, 1, 1), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
 extern "C" int h3_launch_sage_quant_k_int8(const uint16_t *key_hm,
-                                           int8_t *k_i8, float *scales,
-                                           uint32_t sequence, uint32_t heads,
-                                           uint32_t head_dim,
+                                           const float *k_mean, int8_t *k_i8,
+                                           float *scales, uint32_t sequence,
+                                           uint32_t heads, uint32_t head_dim,
                                            hipStream_t stream) {
     if (head_dim != 128u || !sequence || !heads) return 0;
-    constexpr uint32_t TILE = 32u;
-    dim3 grid((sequence + TILE - 1u) / TILE, heads, 1);
-    void *kernel_args[] = {&key_hm, &k_i8, &scales,
+    dim3 grid((sequence + 7u) / 8u, heads, 1);
+    void *kernel_args[] = {&key_hm, &k_mean, &k_i8, &scales,
                            (void *)&sequence, (void *)&head_dim};
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_sage_quant_k_int8_kernel),
@@ -4595,6 +4639,7 @@ extern "C" int h3_launch_sage_quant_k_int8(const uint16_t *key_hm,
 extern "C" int h3_launch_sdpa_sage_int8(const uint16_t *query,
                                         const int8_t *key_i8,
                                         const float *k_scales,
+                                        const float *k_mean,
                                         const uint16_t *value,
                                         uint16_t *output,
                                         const h3_sdpa_args *args,
@@ -4602,8 +4647,8 @@ extern "C" int h3_launch_sdpa_sage_int8(const uint16_t *query,
     if (!args->sequence || !args->heads || args->head_dim != 128u) return 0;
     if (!h3_hip_gfx90a()) return 0;
     h3_sdpa_args host_args = *args;
-    void *kernel_args[] = {&query, &key_i8, &k_scales, &value, &output,
-                           &host_args};
+    void *kernel_args[] = {&query, &key_i8, &k_scales, &k_mean, &value,
+                           &output, &host_args};
     constexpr uint32_t sage_waves = 8u;
     constexpr uint32_t sage_bk = 32u;
     const void *kernel =

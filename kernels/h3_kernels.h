@@ -414,16 +414,20 @@ int h3_launch_video_qkv_rope_f32(const float *qkv, const float *rope_cos,
 int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                          const uint16_t *value, uint16_t *output,
                          const h3_sdpa_args *args, hipStream_t stream);
-/* SageAttention v7: pre-quantize head-major K to INT8 + scales, then run
- * the multi-wave INT8 QK^T kernel. Opt-in via H3_SAGE_SDPA=1 (gfx90a+). */
-int h3_launch_sage_quant_k_int8(const uint16_t *key_hm, int8_t *k_i8,
-                                float *scales, uint32_t sequence,
-                                uint32_t heads, uint32_t head_dim,
-                                hipStream_t stream);
+/* SageAttention v8: K-smoothing (per-channel mean) + per-row scales.
+ * Pipeline: k_mean -> quant_k_int8 -> sdpa_sage_int8.
+ * Opt-in via H3_SAGE_SDPA=1 (gfx90a+). */
+int h3_launch_sage_k_mean(const uint16_t *key_hm, float *k_mean,
+                          uint32_t sequence, uint32_t heads,
+                          uint32_t head_dim, hipStream_t stream);
+int h3_launch_sage_quant_k_int8(const uint16_t *key_hm, const float *k_mean,
+                                int8_t *k_i8, float *scales,
+                                uint32_t sequence, uint32_t heads,
+                                uint32_t head_dim, hipStream_t stream);
 int h3_launch_sdpa_sage_int8(const uint16_t *query, const int8_t *key_i8,
-                             const float *k_scales, const uint16_t *value,
-                             uint16_t *output, const h3_sdpa_args *args,
-                             hipStream_t stream);
+                             const float *k_scales, const float *k_mean,
+                             const uint16_t *value, uint16_t *output,
+                             const h3_sdpa_args *args, hipStream_t stream);
 int h3_launch_sdpa_bf16_hipblas(const uint16_t *query, const uint16_t *key,
                                 const uint16_t *value, uint16_t *output,
                                 const h3_sdpa_args *args, hipStream_t stream);
