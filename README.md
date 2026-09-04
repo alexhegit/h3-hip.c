@@ -170,6 +170,7 @@ Current tagged line is **v0.11.0**. `h3 --info` prints `h3-hip 0.11.0`.
   [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
   [Long video](docs/wiki/Long-video.md)
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
+- **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 
 The fox showcase uses `--steps 20 --layers 50 --reuse 1`. Tagged scoreboard
