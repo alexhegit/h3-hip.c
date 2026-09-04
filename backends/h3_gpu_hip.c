@@ -589,6 +589,9 @@ struct h3_gpu {
     size_t kv_hm_scratch_bytes;
     /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
     int sdpa_kv_already_hm;
+    /* Total denoise steps (set by h3_dit_forward). Used by Sage dispatch to
+     * decide INT8 (preview, steps<=2) vs BF16 MFMA (production, steps>2). */
+    uint32_t dit_steps;
     void *nax_fc1_temp;
     size_t nax_fc1_temp_elems;
 };
@@ -2694,6 +2697,14 @@ int h3_gpu_vae_encoder_group_norm_silu_f32(
         (const float *)tensor_ptr(bias)->data,
         (float *)tensor_ptr(output)->data, &args, ctx->stream),
         "h3_vae_encoder_group_norm_silu_f32");
+}
+
+void h3_gpu_set_dit_steps(h3_gpu *gpu, uint32_t steps) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (ctx) ctx->dit_steps = steps;
+    /* Also set a global for h3_launch_sdpa_bf16 to read (Sage dispatch). */
+    extern uint32_t h3_sage_dit_steps;
+    h3_sage_dit_steps = steps;
 }
 
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,

@@ -2273,9 +2273,22 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
     constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
     constexpr uint32_t THREADS = WAVES * 64u;
     constexpr uint32_t NT = BK / 16u;
-    constexpr uint32_t D_TILES = D / 32u;
     constexpr float I8_MAX = 127.0f;
     typedef rocwmma::bfloat16_t bf16;
+    /* ISA-specific INT8 MFMA parameters:
+     * gfx942 (CDNA3): v_mfma_i32_16x16x32_i8, K=32, D_TILES=4
+     * gfx90a (CDNA2): v_mfma_i32_16x16x16_i8, K=16, D_TILES=8
+     */
+#if defined(__gfx942__)
+    constexpr uint32_t MFMA_K = 32u;
+    constexpr uint32_t D_TILES = D / MFMA_K;  /* 4 */
+#elif defined(__gfx90a__)
+    constexpr uint32_t MFMA_K = 16u;
+    constexpr uint32_t D_TILES = D / MFMA_K;  /* 8 */
+#else
+    constexpr uint32_t MFMA_K = 32u;
+    constexpr uint32_t D_TILES = D / MFMA_K;
+#endif
 
     const uint32_t tid = threadIdx.x;
     const uint32_t wave = tid >> 6;
@@ -2414,7 +2427,9 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
         }
         __syncthreads();
 
-        /* --- INT8 QK^T via MFMA v_mfma_i32_16x16x32_i8 --- */
+        /* --- INT8 QK^T via MFMA --- */
+        /* gfx942: v_mfma_i32_16x16x32_i8, K=32, loads int64 per thread
+         * gfx90a: v_mfma_i32_16x16x16_i8, K=16, loads int32 per thread */
         typedef int32_t int32x4_t __attribute__((__vector_size__(16)));
         float alpha[4];
         int32x4_t score_acc[NT];
@@ -2422,12 +2437,12 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
             score_acc[t] = {0, 0, 0, 0};
 
         for (uint32_t dt = 0; dt < D_TILES; dt++) {
-            uint32_t d_base = dt * 32u;
+            uint32_t d_base = dt * MFMA_K;
             uint32_t a_row = lane & 15u;
-            uint32_t a_col = (lane >> 4) * 8u;
+            uint32_t a_col = (lane >> 4) * (MFMA_K / 4u);
+#if defined(__gfx942__)
             int64_t qa = *reinterpret_cast<const int64_t *>(
                 &sq_i8[a_row][d_base + a_col]);
-
             for (uint32_t g = 0; g < NT; g++) {
                 uint32_t b_krow = lane & 15u;
                 uint32_t b_kcol = (lane >> 4) * 8u;
@@ -2436,6 +2451,18 @@ h3_sdpa_sage_int8_d128_kernel(const uint16_t *query, const uint16_t *key,
                 score_acc[g] = __builtin_amdgcn_mfma_i32_16x16x32_i8(
                     qa, kb, score_acc[g], 0, 0, 0);
             }
+#elif defined(__gfx90a__)
+            int32_t qa = *reinterpret_cast<const int32_t *>(
+                &sq_i8[a_row][d_base + a_col]);
+            for (uint32_t g = 0; g < NT; g++) {
+                uint32_t b_krow = lane & 15u;
+                uint32_t b_kcol = (lane >> 4) * 4u;
+                int32_t kb = *reinterpret_cast<const int32_t *>(
+                    &sk_i8[g * 16u + b_krow][d_base + b_kcol]);
+                score_acc[g] = __builtin_amdgcn_mfma_i32_16x16x16i8(
+                    qa, kb, score_acc[g], 0, 0, 0);
+            }
+#endif
         }
 
         /* Extract scores + online softmax + PV */
@@ -4510,6 +4537,10 @@ extern "C" int h3_hip_rdna_wmma_default(void) {
     return cached;
 }
 
+/* Global set by h3_gpu_set_dit_steps() before each forward pass.
+ * h3_launch_sdpa_bf16 reads this to decide INT8 preview vs BF16 production. */
+uint32_t h3_sage_dit_steps = 0u;
+
 extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, uint16_t *output,
                                    const h3_sdpa_args *args,
@@ -4521,11 +4552,15 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
     h3_sdpa_args host_args = *args;
     void *kernel_args[] = {&query, &key, &value, &output, &host_args};
     /* SageAttention INT8 QK opt-in (MI300X first).
+     * Adaptive dispatch: INT8 for preview (steps<=2, PSNR ~21 dB),
+     * BF16 MFMA fallback for production (steps>2, deterministic).
      * WAVES=1: each wave loads its own Q row into sq_i8 — multi-wave
      * would create a chimera of different Q rows in shared LDS. */
     if (getenv("H3_SAGE_SDPA") && strcmp(getenv("H3_SAGE_SDPA"), "0") != 0) {
+        /* INT8 Sage for preview mode (steps <= 2). BF16 MFMA fallback for
+         * production (steps > 2) — INT8 error compounds to ~11 dB at 20 steps. */
         if (h3_hip_gfx90a() && host_args.head_dim == 128 &&
-            host_args.sequence >= 128u) {
+            host_args.sequence >= 128u && h3_sage_dit_steps <= 2u) {
             constexpr uint32_t sage_waves = 1u;
             constexpr uint32_t sage_bk = 32u;
             const void *kernel =

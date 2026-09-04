@@ -2801,7 +2801,10 @@ int h3_dit_forward(h3_dit *dit, int step,
             (size_t)dit->audio_condition_rows * AUDIO_CHANNELS,
             audio_rows, audio_row_elements);
     if (!ok) fail(error, error_size, "cannot pack/write DiT input latents");
-    if (ok) ok = encode_forward(dit, step, 1, 1, 0, error, error_size);
+    if (ok) {
+        h3_gpu_set_dit_steps(dit->gpu, (uint32_t)dit->sigmas.steps);
+        ok = encode_forward(dit, step, 1, 1, 0, error, error_size);
+    }
     if (ok) ok = h3_gpu_tensor_read_bf16(dit->video_output_bf16, video_out,
                                          video_row_elements) &&
                  h3_gpu_tensor_read_bf16(dit->audio_output_bf16, audio_out,
