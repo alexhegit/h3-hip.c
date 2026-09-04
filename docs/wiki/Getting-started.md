@@ -94,8 +94,8 @@ weight-streaming T2VA jobs against the same NVMe at once.
 ## Optional knobs
 
 ```text
-H3_INT8_MLP=1          # gfx90a/gfx942: INT8 DiT (gfx1151 default)
-H3_INT8_MLP=0          # gfx1151: keep BF16 DiT weights
+H3_INT8_MLP=1          # default on all ISAs; H3_INT8_MLP=0 for BF16
+H3_INT8_MLP=0          # disable INT8, use BF16 DiT weights
 H3_GPU_SAMPLER=1       # GPU Euler sampler (opt-in on HIP)
 H3_TOKEN_REDUCTION=1   # same as --token-reduction
 H3_INT8_VAE=1          # INT8 Video VAE weights (VRAM; fox VAE wall may not fall)

@@ -1004,8 +1004,9 @@ int h3_gpu_has_int8_mlp(const h3_gpu *gpu) {
     const char *e = getenv("H3_INT8_MLP");
     if (e && strcmp(e, "0") == 0) return 0;
     if (e && strcmp(e, "1") == 0) return 1;
-    /* gfx90a: hipBLAS BF16 GEMM is faster than INT8+epilogue. RDNA keeps INT8. */
-    return h3_hip_rdna_wmma_default();
+    /* INT8 is default on all ISAs: faster and lower VRAM than BF16 on both
+     * CDNA (gfx90a/gfx942) and RDNA (gfx1151). Set H3_INT8_MLP=0 to opt out. */
+    return 1;
 }
 
 int h3_gpu_has_fp8_mlp(const h3_gpu *gpu) {

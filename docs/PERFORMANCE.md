@@ -31,7 +31,7 @@ expects the v0.9.0 hash unless you set `H3_FOX_S2_MD5` / `H3_VAE_TILE_PIXELS`.
 
 AMD Ryzen AI MAX+ 395 / Radeon 8060S. `h3 --info`: **31 GiB** host, **96 GiB**
 max HIP buffer, unified memory. Build: `make HIP_ARCH=gfx1151`. Default DiT is
-**INT8** (RDNA). Peak VRAM is `--profile` `peak=` (live tensors).
+**INT8** (all ISAs). Peak VRAM is `--profile` `peak=` (live tensors).
 
 VAE default tile is **512 px / 1×1** at 512² and **480 px / 2×1** at 864×480.
 
@@ -447,8 +447,8 @@ FP8 clip=0.95 improves PSNR +1.2 dB over clip=1.0. INT8 remains higher quality
 | ISA | `H3_FP8_MLP=1` behaviour | Recommended path |
 |-----|--------------------------|------------------|
 | gfx942 (MI300X) | FP8 enabled (hipBLASLt) | `H3_FP8_MLP=1` |
-| gfx90a (MI210) | **ignored** with warning | `H3_INT8_MLP=1` |
-| gfx1151 (Strix Halo) | **ignored** with warning | `H3_INT8_MLP=1` |
+| gfx90a (MI210) | **ignored** with warning | INT8 (default) |
+| gfx1151 (Strix Halo) | **ignored** with warning | INT8 (default) |
 
 Note: FP8 QKV projection disabled (`fp8_qkv = 0`) — fused QKV+RoPE+norm path
 needs special FP8 handling not yet implemented.
