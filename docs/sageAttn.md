@@ -94,16 +94,96 @@ rocWMMA. A hand-written INT8 SDPA that **misses** the matrix core is a few
 percent of BF16 WMMA peak (already shown before v0.9.0). Halo work is only
 justified **after** a KEEP on MI300X, and only for 15 s, still opt-in.
 
+## Critical analysis and improvements
+
+### Current SDPA breakdown (MI300X 15s cinematic)
+
+| Component | Time | % of denoise |
+|-----------|-----:|-------------:|
+| DiT denoise | ~180s | 100% |
+| SDPA | ~144s | **77%** |
+| Linear | ~34s | 18% |
+| Other | ~7s | 4% |
+
+**Key insight:** SDPA is 77% of denoise. INT8 QK^T reduces both compute (2× fewer ops) and memory bandwidth (1 byte vs 2 bytes per element). The main win may be **bandwidth reduction**, not just compute.
+
+### Potential issues with original plan
+
+1. **Quantization overhead not quantified:** INT8 quantization of Q and K (56 heads × 128 dim × sequence length) may have significant overhead. For short sequences (fox-s2), this could negate GEMM speedup.
+
+2. **Memory bandwidth vs compute:** INT8 reduces bandwidth by 2×. If SDPA is bandwidth-bound, this is the main win. The plan focuses on MFMA compute but doesn't analyze bandwidth.
+
+3. **Per-block scaling complexity:** Block size choice is critical: too small = high overhead, too large = poor accuracy. Need to quantify trade-off.
+
+4. **K-channel smoothing:** Adds complexity. Is it necessary for v1? Can start without it, add if accuracy is poor.
+
+5. **FP8 on gfx942:** GFX942 has FP8 MFMA with wider dynamic range (E4M3: 448 max vs INT8: 127 max). FP8 QK^T might be better than INT8 for attention scores.
+
+6. **Interaction with existing INT8:** Current path has INT8 attention output. Sage adds INT8 QK^T. How do these interact? Need to verify.
+
+7. **Accuracy measurement:** "Visual KEEP" is subjective. Should use PSNR/SSIM thresholds (e.g., PSNR > 30 dB, SSIM > 0.95).
+
+8. **Short video overhead:** fox-s2 (22 frames) may not benefit from Sage due to quantization overhead exceeding GEMM speedup.
+
+### Revised implementation plan
+
+**Phase 0: Baseline measurement (before any code changes)**
+
+1. Profile SDPA internals: quantize / GEMM / softmax / PV breakdown
+2. Measure memory bandwidth utilization (GB/s vs theoretical peak)
+3. Determine if SDPA is compute-bound or bandwidth-bound
+
+**Phase 1: Minimal implementation (v1)**
+
+1. Per-channel INT8 QK^T (simpler than per-block)
+2. No K-channel smoothing (add later if needed)
+3. Keep FP16/BF16 PV (unchanged)
+4. Sequence length threshold: skip Sage for < 128 tokens
+
+**Phase 2: Accuracy validation**
+
+1. PSNR/SSIM against BF16 baseline on fixed-seed 15s MP4
+2. Thresholds: PSNR > 30 dB, SSIM > 0.95
+3. If below threshold: add K-channel smoothing or switch to per-block
+
+**Phase 3: Optimization (if v1 KEEP)**
+
+1. Add per-block scaling (if per-channel accuracy is good)
+2. Consider FP8 QK^T on gfx942 (wider dynamic range)
+3. Profile and optimize quantization overhead
+
+**Phase 4: A/B testing**
+
+1. 15s cinematic ±Sage ±TR
+2. KEEP/REJECT table with quantitative metrics
+3. Document findings for MI210/Strix Halo ports
+
+### Additional recommendations
+
+1. **Measure before optimizing:** Phase 0 bandwidth analysis may reveal INT8's main benefit is bandwidth, not compute.
+
+2. **Consider FP8:** GFX942 has FP8 MFMA. FP8 E4M3 has wider dynamic range than INT8, which may be better for attention score distributions.
+
+3. **Short sequence strategy:** Add sequence length threshold (e.g., < 128 tokens) to skip Sage for short sequences where overhead exceeds benefit.
+
+4. **TR interaction:** TR reduces N, Sage reduces precision. Stacking effect needs verification. Start with TR on, Sage on.
+
+5. **Fallback strategy:** If INT8 QK^T accuracy is poor, fallback to:
+   - INT8 Q + BF16 K (hybrid)
+   - Per-channel instead of per-block
+   - FP8 instead of INT8
+
 ## Feasibility (HIP Sage1)
 
 Scope for the first MI300X experiment:
 
-1. Per-block (or per-tile) scale of Q and K to INT8.
-2. K-channel smoothing as in Sage1 (reduce outlier damage before quant).
-3. INT8 MFMA for \(QK^\top\); dequant into the existing online-softmax /
+1. Per-channel scale of Q and K to INT8 (simpler than per-block for v1).
+2. ~~K-channel smoothing~~ Deferred to v2 if accuracy is poor.
+3. INT8 dot product for \(QK^\top\); dequant into the existing online-softmax /
    FP32 accum path.
 4. Keep current FP16 \(PV\) until QK KEEP.
-5. Opt-in only. Default SDPA stays BF16 flash / rocWMMA.
+5. Opt-in only (`H3_SAGE_SDPA=1`). Default SDPA stays BF16 flash / rocWMMA.
+6. Sequence length threshold: skip Sage for < 128 tokens.
 
 Out of scope for v1:
 
@@ -111,9 +191,12 @@ Out of scope for v1:
 - Sage2 INT4 QK or FP8 PV (follow-on on gfx942 only)
 - Changing tagged PERFORMANCE.md quality rows
 - Using Sage as a substitute for `--token-reduction`
+- Per-block scaling (v2 if per-channel accuracy is good)
+- K-channel smoothing (v2 if accuracy is poor)
 
 **Expected magnitude (unmeasured):** paper 2× vs naive FA2. This tree already
 has CDNA/Halo flash, so **15 s `sdpa=` more likely −20–40%**, not 2–5×.
+Main benefit may be **bandwidth reduction** (2× fewer bytes) rather than compute.
 
 ## KEEP / REJECT (MI300X first)
 
@@ -125,11 +208,13 @@ KEEP if:
 - `sdpa=` drops enough to matter on denoise (aim: **≥20%** sdpa vs the same
   tree **without** Sage, TR held fixed — both off and both on)
 - E2E does not regress from extra quant / smooth overhead
-- visual KEEP vs the same-seed MP4 (not fox-s2 bit identity)
+- **Quantitative:** PSNR > 30 dB, SSIM > 0.95 vs BF16 baseline (same-seed MP4)
+- Visual: no obvious temporal artifacts vs the BF16 flash baseline
 
 REJECT if:
 
 - sdpa win &lt; ~10% after overhead
+- PSNR &lt; 30 dB or SSIM &lt; 0.95 vs BF16 baseline
 - obvious temporal artifacts vs the BF16 flash baseline
 - VRAM or occupancy regression that hurts 15 s
 
@@ -140,12 +225,14 @@ quality gate. Use it only to prove the default (Sage off) path is untouched.
 
 | Step | Where | Done when |
 |------|--------|-----------|
+| 0 | Profile SDPA internals, measure bandwidth | Understand bottleneck |
 | 1 | `docs/sageAttn.md` (this file) | branch exists on origin |
-| 2 | gfx942 flash SDPA: INT8 QK bypass | compiles `HIP_ARCH=gfx942` |
-| 3 | CLI / env opt-in, default off | fox-s2 default md5 unchanged |
-| 4 | MI300X 15 s `--profile` A/B ±Sage ±TR | KEEP/REJECT table in `docs/perf-runs/` |
-| 5 | gfx90a tile port | MI210 15 s repeat |
-| 6 | gfx1151 only if (4) KEEP and 15 s still SDPA-bound | Halo 15 s |
+| 2 | gfx942 flash SDPA: INT8 QK bypass (per-channel) | compiles `HIP_ARCH=gfx942` |
+| 3 | CLI / env opt-in (`H3_SAGE_SDPA=1`), default off | fox-s2 default md5 unchanged |
+| 4 | Accuracy validation: PSNR/SSIM vs BF16 baseline | PSNR > 30 dB, SSIM > 0.95 |
+| 5 | MI300X 15 s `--profile` A/B ±Sage ±TR | KEEP/REJECT table in `docs/perf-runs/` |
+| 6 | gfx90a tile port | MI210 15 s repeat |
+| 7 | gfx1151 only if (5) KEEP and 15 s still SDPA-bound | Halo 15 s |
 
 Do not mix this work into the dirty local checkout that also holds unrelated
 trees. Land on `sageattn` only.
