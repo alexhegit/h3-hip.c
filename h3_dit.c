@@ -46,6 +46,10 @@ typedef struct {
     h3_gpu_tensor *fc1_scales;
     h3_gpu_tensor *fc2_int8;
     h3_gpu_tensor *fc2_scales;
+    h3_gpu_tensor *qkv_fp8;
+    h3_gpu_tensor *out_fp8;
+    h3_gpu_tensor *fc1_fp8;
+    h3_gpu_tensor *fc2_fp8;
 } h3_dit_block;
 
 enum {
@@ -76,6 +80,9 @@ struct h3_dit {
     int int8_mlp;
     int int8_qkv;
     int int8_attention_out;
+    int fp8_mlp;
+    int fp8_qkv;
+    int fp8_attention_out;
     int keep_bf16_qkv;
     int keep_bf16_attention_out;
     int use_slower_row_major_attention_output;
@@ -624,6 +631,10 @@ static void free_block(h3_dit_block *block) {
     free_tensor(&block->fc1_scales);
     free_tensor(&block->fc2_int8);
     free_tensor(&block->fc2_scales);
+    free_tensor(&block->qkv_fp8);
+    free_tensor(&block->out_fp8);
+    free_tensor(&block->fc1_fp8);
+    free_tensor(&block->fc2_fp8);
 }
 
 static double stream_now(void) {
@@ -784,6 +795,65 @@ static int quantize_block_mlp(h3_dit *dit, h3_dit_block *block,
     return 1;
 }
 
+static int quantize_block_mlp_fp8(h3_dit *dit, h3_dit_block *block,
+                                  char *error, size_t error_size) {
+    block->fc1_fp8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)FFN * 2 * HIDDEN);
+    block->fc1_scales = h3_gpu_tensor_new_f32_device(dit->gpu, FFN * 2);
+    block->fc2_fp8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)HIDDEN * FFN);
+    block->fc2_scales = h3_gpu_tensor_new_f32_device(dit->gpu, HIDDEN);
+    int ok = block->fc1_fp8 && block->fc1_scales &&
+             block->fc2_fp8 && block->fc2_scales &&
+             h3_gpu_quantize_weight_fp8(
+                 dit->gpu, block->fc1_fp8, block->fc1_scales, block->fc1,
+                 FFN * 2, HIDDEN) &&
+             h3_gpu_quantize_weight_fp8(
+                 dit->gpu, block->fc2_fp8, block->fc2_scales, block->fc2,
+                 HIDDEN, FFN);
+    if (!ok) {
+        fail(error, error_size, "cannot quantize DiT MLP weights to FP8: %s",
+             h3_gpu_error(dit->gpu));
+        return 0;
+    }
+    return 1;
+}
+
+static int quantize_block_qkv_fp8(h3_dit *dit, h3_dit_block *block,
+                                  char *error, size_t error_size) {
+    block->qkv_fp8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)INNER * 3 * HIDDEN);
+    block->qkv_scales = h3_gpu_tensor_new_f32_device(dit->gpu, INNER * 3);
+    int ok = block->qkv_fp8 && block->qkv_scales &&
+             h3_gpu_quantize_weight_fp8(
+                 dit->gpu, block->qkv_fp8, block->qkv_scales, block->qkv,
+                 INNER * 3, HIDDEN);
+    if (!ok) {
+        fail(error, error_size, "cannot quantize DiT QKV weight to FP8: %s",
+             h3_gpu_error(dit->gpu));
+        return 0;
+    }
+    return 1;
+}
+
+static int quantize_block_attention_out_fp8(h3_dit *dit, h3_dit_block *block,
+                                            char *error, size_t error_size) {
+    block->out_fp8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)HIDDEN * INNER);
+    block->out_scales = h3_gpu_tensor_new_f32_device(dit->gpu, HIDDEN);
+    int ok = block->out_fp8 && block->out_scales &&
+             h3_gpu_quantize_weight_fp8(
+                 dit->gpu, block->out_fp8, block->out_scales, block->out,
+                 HIDDEN, INNER);
+    if (!ok) {
+        fail(error, error_size,
+             "cannot quantize DiT attention-output weight to FP8: %s",
+             h3_gpu_error(dit->gpu));
+        return 0;
+    }
+    return 1;
+}
+
 static int quantize_block_qkv(h3_dit *dit, h3_dit_block *block,
                               char *error, size_t error_size) {
     block->qkv_int8 = h3_gpu_tensor_new_i8_device(
@@ -820,13 +890,20 @@ static int quantize_block_attention_out(h3_dit *dit, h3_dit_block *block,
 }
 
 static void free_block_quant_sources(h3_dit *dit, h3_dit_block *block) {
-    if (dit->int8_mlp && !dit->keep_bf16_mlp) {
+    if (dit->fp8_mlp && !dit->keep_bf16_mlp) {
+        free_tensor(&block->fc1);
+        free_tensor(&block->fc2);
+    } else if (dit->int8_mlp && !dit->keep_bf16_mlp) {
         free_tensor(&block->fc1);
         free_tensor(&block->fc2);
     }
-    if (dit->int8_qkv && !dit->keep_bf16_qkv)
+    if (dit->fp8_qkv && !dit->keep_bf16_qkv)
         free_tensor(&block->qkv);
-    if (dit->int8_attention_out && !dit->keep_bf16_attention_out)
+    else if (dit->int8_qkv && !dit->keep_bf16_qkv)
+        free_tensor(&block->qkv);
+    if (dit->fp8_attention_out && !dit->keep_bf16_attention_out)
+        free_tensor(&block->out);
+    else if (dit->int8_attention_out && !dit->keep_bf16_attention_out)
         free_tensor(&block->out);
 }
 
@@ -1369,7 +1446,9 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                 return 0;
             if (stage_timing) wait_io += stream_now() - io_start;
             int need_quant = dit->int8_mlp || dit->int8_qkv ||
-                             dit->int8_attention_out;
+                             dit->int8_attention_out ||
+                             dit->fp8_mlp || dit->fp8_qkv ||
+                             dit->fp8_attention_out;
             /* Flush the previous quant batch *after* this block's I/O so GPU
              * quantize overlaps the next shard reads. Free BF16 only after
              * stream sync (see flush_dit_quant_batch). */
@@ -1396,6 +1475,18 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                                         error, error_size)) goto core_failed;
                 if (dit->int8_attention_out &&
                     !quantize_block_attention_out(
+                        dit, &dit->blocks[index], error, error_size))
+                    goto core_failed;
+                if (dit->fp8_mlp &&
+                    !quantize_block_mlp_fp8(dit, &dit->blocks[index],
+                                            error, error_size))
+                    goto core_failed;
+                if (dit->fp8_qkv &&
+                    !quantize_block_qkv_fp8(dit, &dit->blocks[index],
+                                            error, error_size))
+                    goto core_failed;
+                if (dit->fp8_attention_out &&
+                    !quantize_block_attention_out_fp8(
                         dit, &dit->blocks[index], error, error_size))
                     goto core_failed;
                 pending[n_pending++] = index;
@@ -1622,7 +1713,7 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
     if (!dit->fused_mlp) {
         dit->fc1 = h3_gpu_tensor_new_bf16_device(dit->gpu, sequence * FFN * 2);
     }
-    if (!dit->fused_mlp || dit->nax_mlp || dit->int8_mlp) {
+    if (!dit->fused_mlp || dit->nax_mlp || dit->int8_mlp || dit->fp8_mlp) {
         dit->activated = h3_gpu_tensor_new_bf16_device(dit->gpu, sequence * FFN);
         if ((!dit->fused_mlp && !dit->fc1) || !dit->activated) {
             fail(error, error_size,
@@ -1631,7 +1722,8 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             return 0;
         }
     }
-    if (dit->int8_mlp || dit->int8_qkv || dit->int8_attention_out) {
+    if (dit->int8_mlp || dit->int8_qkv || dit->int8_attention_out ||
+        dit->fp8_mlp || dit->fp8_qkv || dit->fp8_attention_out) {
         size_t padded_sequence = (sequence + 127) & ~(size_t)127;
         dit->int8_activation = h3_gpu_tensor_new_i8_device(
             dit->gpu, padded_sequence * FFN);
@@ -1639,12 +1731,12 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             dit->gpu, padded_sequence * (FFN / 1024));
         if (!dit->int8_activation || !dit->int8_activation_scales) {
             fail(error, error_size,
-                 "cannot allocate int8 DiT activation arena: %s",
+                 "cannot allocate int8/fp8 DiT activation arena: %s",
                  h3_gpu_error(dit->gpu));
             return 0;
         }
     }
-    if (dit->int8_mlp) {
+    if (dit->int8_mlp || dit->fp8_mlp) {
         dit->int8_mlp_ws = h3_gpu_tensor_new_bf16_device(
             dit->gpu, (size_t)sequence * FFN * 2);
         if (!dit->int8_mlp_ws) {
@@ -1654,7 +1746,7 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             return 0;
         }
     }
-    if (dit->int8_qkv) {
+    if (dit->int8_qkv || dit->fp8_qkv) {
         dit->int8_qkv_ws = h3_gpu_tensor_new_bf16_device(
             dit->gpu, (size_t)sequence * INNER * 3);
         if (!dit->int8_qkv_ws) {
@@ -1664,7 +1756,8 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             return 0;
         }
     }
-    if (dit->int8_qkv || dit->int8_mlp || dit->int8_attention_out) {
+    if (dit->int8_qkv || dit->int8_mlp || dit->int8_attention_out ||
+        dit->fp8_qkv || dit->fp8_mlp || dit->fp8_attention_out) {
         dit->int8_adaln_ws = h3_gpu_tensor_new_bf16_device(
             dit->gpu, (size_t)sequence * HIDDEN);
         if (!dit->int8_adaln_ws) {
@@ -1836,6 +1929,18 @@ static h3_dit *load_dit(const char *weight_directory,
         (getenv("H3_INT8_KEEP_BF16_MLP") ||
          getenv("H3_BENCH_INT8_MLP_AB") ||
          getenv("H3_INT8_MLP_STAGE"));
+    /* FP8 supersedes INT8 on gfx942 (CDNA3). FP8 is the preferred quantized
+     * path when H3_FP8_MLP=1 is set; INT8 remains the fallback for other ISAs. */
+    dit->fp8_mlp = !dit->ssd_streaming && dit->fused_mlp &&
+                    h3_gpu_has_fp8_mlp(dit->gpu);
+    dit->fp8_qkv = 0; /* TODO: FP8 QKV needs fused norm+RoPE+GEMM path */
+    dit->fp8_attention_out = !dit->ssd_streaming &&
+                             dit->sequence >= 128 &&
+                             h3_gpu_has_fp8_mlp(dit->gpu);
+    /* When FP8 is active, disable INT8 for those same paths. */
+    if (dit->fp8_mlp) dit->int8_mlp = 0;
+    if (dit->fp8_qkv) dit->int8_qkv = 0;
+    if (dit->fp8_attention_out) dit->int8_attention_out = 0;
     h3_gpu_profile_set_label(dit->gpu, "H3 DiT");
     int stage_timing = getenv("H3_PROFILE") != NULL;
     double stage = stream_now();
@@ -2138,24 +2243,40 @@ static int run_block(h3_dit *dit, unsigned index, int step,
                 weight->out_int8, weight->out_scales, rows, INNER, HIDDEN,
                 dit->use_slower_uncached_int8_scales),
                "DiT int8 attention output");
+    } else if (dit->fp8_attention_out && !getenv("H3_DISABLE_FP8_ATTENTION_OUT")) {
+        OP(h3_gpu_linear_fp8_bf16(
+            dit->gpu, dit->attention_output, dit->int8_activation,
+            dit->int8_activation_scales, dit->attention_heads,
+            weight->out_fp8, weight->out_scales, rows, INNER, HIDDEN),
+           "DiT fp8 attention output");
     } else {
         OP(h3_gpu_linear_bf16(dit->gpu, dit->attention_output,
             dit->attention_heads, weight->out, NULL, rows, INNER, HIDDEN),
            "DiT attention output");
     }
-    int fused_int8_mlp_input = dit->int8_mlp &&
+    int fused_int8_mlp_input = (dit->int8_mlp || dit->fp8_mlp) &&
         !dit->use_slower_unfused_int8_inputs &&
         !getenv("H3_DISABLE_FUSED_INT8_MLP_INPUT") &&
         !getenv("H3_INT8_MLP_STAGE");
     if (fused_int8_mlp_input) {
         uint32_t padded_rows = (rows + 127u) & ~127u;
-        OP(h3_gpu_gate_adaln_quantize_int8(
-            dit->gpu, dit->hidden, dit->int8_activation,
-            dit->int8_activation_scales, dit->hidden,
-            dit->attention_output, weight->norm2, modulation, modulation,
-            row_map, rows, padded_rows, HIDDEN, SLOTS, 2, 3, 4, 1e-5f,
-            dit->int8_adaln_ws),
-           "DiT fused attention gate, MLP AdaLN and int8 quantization");
+        if (dit->fp8_mlp) {
+            OP(h3_gpu_gate_adaln_quantize_fp8(
+                dit->gpu, dit->hidden, dit->int8_activation,
+                dit->int8_activation_scales, dit->hidden,
+                dit->attention_output, weight->norm2, modulation, modulation,
+                row_map, rows, padded_rows, HIDDEN, SLOTS, 2, 3, 4, 1e-5f,
+                dit->int8_adaln_ws),
+               "DiT fused attention gate, MLP AdaLN and fp8 quantization");
+        } else {
+            OP(h3_gpu_gate_adaln_quantize_int8(
+                dit->gpu, dit->hidden, dit->int8_activation,
+                dit->int8_activation_scales, dit->hidden,
+                dit->attention_output, weight->norm2, modulation, modulation,
+                row_map, rows, padded_rows, HIDDEN, SLOTS, 2, 3, 4, 1e-5f,
+                dit->int8_adaln_ws),
+               "DiT fused attention gate, MLP AdaLN and int8 quantization");
+        }
     } else if (!getenv("H3_DISABLE_FUSED_GATE_ADALN")) {
         OP(h3_gpu_gate_adaln_bf16(
             dit->gpu, dit->hidden, dit->mod_mlp, dit->hidden,
@@ -2188,6 +2309,15 @@ static int run_block(h3_dit *dit, unsigned index, int step,
             dit->use_slower_dynamic_fc1_k, dit->use_int8_row_fc2,
             fused_int8_mlp_input, dit->int8_mlp_ws),
            "DiT int8 fused MLP");
+    } else if (dit->fp8_mlp && !getenv("H3_DISABLE_FP8_MLP")) {
+        OP(h3_gpu_mlp_fp8_bf16(
+            dit->gpu, mlp_output, dit->activated, dit->int8_activation,
+            dit->int8_activation_scales, dit->mod_mlp,
+            weight->fc1_fp8, weight->fc1_scales,
+            weight->fc2_fp8, weight->fc2_scales,
+            rows, HIDDEN, FFN, HIDDEN,
+            fused_int8_mlp_input, NULL),
+           "DiT fp8 fused MLP");
     } else if (dit->nax_mlp && !getenv("H3_DISABLE_NAX_MLP")) {
         OP(h3_gpu_mlp_nax_bf16(dit->gpu, mlp_output, dit->activated,
             dit->mod_mlp, weight->fc1, weight->fc2, rows, HIDDEN, FFN,
@@ -2208,7 +2338,7 @@ static int run_block(h3_dit *dit, unsigned index, int step,
         h3_dit_block *next_weight = &dit->blocks[next_index];
         const h3_gpu_tensor *next_modulation = h3_dit_schedule_block(
             dit->schedule, next_index);
-        int fuse_int8_qkv_input = dit->int8_qkv &&
+        int fuse_int8_qkv_input = (dit->int8_qkv || dit->fp8_qkv) &&
             !dit->use_slower_unfused_int8_inputs &&
             !getenv("H3_DISABLE_INT8_QKV") &&
             !getenv("H3_DISABLE_FUSED_INT8_QKV_INPUT");

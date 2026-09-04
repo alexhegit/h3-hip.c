@@ -10,6 +10,7 @@ Makefile does not probe the GPU. Runtime then selects kernels for that ISA:
   flash SDPA. Restore INT8 with `H3_INT8_MLP=1`.
 - **gfx942:** Same kernel paths as gfx90a (CDNA wave64 MFMA). INT8 opt-in via
   `H3_INT8_MLP=1`; peak VRAM ~181 GiB on fox-fast (192 GiB card, tight).
+  FP8 opt-in via `H3_FP8_MLP=1` (experimental, uses hipBLASLt).
 
 ## KI-001: CPU Euler sampler
 

@@ -2,8 +2,7 @@
 
 Text-to-video+audio on official [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3)
 weights. There is no separate FP32 dump of Qwen/DiT and no INT8/FP8 checkpoint.
-Runtime INT8 exists for DiT on Strix Halo (gfx1151); on MI210 (gfx90a) it is off
-unless `H3_INT8_MLP=1`.
+Runtime INT8 is the default on all ISAs. Set `H3_INT8_MLP=0` for BF16.
 
 T2VA does not load `FL2VA/`, `Ref2VA/`, or `transformer_ref`. Vision encoder and
 VAE encoders run only with `--first-frame` / `--ref-*`.
@@ -54,8 +53,8 @@ Build: `make HIP_ARCH=gfx1151` or `make HIP_ARCH=gfx90a`
 ## Knobs that change DiT dtype at runtime
 
 ```text
-H3_INT8_MLP=1          # MI210/MI300X: INT8 DiT (already the Strix Halo default)
-H3_INT8_MLP=0          # Strix Halo: keep BF16 DiT weights
+H3_INT8_MLP=1          # default on all ISAs; H3_INT8_MLP=0 for BF16
+H3_INT8_MLP=0          # disable INT8, use BF16 DiT weights
 H3_SDPA_CDNA_FP16_PV=0 # gfx90a flash: BF16 PV instead of default FP16
 H3_SDPA_CDNA_FLASH=0   # gfx90a: hipBLAS score-matrix fallback
 ```

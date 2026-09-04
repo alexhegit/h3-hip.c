@@ -581,6 +581,19 @@ int h3_launch_linear_int8_grouped_naive(
     const int8_t *input, const int8_t *weight, const float *input_scales,
     const float *weight_scales, uint16_t *output,
     const h3_linear_int8_grouped_args *args, hipStream_t stream);
+int h3_launch_quantize_bf16_fp8_rows(const uint16_t *input, void *output,
+                                     float *scales,
+                                     const h3_int8_quant_args *args,
+                                     uint32_t dispatch_rows,
+                                     hipStream_t stream);
+int h3_launch_linear_fp8_bf16(const void *input, const void *weight,
+                              const float *input_scales,
+                              const float *weight_scales, uint16_t *output,
+                              const h3_linear_args *args, hipStream_t stream);
+int h3_launch_linear_fp8_fc1_swiglu_bf16(
+    const void *input, const void *weight, const float *input_scales,
+    const float *weight_scales, uint16_t *output,
+    const h3_linear_args *args, hipStream_t stream);
 
 #ifdef __cplusplus
 }

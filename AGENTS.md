@@ -47,7 +47,9 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 
 - `H3_HIP_DEVICE=N` or `HIP_VISIBLE_DEVICES=N` selects GPU on multi-GPU boxes. Do not run two weight-streaming T2VA jobs simultaneously.
 - Multi-task parallelism is **not supported** on a single GPU (shared kernel state). Use `HIP_VISIBLE_DEVICES` for multi-process isolation. See `docs/DESIGN_MULTI_TASK.md`.
-- `H3_INT8_MLP=1` enables INT8 DiT on gfx90a/gfx942 (default is BF16 GEMM on CDNA).
+- `H3_INT8_MLP=1` enables INT8 DiT on all ISAs (default is INT8 on all platforms). Set `H3_INT8_MLP=0` to use BF16.
+- `H3_FP8_MLP=1` enables FP8 DiT on gfx942 only (experimental, uses hipBLASLt). FP8 supersedes INT8 when set.
+- `H3_FP8_CLIP=0.95` (default) weight quantization clip factor. Lower values improve PSNR (+1.2 dB at 0.95 vs 1.0).
 - `H3_INT8_VAE=1` enables INT8 Video VAE weights (69% VRAM reduction, ~9% slower).
 - `H3_GPU_SAMPLER=1` keeps latents on GPU during Euler denoise (large fox-s2
   win on MI300X; **not** a gfx1151 short-clip win in the 2026-09-03 retune).
@@ -64,6 +66,7 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 
 ## Documentation
 
+- `docs/BEST_PRACTICE.md` — quick reference for optimal settings
 - `docs/PERFORMANCE.md` — scoreboard numbers for all ISAs
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
