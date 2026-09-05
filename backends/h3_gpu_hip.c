@@ -600,6 +600,10 @@ struct h3_gpu {
     size_t sage_k_scales_bytes;
     float *sage_k_mean;
     size_t sage_k_mean_bytes;
+    void *sage_v_i8;
+    size_t sage_v_i8_bytes;
+    float *sage_v_scales;
+    size_t sage_v_scales_bytes;
     void *nax_fc1_temp;
     size_t nax_fc1_temp_elems;
 };
@@ -997,6 +1001,8 @@ void h3_gpu_free(h3_gpu *gpu) {
     if (ctx->sage_k_i8) hipFree(ctx->sage_k_i8);
     if (ctx->sage_k_scales) hipFree(ctx->sage_k_scales);
     if (ctx->sage_k_mean) hipFree(ctx->sage_k_mean);
+    if (ctx->sage_v_i8) hipFree(ctx->sage_v_i8);
+    if (ctx->sage_v_scales) hipFree(ctx->sage_v_scales);
     if (ctx->nax_fc1_temp) h3_gpu_tensor_free((h3_gpu_tensor *)ctx->nax_fc1_temp);
     hipStreamDestroy(ctx->stream);
     free(ctx);
@@ -2778,11 +2784,37 @@ static int h3_hip_try_sage_sdpa(struct h3_gpu *ctx, const uint16_t *query,
                                      args->heads, args->head_dim,
                                      ctx->stream))
         return 0;
-    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_sage_int8(
-                                  query, (const int8_t *)ctx->sage_k_i8,
-                                  ctx->sage_k_scales, ctx->sage_k_mean,
-                                  value_hm, output, args, ctx->stream),
-                              "h3_sdpa_sage_int8");
+    /* INT8 QK + INT8 PV: pre-quantize V to int8 transposed for INT8 MFMA. */
+    size_t seq_pad = ((size_t)args->sequence + 31u) & ~(size_t)31u;
+    size_t v_i8_need = (size_t)args->heads * args->head_dim * seq_pad;
+    size_t v_sc_need = (size_t)args->heads * ((args->sequence + 31u) / 32u) * sizeof(float);
+    if (v_i8_need > ctx->sage_v_i8_bytes) {
+        void *p = NULL;
+        if (hipMalloc(&p, v_i8_need) != hipSuccess) return 0;
+        if (ctx->sage_v_i8) hipFree(ctx->sage_v_i8);
+        ctx->sage_v_i8 = p;
+        ctx->sage_v_i8_bytes = v_i8_need;
+    }
+    if (v_sc_need > ctx->sage_v_scales_bytes) {
+        void *p = NULL;
+        if (hipMalloc(&p, v_sc_need) != hipSuccess) return 0;
+        if (ctx->sage_v_scales) hipFree(ctx->sage_v_scales);
+        ctx->sage_v_scales = (float *)p;
+        ctx->sage_v_scales_bytes = v_sc_need;
+    }
+    if (!h3_launch_sage_quant_v_int8(value_hm, (int8_t *)ctx->sage_v_i8,
+                                     ctx->sage_v_scales, args->sequence,
+                                     args->heads, args->head_dim,
+                                     ctx->stream))
+        return 0;
+    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_int8qk(
+                                    query, (const int8_t *)ctx->sage_k_i8,
+                                    ctx->sage_k_scales, ctx->sage_k_mean,
+                                    value_hm, output, args,
+                                    (const int8_t *)ctx->sage_v_i8,
+                                    ctx->sage_v_scales, (uint32_t)seq_pad,
+                                    ctx->stream),
+                               "h3_sdpa_int8qk");
 }
 
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,

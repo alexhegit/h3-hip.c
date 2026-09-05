@@ -424,10 +424,21 @@ int h3_launch_sage_quant_k_int8(const uint16_t *key_hm, const float *k_mean,
                                 int8_t *k_i8, float *scales,
                                 uint32_t sequence, uint32_t heads,
                                 uint32_t head_dim, hipStream_t stream);
+int h3_launch_sage_quant_v_int8(const uint16_t *value_hm, int8_t *v_i8t,
+                               float *v_scales, uint32_t sequence,
+                               uint32_t heads, uint32_t head_dim,
+                               hipStream_t stream);
 int h3_launch_sdpa_sage_int8(const uint16_t *query, const int8_t *key_i8,
-                             const float *k_scales, const float *k_mean,
-                             const uint16_t *value, uint16_t *output,
-                             const h3_sdpa_args *args, hipStream_t stream);
+                              const float *k_scales, const float *k_mean,
+                              const uint16_t *value, const int8_t *value_i8t,
+                              const float *v_scales, uint16_t *output,
+                              const h3_sdpa_args *args, hipStream_t stream);
+int h3_launch_sdpa_int8qk(const uint16_t *query, const int8_t *key_i8,
+                           const float *k_scales, const float *k_mean,
+                           const uint16_t *value, uint16_t *output,
+                           const h3_sdpa_args *args,
+                           const int8_t *v_i8t, const float *v_scales,
+                           uint32_t seq_pad, hipStream_t stream);
 int h3_launch_sdpa_bf16_hipblas(const uint16_t *query, const uint16_t *key,
                                 const uint16_t *value, uint16_t *output,
                                 const h3_sdpa_args *args, hipStream_t stream);
