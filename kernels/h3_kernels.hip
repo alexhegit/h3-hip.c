@@ -825,7 +825,7 @@ __device__ inline float h3_warp_reduce_sum(float value) {
 }
 
 __device__ inline float h3_fast_exp(float x) {
-    return exp2f(x * 1.4426950408889634f);
+    return __ocml_native_exp_f32(x);
 }
 
 /* 4 consecutive bf16 values (8 bytes). Lane L owns dims 4L..4L+3 so one
