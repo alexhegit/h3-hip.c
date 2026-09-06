@@ -11,23 +11,43 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.11.0 (2026-09-03)
+## Current release — v0.12.0 (2026-09-05)
 
-One tree, three timed products. `h3 --info` prints `h3-hip 0.11.0`.
+One tree, three timed products. `h3 --info` prints `h3-hip 0.12.0`.
 Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
 | fox-s2 E2E | ~85–90 s (I/O) | **~10.8 s** | **~16 s** |
 | fox-fast E2E | ~2 min (I/O) | **~18 s** | **~12 s** |
-| 15 s cinematic E2E | **40 min 46 s** | **12 min 11 s** | **3 min 46 s** |
+| 15 s cinematic E2E | **40 min 46 s** | **12 min 11 s** | **~3 min 35 s** |
+
+### What changed in v0.12.0
+
+**Grouped linear batched path fix** (MI300X, all ISAs): the packed batched
+GEMM path had a 768 MiB cap that caused fallback to the loop path at full
+resolution. Raised to 12 GiB. DiT linear GEMM at 100f 2-step: 1.57 s → 1.30 s
+(**−17%**).
+
+**SDPA QR=32 for CDNA3** (MI300X): doubles query rows per wavefront from 16
+to 32, improving ILP. Controlled by `H3_SDPA_CDNA_QROWS` (default 32 for
+sequence ≥ 32).
+
+100f 2-step benchmark (864×480, 45 layers, gfx942):
+
+| Metric | v0.11.0 (no-TR) | v0.12.0 (no-TR) | Δ | v0.11.0 (TR) | v0.12.0 (TR) | Δ |
+|--------|----------------:|----------------:|--:|--------------:|--------------:|--:|
+| DiT denoise | 4.554 s | 4.289 s | **−5.8%** | 2.764 s | 2.602 s | **−5.9%** |
+| linear | 1.567 s | 1.303 s | **−16.8%** | 1.053 s | 0.888 s | **−15.7%** |
+| sdpa | 2.544 s | 2.536 s | −0.3% | 1.334 s | 1.338 s | +0.3% |
+| Video VAE | 7.88 s | 7.96 s | ~0 | 7.88 s | 7.89 s | ~0 |
 
 Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
 `34507f072c5cabbde6592b3f70b8fa35` (2026-09-03). `halo-regression` still
 expects the v0.9.0 hash unless you set `H3_FOX_S2_MD5` / `H3_VAE_TILE_PIXELS`.
 
-## Strix Halo (gfx1151) — v0.11.0 (2026-09-03)
+## Strix Halo (gfx1151) — v0.12.0 (2026-09-05)
 
 AMD Ryzen AI MAX+ 395 / Radeon 8060S. `h3 --info`: **31 GiB** host, **96 GiB**
 max HIP buffer, unified memory. Build: `make HIP_ARCH=gfx1151`. Default DiT is
@@ -114,6 +134,7 @@ runs still miss the page cache: host RAM on this box is ~31 GiB.
 | 2026-08-22 | — | ~213 s | fox-fast measured; denoise still ~105 s |
 | **v0.9.0** | **83–87 s** | **95 s** | WMMA attention/linear/conv; weights in the VRAM carveout; AdaLN and VAE load overlap |
 | **v0.11.0** | ~89 s I/O | ~2 min I/O | gfx942; INT8 workspace; 480/512 px VAE tiles; 15 s **40 min 46 s** |
+| **v0.12.0** | ~89 s I/O | ~2 min I/O | Grouped linear batched cap fix; SDPA QR=32 for CDNA3; 100f denoise −5.8% |
 
 The remaining E2E on Halo short clips is mostly NVMe weight I/O. Denoise is a
 small slice of fox-s2 and about a fifth of a cold fox-fast. 15 s is still
@@ -124,7 +145,7 @@ wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
 figure is 16.7 s; HIP fox-fast denoise wall here is **24.5 s**. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
-## MI210 (gfx90a) — v0.11.0 (2026-09-02)
+## MI210 (gfx90a) — v0.12.0 (2026-09-05)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
 **BF16 hipBLAS** (not INT8). Four-GPU box: fox gates on `H3_HIP_DEVICE=1`,
@@ -212,7 +233,7 @@ Token reduction is the 15 s speed path. INT8 VAE is the VRAM path.
 INT8 DiT is the pipeline-peak cut. INT8 VAE is the VAE-peak cut. Default 15 s
 already fits a 64 GiB card; all-opts is headroom, not an enablement story.
 
-## MI300X (gfx942) — v0.11.0 (2026-09-02)
+## MI300X (gfx942) — v0.12.0 (2026-09-05)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
 **INT8** (all ISAs). 192 GiB VRAM; weight I/O dominates E2E on short presets.
@@ -223,7 +244,7 @@ Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
 |--------|---------------|----:|------------:|----------:|
 | **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~14 s** | **0.34 s** | **~79 GiB** |
 | **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **1.86 s** | **19.7 GiB** |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **27.9 GiB** |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **~3 min 35 s** | **~3 min 30 s** | **27.9 GiB** |
 
 ### BF16 DiT (`H3_INT8_MLP=0`)
 
