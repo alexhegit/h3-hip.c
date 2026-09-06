@@ -3699,7 +3699,7 @@ static int h3_int8_hipblas_grouped_linear(
     int want_pack = !no_pack || strcmp(no_pack, "0") != 0;
     size_t plane_bytes = (size_t)rows * cols * sizeof(int32_t);
     size_t batched_bytes = plane_bytes * (size_t)groups;
-    const size_t batched_cap = (size_t)768 * 1024 * 1024;
+    const size_t batched_cap = (size_t)12 * 1024 * 1024 * 1024;  /* 12 GiB — fits MI300X (192 GiB) */
     int use_batched = !want_loop && groups > 1u && batched_bytes <= batched_cap;
 
     if (use_batched && want_pack && group_size % 16u == 0u) {
