@@ -351,6 +351,10 @@ int h3_launch_add_scaled_f32(const float *left, const float *right,
 int h3_launch_scale_add_f32(const float *residual, const float *branch,
                             const float *scale, float *output,
                             const h3_swiglu_args *args, hipStream_t stream);
+int h3_launch_scale_add_rms_norm_f32(const float *residual, const float *branch,
+                                     const float *scale, const float *norm_weight,
+                                     float *output, const h3_norm_args *args,
+                                     hipStream_t stream);
 int h3_launch_weight_norm_f32(const float *vector, const float *magnitude,
                               float *output, const h3_weight_norm_args *args,
                               hipStream_t stream);

@@ -431,11 +431,56 @@ __global__ void h3_scale_add_f32_kernel(const float *residual,
                                         const float *branch,
                                         const float *scale, float *output,
                                         h3_swiglu_args args) {
-    uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t col4 = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
     uint32_t row = blockIdx.y * blockDim.y + threadIdx.y;
-    if (row >= args.rows || column >= args.width) return;
-    uint32_t index = row * args.width + column;
-    output[index] = residual[index] + branch[index] * scale[column];
+    if (row >= args.rows) return;
+    uint32_t base = row * args.width;
+    if (col4 + 3u < args.width) {
+        float4 r = *reinterpret_cast<const float4 *>(residual + base + col4);
+        float4 b = *reinterpret_cast<const float4 *>(branch + base + col4);
+        float4 s = *reinterpret_cast<const float4 *>(scale + col4);
+        float4 o;
+        o.x = r.x + b.x * s.x;
+        o.y = r.y + b.y * s.y;
+        o.z = r.z + b.z * s.z;
+        o.w = r.w + b.w * s.w;
+        *reinterpret_cast<float4 *>(output + base + col4) = o;
+    } else {
+        for (uint32_t c = col4; c < args.width && c < col4 + 4u; c++) {
+            output[base + c] = residual[base + c] + branch[base + c] * scale[c];
+        }
+    }
+}
+
+/* Fused scale_add + rms_norm: output = rms_norm(residual + branch * scale, weight, eps).
+ * Saves one full read+write of the hidden tensor per block. */
+__global__ void h3_scale_add_rms_norm_f32_kernel(
+    const float *residual, const float *branch, const float *scale,
+    const float *norm_weight, float *output, h3_norm_args args) {
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    if (row >= args.rows) return;
+    __shared__ float reductions[256];
+    const float *r = residual + row * args.width;
+    const float *b = branch + row * args.width;
+    float local_sum = 0.0f;
+    for (uint32_t k = tid; k < args.width; k += threads) {
+        float temp = r[k] + b[k] * scale[k];
+        local_sum = fmaf(temp, temp, local_sum);
+        output[row * args.width + k] = temp;
+    }
+    reductions[tid] = local_sum;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] += reductions[tid + stride];
+        __syncthreads();
+    }
+    float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
+    for (uint32_t column = tid; column < args.width; column += threads) {
+        output[row * args.width + column] =
+            output[row * args.width + column] * inverse * norm_weight[column];
+    }
 }
 
 __global__ void h3_weight_norm_f32_kernel(const float *vector,
@@ -1089,17 +1134,22 @@ __global__ void h3_video_qkv_rope_f32_kernel(
     if (dimension >= args.head_dim || head >= args.heads ||
         row >= args.sequence) return;
     uint32_t base = (row * args.heads + head) * args.head_dim * 3;
-    float q_sum = 0.0f;
-    float k_sum = 0.0f;
-    for (uint32_t d = 0; d < args.head_dim; d++) {
-        q_sum = fmaf(qkv[base + d], qkv[base + d], q_sum);
-        k_sum = fmaf(qkv[base + args.head_dim + d],
-                     qkv[base + args.head_dim + d], k_sum);
+    __shared__ float sq[256], sk[256];
+    float q_val = (dimension < args.head_dim) ? qkv[base + dimension] : 0.0f;
+    float k_val = (dimension < args.head_dim) ? qkv[base + args.head_dim + dimension] : 0.0f;
+    float v_val = (dimension < args.head_dim) ? qkv[base + args.head_dim * 2 + dimension] : 0.0f;
+    sq[dimension] = q_val * q_val;
+    sk[dimension] = k_val * k_val;
+    __syncthreads();
+    for (uint32_t s = args.head_dim / 2; s > 0; s >>= 1) {
+        if (dimension < s) { sq[dimension] += sq[dimension + s]; sk[dimension] += sk[dimension + s]; }
+        __syncthreads();
     }
-    float q_inverse = rsqrtf(q_sum / float(args.head_dim) + args.epsilon);
-    float k_inverse = rsqrtf(k_sum / float(args.head_dim) + args.epsilon);
-    float q0 = qkv[base + dimension] * q_inverse;
-    float k0 = qkv[base + args.head_dim + dimension] * k_inverse;
+    float q_inverse = rsqrtf(sq[0] / float(args.head_dim) + args.epsilon);
+    float k_inverse = rsqrtf(sk[0] / float(args.head_dim) + args.epsilon);
+    __syncthreads();
+    float q0 = q_val * q_inverse;
+    float k0 = k_val * k_inverse;
     if (dimension < args.rope_half) {
         uint32_t pair = dimension + args.rope_half;
         float q1 = qkv[base + pair] * q_inverse;
@@ -1123,7 +1173,7 @@ __global__ void h3_video_qkv_rope_f32_kernel(
         (head * args.sequence + row) * args.head_dim + dimension : output_index;
     query[output_index] = q0;
     key[kv_index] = k0;
-    value[kv_index] = qkv[base + args.head_dim * 2 + dimension];
+    value[kv_index] = v_val;
 }
 
 __global__ void h3_vision_qkv_rope_bf16_kernel(
@@ -3891,10 +3941,24 @@ extern "C" int h3_launch_scale_add_f32(const float *residual,
     h3_swiglu_args host_args = *args;
     void *kernel_args[] = {&residual, &branch, &scale, &output, &host_args};
     dim3 block(16, 16, 1);
-    dim3 grid((host_args.width + 15) / 16, (host_args.rows + 15) / 16, 1);
+    dim3 grid(((host_args.width + 3u) / 4u + 15u) / 16u, (host_args.rows + 15u) / 16u, 1);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_scale_add_f32_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_scale_add_rms_norm_f32(
+    const float *residual, const float *branch, const float *scale,
+    const float *norm_weight, float *output, const h3_norm_args *args,
+    hipStream_t stream) {
+    h3_norm_args host_args = *args;
+    void *kernel_args[] = {&residual, &branch, &scale, &norm_weight, &output,
+                           &host_args};
+    uint32_t threads = h3_row_threads(host_args.width);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_scale_add_rms_norm_f32_kernel),
+               dim3(host_args.rows), dim3(threads), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_weight_norm_f32(const float *vector,

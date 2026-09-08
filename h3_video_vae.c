@@ -587,10 +587,9 @@ static int run_block(vae_context *vae, int index, char *error,
         OP(h3_gpu_linear_f32(vae->gpu, vae->branch, vae->heads, weight->out_w,
             weight->out_b, rows, INNER, HIDDEN), "video VAE attention output");
     }
-    OP(h3_gpu_scale_add_f32(vae->gpu, vae->hidden, vae->hidden, vae->branch,
-        weight->scale1, rows, HIDDEN), "video VAE attention residual");
-    OP(h3_gpu_rms_norm_f32(vae->gpu, vae->norm, vae->hidden, weight->norm2,
-        rows, HIDDEN, 1e-5f), "video VAE MLP norm");
+    OP(h3_gpu_scale_add_rms_norm_f32(vae->gpu, vae->norm, vae->hidden,
+        vae->branch, weight->scale1, weight->norm2, rows, HIDDEN, 1e-5f),
+       "video VAE attn residual + MLP norm");
     if (vae->int8_vae && weight->w1_int8) {
         OP(h3_gpu_linear_f32_int8(vae->gpu, vae->ff1, vae->norm,
             weight->w1_int8, weight->w1_scales, weight->w1_b,
