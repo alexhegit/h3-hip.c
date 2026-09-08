@@ -2867,6 +2867,136 @@ h3_bias_bf16_kernel(uint16_t *output, const uint16_t *bias, uint32_t rows,
                                    h3_bf16_to_f32(bias[col]));
 }
 
+/* BF16 hipBLASLt path — uses BF16 direct output (no FP32 intermediate). */
+#if __has_include(<hipblaslt/hipblaslt.h>)
+#include <hipblaslt/hipblaslt.h>
+
+static hipblasLtHandle_t h3_bf16_lt_handle = NULL;
+static int h3_bf16_lt_inited = 0;
+
+static int h3_bf16_ensure_lt(hipStream_t stream) {
+    if (h3_bf16_lt_inited) return h3_bf16_lt_handle != NULL;
+    h3_bf16_lt_inited = 1;
+    if (hipblasLtCreate(&h3_bf16_lt_handle) != HIPBLAS_STATUS_SUCCESS) {
+        h3_bf16_lt_handle = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+struct h3_bf16_lt_cache {
+    uint32_t m, n, k;
+    hipblasLtMatmulDesc_t matmulDesc;
+    hipblasLtMatrixLayout_t Adesc, Bdesc, Ddesc;
+    hipblasLtMatmulHeuristicResult_t heuristic;
+    int valid;
+};
+#define H3_BF16_LT_SLOTS 16
+static struct h3_bf16_lt_cache h3_bf16_lt_cache[H3_BF16_LT_SLOTS];
+static int h3_bf16_lt_cache_count = 0;
+
+static struct h3_bf16_lt_cache *h3_bf16_lt_get(uint32_t m, uint32_t n, uint32_t k) {
+    for (int i = 0; i < h3_bf16_lt_cache_count; i++) {
+        struct h3_bf16_lt_cache *c = &h3_bf16_lt_cache[i];
+        if (c->m == m && c->n == n && c->k == k) return c;
+    }
+    if (h3_bf16_lt_cache_count >= H3_BF16_LT_SLOTS) return NULL;
+    struct h3_bf16_lt_cache *c = &h3_bf16_lt_cache[h3_bf16_lt_cache_count++];
+    memset(c, 0, sizeof(*c));
+    c->m = m; c->n = n; c->k = k;
+    return c;
+}
+
+static int h3_bf16_lt_init_cache(struct h3_bf16_lt_cache *c) {
+    if (c->valid) return 1;
+    hipblasOperation_t opT = HIPBLAS_OP_T;
+    hipblasOperation_t opN = HIPBLAS_OP_N;
+    if (hipblasLtMatmulDescCreate(&c->matmulDesc, HIPBLAS_COMPUTE_32F,
+                                  HIP_R_32F) != HIPBLAS_STATUS_SUCCESS)
+        return 0;
+    (void)hipblasLtMatmulDescSetAttribute(
+        c->matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSA, &opT, sizeof(opT));
+    (void)hipblasLtMatmulDescSetAttribute(
+        c->matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN));
+    if (hipblasLtMatrixLayoutCreate(&c->Adesc, HIP_R_16BF, c->k, c->m, c->k) !=
+            HIPBLAS_STATUS_SUCCESS ||
+        hipblasLtMatrixLayoutCreate(&c->Bdesc, HIP_R_16BF, c->k, c->n, c->k) !=
+            HIPBLAS_STATUS_SUCCESS ||
+        hipblasLtMatrixLayoutCreate(&c->Ddesc, HIP_R_16BF, c->m, c->n, c->m) !=
+            HIPBLAS_STATUS_SUCCESS)
+        return 0;
+    hipblasLtMatmulPreference_t pref;
+    if (hipblasLtMatmulPreferenceCreate(&pref) != HIPBLAS_STATUS_SUCCESS)
+        return 0;
+    hipblasLtMatmulHeuristicResult_t heur[1];
+    int returned = 0;
+    if (hipblasLtMatmulAlgoGetHeuristic(h3_bf16_lt_handle, c->matmulDesc,
+                                        c->Adesc, c->Bdesc, c->Ddesc,
+                                        c->Ddesc, pref, 1, heur, &returned) !=
+            HIPBLAS_STATUS_SUCCESS ||
+        returned < 1 || heur[0].state != HIPBLAS_STATUS_SUCCESS) {
+        hipblasLtMatmulPreferenceDestroy(pref);
+        return 0;
+    }
+    c->heuristic = heur[0];
+    c->valid = 1;
+    hipblasLtMatmulPreferenceDestroy(pref);
+    return 1;
+}
+
+extern "C" int h3_try_linear_bf16_hipblaslt(const uint16_t *input,
+                                             const uint16_t *weight,
+                                             const uint16_t *bias,
+                                             uint16_t *output,
+                                             const h3_linear_args *args,
+                                             hipStream_t stream) {
+    if (!args) return 0;
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_BF16_HIPBLASLT");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (!cached) return 0;
+    if (!h3_bf16_ensure_lt(stream)) return 0;
+    uint32_t m = args->output_dim;
+    uint32_t n = args->rows;
+    uint32_t k = args->input_dim;
+    if (!m || !n || !k || n < 64u || k < 64u || m < 16u) return 0;
+    if (k % 2u) return 0;
+
+    struct h3_bf16_lt_cache *c = h3_bf16_lt_get(m, n, k);
+    if (!c) return 0;
+    if (!h3_bf16_lt_init_cache(c)) return 0;
+
+    float alpha = 1.0f, beta = 0.0f;
+    hipblasStatus_t st = hipblasLtMatmul(
+        h3_bf16_lt_handle, c->matmulDesc, &alpha,
+        weight, c->Adesc, input, c->Bdesc,
+        &beta, output, c->Ddesc, output, c->Ddesc,
+        &c->heuristic.algo, NULL, 0, stream);
+    if (st != HIPBLAS_STATUS_SUCCESS) return 0;
+    if (!args->has_bias || !bias) return 1;
+    uint32_t rows = args->rows, cols = args->output_dim;
+    dim3 block(256, 1, 1);
+    dim3 grid((cols + 255u) / 256u, rows, 1);
+    void *bias_args[] = {&output, &bias, &rows, &cols};
+    return hipLaunchKernel(reinterpret_cast<const void *>(h3_bias_bf16_kernel),
+                           grid, block, bias_args, 0, stream) == hipSuccess;
+}
+#else
+static int h3_bf16_ensure_lt(hipStream_t stream) { (void)stream; return 0; }
+extern "C" int h3_try_linear_bf16_hipblaslt(const uint16_t *input,
+                                             const uint16_t *weight,
+                                             const uint16_t *bias,
+                                             uint16_t *output,
+                                             const h3_linear_args *args,
+                                             hipStream_t stream) {
+    (void)input; (void)weight; (void)bias; (void)output;
+    (void)args; (void)stream;
+    return 0;
+}
+#endif
+
 extern "C" int h3_try_linear_bf16_hipblas(const uint16_t *input,
                                           const uint16_t *weight,
                                           const uint16_t *bias,

@@ -4103,6 +4103,8 @@ extern "C" int h3_launch_linear_bf16(const uint16_t *input,
                                      const uint16_t *bias, uint16_t *output,
                                      const h3_linear_args *args,
                                      hipStream_t stream) {
+    if (h3_try_linear_bf16_hipblaslt(input, weight, bias, output, args, stream))
+        return 1;
     if (h3_try_linear_bf16_hipblas(input, weight, bias, output, args, stream))
         return 1;
     h3_linear_args host_args = *args;
