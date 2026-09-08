@@ -1795,6 +1795,33 @@ int h3_gpu_scale_add_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_scale_add_f32");
 }
 
+int h3_gpu_scale_add_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
+                                  const h3_gpu_tensor *residual,
+                                  const h3_gpu_tensor *branch,
+                                  const h3_gpu_tensor *scale,
+                                  const h3_gpu_tensor *norm_weight,
+                                  uint32_t rows, uint32_t width,
+                                  float epsilon) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)rows * width;
+    if (!ctx || !rows || !width ||
+        !h3_hip_require_f32(ctx, residual, count, "fused residual") ||
+        !h3_hip_require_f32(ctx, branch, count, "fused branch") ||
+        !h3_hip_require_f32(ctx, scale, width, "fused scale") ||
+        !h3_hip_require_f32(ctx, norm_weight, width, "fused norm weight") ||
+        !h3_hip_require_f32(ctx, output, count, "fused output")) {
+        return 0;
+    }
+    h3_norm_args args = {rows, width, epsilon};
+    return h3_hip_launch_ok(ctx, h3_launch_scale_add_rms_norm_f32(
+        (const float *)tensor_ptr(residual)->data,
+        (const float *)tensor_ptr(branch)->data,
+        (const float *)tensor_ptr(scale)->data,
+        (const float *)tensor_ptr(norm_weight)->data,
+        (float *)tensor_ptr(output)->data, &args, ctx->stream),
+        "h3_scale_add_rms_norm_f32");
+}
+
 int h3_gpu_add_scaled_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                           const h3_gpu_tensor *left,
                           const h3_gpu_tensor *right, float left_scale,
