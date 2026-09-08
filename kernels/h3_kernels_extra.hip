@@ -283,8 +283,37 @@ __global__ void h3_token_expand_delta_bf16_kernel(
         }
         uint32_t baseline_index =
             args.baseline_offset + baseline_row * args.width + column;
-        float update = h3_bf16_to_f32(reduced[reduced_index]) -
-                       h3_bf16_to_f32(baseline[baseline_index]);
+        float delta_parent = h3_bf16_to_f32(reduced[reduced_index]) -
+                             h3_bf16_to_f32(baseline[baseline_index]);
+        float update;
+        if (row >= args.video_target_start && args.spatial_width > 1u) {
+            uint32_t local = row - args.video_target_start;
+            uint32_t hpos = local % args.spatial_width;
+            uint32_t neighbor = 0xffffffffu;
+            if ((hpos & 1u) == 0u && hpos + 1u < args.spatial_width) {
+                neighbor = parent + 1u;
+            } else if ((hpos & 1u) == 1u && hpos > 0u) {
+                neighbor = parent - 1u;
+            }
+            if (neighbor != 0xffffffffu) {
+                uint32_t nb_row = baseline_indices[neighbor];
+                if (nb_row != 0xffffffffu) {
+                    uint32_t nb_idx =
+                        args.baseline_offset + nb_row * args.width + column;
+                    float delta_nb = h3_bf16_to_f32(
+                        reduced[neighbor * args.width + column]) -
+                        h3_bf16_to_f32(baseline[nb_idx]);
+                    update = args.blend_parent * delta_parent +
+                             args.blend_neighbor * delta_nb;
+                } else {
+                    update = delta_parent;
+                }
+            } else {
+                update = delta_parent;
+            }
+        } else {
+            update = delta_parent;
+        }
         output[destination] = h3_f32_to_bf16(
             h3_bf16_to_f32(original[args.original_offset + destination]) +
             args.update_scale * update);
@@ -313,8 +342,37 @@ __global__ void h3_token_expand_adaln_bf16_kernel(
         if (!direct) {
             uint32_t baseline_index =
                 args.baseline_offset + baseline_row * args.width + column;
-            float update = h3_bf16_to_f32(restored) -
-                           h3_bf16_to_f32(baseline[baseline_index]);
+            float delta_parent = h3_bf16_to_f32(reduced[reduced_index]) -
+                                 h3_bf16_to_f32(baseline[baseline_index]);
+            float update;
+            if (row >= args.video_target_start && args.spatial_width > 1u) {
+                uint32_t local = row - args.video_target_start;
+                uint32_t hpos = local % args.spatial_width;
+                uint32_t neighbor = 0xffffffffu;
+                if ((hpos & 1u) == 0u && hpos + 1u < args.spatial_width) {
+                    neighbor = parent + 1u;
+                } else if ((hpos & 1u) == 1u && hpos > 0u) {
+                    neighbor = parent - 1u;
+                }
+                if (neighbor != 0xffffffffu) {
+                    uint32_t nb_row = baseline_indices[neighbor];
+                    if (nb_row != 0xffffffffu) {
+                        uint32_t nb_idx =
+                            args.baseline_offset + nb_row * args.width + column;
+                        float delta_nb = h3_bf16_to_f32(
+                            reduced[neighbor * args.width + column]) -
+                            h3_bf16_to_f32(baseline[nb_idx]);
+                        update = args.blend_parent * delta_parent +
+                             args.blend_neighbor * delta_nb;
+                    } else {
+                        update = delta_parent;
+                    }
+                } else {
+                    update = delta_parent;
+                }
+            } else {
+                update = delta_parent;
+            }
             restored = h3_f32_to_bf16(
                 h3_bf16_to_f32(original[args.original_offset + destination]) +
                 args.update_scale * update);
@@ -3894,79 +3952,99 @@ h3_fp32_swiglu_to_bf16_kernel(
     }
 }
 
+/* Cached FP8 GEMM descriptor.  Keyed by (m,n,k) – DiT has only a handful of
+ * distinct shapes so a simple linear scan of 8 slots is fine. */
+struct h3_fp8_gemm_cache {
+    uint32_t m, n, k;
+    hipblasLtMatmulDesc_t matmulDesc;
+    hipblasLtMatrixLayout_t Adesc, Bdesc, Cdesc, Ddesc;
+    hipblasLtMatmulHeuristicResult_t heuristic;
+    void *f32_ws;
+    size_t ws_size;
+};
+#define H3_FP8_CACHE_SLOTS 8
+static struct h3_fp8_gemm_cache h3_fp8_cache[H3_FP8_CACHE_SLOTS];
+static int h3_fp8_cache_count = 0;
+
+static struct h3_fp8_gemm_cache *h3_fp8_cache_get(uint32_t m, uint32_t n,
+                                                   uint32_t k) {
+    for (int i = 0; i < h3_fp8_cache_count; i++) {
+        struct h3_fp8_gemm_cache *c = &h3_fp8_cache[i];
+        if (c->m == m && c->n == n && c->k == k) return c;
+    }
+    if (h3_fp8_cache_count >= H3_FP8_CACHE_SLOTS) return NULL;
+    struct h3_fp8_gemm_cache *c = &h3_fp8_cache[h3_fp8_cache_count++];
+    memset(c, 0, sizeof(*c));
+    c->m = m; c->n = n; c->k = k;
+    return c;
+}
+
 static int h3_fp8_gemm_run(
     const void *input, const void *weight, uint32_t m, uint32_t n,
     uint32_t k, float *fp32_acc, hipStream_t stream) {
     float alpha = 1.0f, beta = 0.0f;
-    hipblasOperation_t opT = HIPBLAS_OP_T;
-    hipblasOperation_t opN = HIPBLAS_OP_N;
-    hipblasLtMatmulDesc_t matmulDesc = NULL;
-    hipblasLtMatrixLayout_t Adesc = NULL, Bdesc = NULL;
-    hipblasLtMatrixLayout_t Cdesc = NULL, Ddesc = NULL;
-    hipblasLtMatmulPreference_t pref = NULL;
-    void *f32_ws = NULL;
-    size_t ws_size = 0;
-    int ok = 0;
+    struct h3_fp8_gemm_cache *c = h3_fp8_cache_get(m, n, k);
+    if (!c) return 0;
+    int ok = 1;
 
-    if (hipblasLtMatmulDescCreate(&matmulDesc, HIPBLAS_COMPUTE_32F,
-                                  HIPBLAS_R_32F) != HIPBLAS_STATUS_SUCCESS)
-        goto done;
-    (void)hipblasLtMatmulDescSetAttribute(
-        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSA, &opT, sizeof(opT));
-    (void)hipblasLtMatmulDescSetAttribute(
-        matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN));
-
-    if (hipblasLtMatrixLayoutCreate(&Adesc, HIP_R_8F_E4M3_FNUZ, k, m, k) !=
-            HIPBLAS_STATUS_SUCCESS ||
-        hipblasLtMatrixLayoutCreate(&Bdesc, HIP_R_8F_E4M3_FNUZ, k, n, k) !=
-            HIPBLAS_STATUS_SUCCESS ||
-        hipblasLtMatrixLayoutCreate(&Cdesc, HIP_R_32F, m, n, m) !=
-            HIPBLAS_STATUS_SUCCESS ||
-        hipblasLtMatrixLayoutCreate(&Ddesc, HIP_R_32F, m, n, m) !=
-            HIPBLAS_STATUS_SUCCESS)
-        goto done;
-
-    if (hipblasLtMatmulPreferenceCreate(&pref) != HIPBLAS_STATUS_SUCCESS)
-        goto done;
-    {
-        hipblasLtMatmulHeuristicResult_t heuristic[1];
-        int returned = 0;
-        if (hipblasLtMatmulAlgoGetHeuristic(h3_fp8_hipblaslt, matmulDesc,
-                                            Adesc, Bdesc, Cdesc, Ddesc, pref,
-                                            1, heuristic, &returned) !=
+    if (!c->matmulDesc) {
+        hipblasOperation_t opT = HIPBLAS_OP_T;
+        hipblasOperation_t opN = HIPBLAS_OP_N;
+        hipblasLtMatmulPreference_t pref = NULL;
+        if (hipblasLtMatmulDescCreate(&c->matmulDesc, HIPBLAS_COMPUTE_32F,
+                                      HIPBLAS_R_32F) != HIPBLAS_STATUS_SUCCESS)
+            return 0;
+        (void)hipblasLtMatmulDescSetAttribute(
+            c->matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSA, &opT, sizeof(opT));
+        (void)hipblasLtMatmulDescSetAttribute(
+            c->matmulDesc, HIPBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN));
+        if (hipblasLtMatrixLayoutCreate(&c->Adesc, HIP_R_8F_E4M3_FNUZ, k, m, k) !=
                 HIPBLAS_STATUS_SUCCESS ||
-            returned < 1 || heuristic[0].state != HIPBLAS_STATUS_SUCCESS)
-            goto done;
-        ws_size = heuristic[0].workspaceSize;
-    }
-    if (ws_size > 0) {
-        if (hipMalloc(&f32_ws, ws_size) != hipSuccess) {
-            f32_ws = NULL;
-            ws_size = 0;
-        }
-    }
-    {
-        hipblasLtMatmulHeuristicResult_t heuristic[1];
+            hipblasLtMatrixLayoutCreate(&c->Bdesc, HIP_R_8F_E4M3_FNUZ, k, n, k) !=
+                HIPBLAS_STATUS_SUCCESS ||
+            hipblasLtMatrixLayoutCreate(&c->Cdesc, HIP_R_32F, m, n, m) !=
+                HIPBLAS_STATUS_SUCCESS ||
+            hipblasLtMatrixLayoutCreate(&c->Ddesc, HIP_R_32F, m, n, m) !=
+                HIPBLAS_STATUS_SUCCESS)
+            return 0;
+        if (hipblasLtMatmulPreferenceCreate(&pref) != HIPBLAS_STATUS_SUCCESS)
+            return 0;
+        hipblasLtMatmulHeuristicResult_t heur[1];
         int returned = 0;
-        (void)hipblasLtMatmulAlgoGetHeuristic(
-            h3_fp8_hipblaslt, matmulDesc, Adesc, Bdesc, Cdesc, Ddesc,
-            pref, 1, heuristic, &returned);
-        hipblasStatus_t st = hipblasLtMatmul(
-            h3_fp8_hipblaslt, matmulDesc, &alpha, weight, Adesc,
-            input, Bdesc, &beta, fp32_acc, Cdesc, fp32_acc, Ddesc,
-            &heuristic[0].algo, f32_ws, ws_size, stream);
-        ok = (st == HIPBLAS_STATUS_SUCCESS);
+        if (hipblasLtMatmulAlgoGetHeuristic(h3_fp8_hipblaslt, c->matmulDesc,
+                                            c->Adesc, c->Bdesc, c->Cdesc,
+                                            c->Ddesc, pref, 1, heur, &returned) !=
+                HIPBLAS_STATUS_SUCCESS ||
+            returned < 1 || heur[0].state != HIPBLAS_STATUS_SUCCESS) {
+            hipblasLtMatmulPreferenceDestroy(pref);
+            return 0;
+        }
+        c->heuristic = heur[0];
+        c->ws_size = heur[0].workspaceSize;
+        if (c->ws_size > 0 &&
+            hipMalloc(&c->f32_ws, c->ws_size) != hipSuccess) {
+            c->f32_ws = NULL; c->ws_size = 0;
+        }
+        hipblasLtMatmulPreferenceDestroy(pref);
     }
 
-done:
-    if (f32_ws) (void)hipFree(f32_ws);
-    if (pref) hipblasLtMatmulPreferenceDestroy(pref);
-    if (Ddesc) hipblasLtMatrixLayoutDestroy(Ddesc);
-    if (Cdesc) hipblasLtMatrixLayoutDestroy(Cdesc);
-    if (Bdesc) hipblasLtMatrixLayoutDestroy(Bdesc);
-    if (Adesc) hipblasLtMatrixLayoutDestroy(Adesc);
-    if (matmulDesc) hipblasLtMatmulDescDestroy(matmulDesc);
+    hipblasStatus_t st = hipblasLtMatmul(
+        h3_fp8_hipblaslt, c->matmulDesc, &alpha, weight, c->Adesc,
+        input, c->Bdesc, &beta, fp32_acc, c->Cdesc, fp32_acc, c->Ddesc,
+        &c->heuristic.algo, c->f32_ws, c->ws_size, stream);
+    ok = (st == HIPBLAS_STATUS_SUCCESS);
     return ok;
+}
+
+static float *h3_fp8_get_acc(uint32_t count) {
+    static float *buf = NULL;
+    static size_t buf_size = 0;
+    size_t need = (size_t)count * sizeof(float);
+    if (buf && buf_size >= need) return buf;
+    if (buf) hipFree(buf);
+    buf = NULL; buf_size = 0;
+    if (hipMalloc(&buf, need) == hipSuccess) { buf_size = need; return buf; }
+    return NULL;
 }
 
 extern "C" int h3_launch_linear_fp8_bf16(
@@ -3979,13 +4057,10 @@ extern "C" int h3_launch_linear_fp8_bf16(
     uint32_t k = args->input_dim;
     if (!m || !n || !k) return 0;
     uint32_t fp32_count = n * m;
-    float *fp32_acc = NULL;
-    if (hipMalloc(&fp32_acc, (size_t)fp32_count * sizeof(float)) != hipSuccess)
+    float *fp32_acc = h3_fp8_get_acc(fp32_count);
+    if (!fp32_acc) return 0;
+    if (!h3_fp8_gemm_run(input, weight, m, n, k, fp32_acc, stream))
         return 0;
-    if (!h3_fp8_gemm_run(input, weight, m, n, k, fp32_acc, stream)) {
-        (void)hipFree(fp32_acc);
-        return 0;
-    }
     dim3 block(256, 1, 1);
     dim3 grid(((m + 3u) / 4u + 255u) / 256u, n, 1);
     void *ep_args[] = {&fp32_acc, &input_scales, &weight_scales,
@@ -3993,7 +4068,6 @@ extern "C" int h3_launch_linear_fp8_bf16(
     hipLaunchKernel(
         reinterpret_cast<const void *>(h3_fp32_scale_to_bf16_kernel),
         grid, block, ep_args, 0, stream);
-    (void)hipFree(fp32_acc);
     return 1;
 }
 
@@ -4007,13 +4081,10 @@ extern "C" int h3_launch_linear_fp8_fc1_swiglu_bf16(
     uint32_t k = args->input_dim;
     if (!m || !n || !k) return 0;
     uint32_t fp32_count = n * m;
-    float *fp32_acc = NULL;
-    if (hipMalloc(&fp32_acc, (size_t)fp32_count * sizeof(float)) != hipSuccess)
+    float *fp32_acc = h3_fp8_get_acc(fp32_count);
+    if (!fp32_acc) return 0;
+    if (!h3_fp8_gemm_run(input, weight, m, n, k, fp32_acc, stream))
         return 0;
-    if (!h3_fp8_gemm_run(input, weight, m, n, k, fp32_acc, stream)) {
-        (void)hipFree(fp32_acc);
-        return 0;
-    }
     dim3 block(256, 1, 1);
     dim3 grid(((m + 3u) / 4u + 255u) / 256u, n, 1);
     uint32_t hidden = m / 2;
@@ -4022,7 +4093,6 @@ extern "C" int h3_launch_linear_fp8_fc1_swiglu_bf16(
     hipLaunchKernel(
         reinterpret_cast<const void *>(h3_fp32_swiglu_to_bf16_kernel),
         grid, block, ep_args, 0, stream);
-    (void)hipFree(fp32_acc);
     return 1;
 }
 

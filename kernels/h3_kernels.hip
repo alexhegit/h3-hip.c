@@ -3931,8 +3931,8 @@ extern "C" int h3_launch_rms_norm_bf16(const uint16_t *input,
 }
 
 extern "C" int h3_launch_rms_norm_f32(const float *input, const float *weight,
-                                      float *output, const h3_norm_args *args,
-                                      hipStream_t stream) {
+                                       float *output, const h3_norm_args *args,
+                                       hipStream_t stream) {
     h3_norm_args host_args = *args;
     void *kernel_args[] = {&input, &weight, &output, &host_args};
     uint32_t threads = h3_row_threads(host_args.width);

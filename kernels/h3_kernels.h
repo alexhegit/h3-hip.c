@@ -223,7 +223,11 @@ typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t exact_prefix_rows;
+    uint32_t video_target_start;
+    uint32_t spatial_width;
     float update_scale;
+    float blend_parent;
+    float blend_neighbor;
 } h3_token_expand_args;
 
 typedef struct {
@@ -232,11 +236,15 @@ typedef struct {
     uint32_t rows;
     uint32_t width;
     uint32_t exact_prefix_rows;
+    uint32_t video_target_start;
+    uint32_t spatial_width;
     uint32_t slots;
     uint32_t shift_slot;
     uint32_t scale_slot;
     float update_scale;
     float epsilon;
+    float blend_parent;
+    float blend_neighbor;
 } h3_token_expand_adaln_args;
 
 typedef struct {

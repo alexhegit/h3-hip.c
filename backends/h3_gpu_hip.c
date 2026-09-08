@@ -3228,7 +3228,9 @@ int h3_gpu_token_expand_delta_bf16(
     const h3_gpu_tensor *baseline, size_t baseline_offset,
     const h3_gpu_tensor *baseline_indices, const h3_gpu_tensor *parents,
     uint32_t rows, uint32_t reduced_rows, uint32_t baseline_rows,
-    uint32_t width, uint32_t exact_prefix_rows, float update_scale) {
+    uint32_t width, uint32_t exact_prefix_rows,
+    uint32_t video_target_start, uint32_t spatial_width,
+    float update_scale) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t elements = (size_t)rows * width;
     if (!ctx || !rows || !width ||
@@ -3247,8 +3249,17 @@ int h3_gpu_token_expand_delta_bf16(
     }
     h3_token_expand_args args = {
         (uint32_t)original_offset, (uint32_t)baseline_offset,
-        rows, width, exact_prefix_rows, update_scale
+        rows, width, exact_prefix_rows, video_target_start, spatial_width,
+        update_scale, 0.75f, 0.25f
     };
+    const char *bp = getenv("H3_TR_BLEND");
+    if (bp && *bp) {
+        float w = (float)atof(bp);
+        if (w >= 0.0f && w <= 1.0f) {
+            args.blend_parent = w;
+            args.blend_neighbor = 1.0f - w;
+        }
+    }
     return h3_hip_launch_ok(ctx, h3_launch_token_expand_delta_bf16(
         (const uint16_t *)tensor_ptr(original)->data,
         (const uint16_t *)tensor_ptr(reduced)->data,
@@ -3267,7 +3278,9 @@ int h3_gpu_token_expand_adaln_bf16(
     const h3_gpu_tensor *parents, const h3_gpu_tensor *norm_weight,
     const h3_gpu_tensor *modulation, const h3_gpu_tensor *row_map,
     uint32_t rows, uint32_t reduced_rows, uint32_t baseline_rows,
-    uint32_t width, uint32_t exact_prefix_rows, float update_scale,
+    uint32_t width, uint32_t exact_prefix_rows,
+    uint32_t video_target_start, uint32_t spatial_width,
+    float update_scale,
     uint32_t slots, uint32_t shift_slot, uint32_t scale_slot,
     float epsilon) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
@@ -3294,9 +3307,17 @@ int h3_gpu_token_expand_adaln_bf16(
     }
     h3_token_expand_adaln_args args = {
         (uint32_t)original_offset, (uint32_t)baseline_offset,
-        rows, width, exact_prefix_rows, slots, shift_slot, scale_slot,
-        update_scale, epsilon
+        rows, width, exact_prefix_rows, video_target_start, spatial_width,
+        slots, shift_slot, scale_slot, update_scale, epsilon, 0.75f, 0.25f
     };
+    const char *bp = getenv("H3_TR_BLEND");
+    if (bp && *bp) {
+        float w = (float)atof(bp);
+        if (w >= 0.0f && w <= 1.0f) {
+            args.blend_parent = w;
+            args.blend_neighbor = 1.0f - w;
+        }
+    }
     return h3_hip_launch_ok(ctx, h3_launch_token_expand_adaln_bf16(
         (const uint16_t *)tensor_ptr(original)->data,
         (const uint16_t *)tensor_ptr(reduced)->data,
