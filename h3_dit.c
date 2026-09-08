@@ -2134,6 +2134,8 @@ static int leave_token_reduction(h3_dit *dit, char *error,
             dit->token_expand_parents, dit->sequence,
             dit->reduced_sequence, dit->token_baseline_rows, HIDDEN,
             dit->video_target_start,
+            dit->video_target_start,
+            (uint32_t)(dit->latent_w / 2),
             dit->token_reduction_scale), error, error_size,
             "restore full video-token grid")) return 0;
     h3_gpu_tensor *swap = dit->hidden;
@@ -2158,6 +2160,8 @@ static int leave_token_reduction_adaln(h3_dit *dit, unsigned block,
             dit->token_expand_parents, weight->norm1, modulation,
             dit->row_maps[step], dit->sequence, dit->reduced_sequence,
             dit->token_baseline_rows, HIDDEN, dit->video_target_start,
+            dit->video_target_start,
+            (uint32_t)(dit->latent_w / 2),
             dit->token_reduction_scale, SLOTS, 0, 1, 1e-5f),
             error, error_size, "restore tokens and apply attention AdaLN"))
         return 0;

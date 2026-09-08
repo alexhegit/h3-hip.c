@@ -201,7 +201,7 @@ static void test_token_reduction_kernels(test_context *test) {
     require_gpu(test, h3_gpu_token_expand_delta_bf16(
         test->gpu, expanded, original, PADDING, processed, pooled,
         REDUCED_ROWS * WIDTH, gpu_baseline_indices, gpu_parents,
-        FULL_ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH, 1, 1.0f),
+        FULL_ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH, 1, 0u, 0u, 1.0f),
         "encode token delta expansion");
     require_gpu(test, h3_gpu_submit(test->gpu),
                 "submit token-expand command stream");
@@ -291,7 +291,7 @@ static void test_token_reduction_kernels(test_context *test) {
         test->gpu, fused_expanded, fused_adaln, original, PADDING,
         processed, pooled, REDUCED_ROWS * WIDTH, gpu_baseline_indices,
         gpu_parents, norm, modulation, gpu_row_map, FULL_ROWS, REDUCED_ROWS,
-        BASELINE_ROWS, WIDTH, 1, 1.0f, 2, 0, 1, 1e-5f),
+        BASELINE_ROWS, WIDTH, 1, 0u, 0u, 1.0f, 2, 0, 1, 1e-5f),
         "encode fused token expansion and AdaLN");
     require_gpu(test, h3_gpu_gate_bf16(
         test->gpu, gate_reference, expanded, fused_expanded, modulation,
@@ -974,7 +974,7 @@ static void bench_token_expand_adaln(test_context *test) {
         require_gpu(test, h3_gpu_token_expand_delta_bf16(
             test->gpu, residual, original, 0, reduced, reduced,
             (size_t)REDUCED_ROWS * WIDTH, gpu_baseline_indices, gpu_parents,
-            ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH, PREFIX_ROWS, 1.0f),
+            ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH, PREFIX_ROWS, 0u, 0u, 1.0f),
             "encode token expansion warmup");
         require_gpu(test, h3_gpu_adaln_bf16(
             test->gpu, output, residual, norm, modulation, gpu_row_map,
@@ -984,7 +984,7 @@ static void bench_token_expand_adaln(test_context *test) {
             test->gpu, residual, output, original, 0, reduced, reduced,
             (size_t)REDUCED_ROWS * WIDTH, gpu_baseline_indices, gpu_parents,
             norm, modulation, gpu_row_map, ROWS, REDUCED_ROWS, BASELINE_ROWS,
-            WIDTH, PREFIX_ROWS, 1.0f, SLOTS, 0, 1, 1e-5f),
+            WIDTH, PREFIX_ROWS, 0u, 0u, 1.0f, SLOTS, 0, 1, 1e-5f),
             "encode fused token AdaLN warmup");
     }
     require_gpu(test, h3_gpu_submit(test->gpu),
@@ -1007,14 +1007,14 @@ static void bench_token_expand_adaln(test_context *test) {
                     reduced, (size_t)REDUCED_ROWS * WIDTH,
                     gpu_baseline_indices, gpu_parents, norm, modulation,
                     gpu_row_map, ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH,
-                    PREFIX_ROWS, 1.0f, SLOTS, 0, 1, 1e-5f),
+                    PREFIX_ROWS, 0u, 0u, 1.0f, SLOTS, 0, 1, 1e-5f),
                     "encode fused token AdaLN microbenchmark");
             } else {
                 require_gpu(test, h3_gpu_token_expand_delta_bf16(
                     test->gpu, residual, original, 0, reduced, reduced,
                     (size_t)REDUCED_ROWS * WIDTH, gpu_baseline_indices,
                     gpu_parents, ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH,
-                    PREFIX_ROWS, 1.0f),
+                    PREFIX_ROWS, 0u, 0u, 1.0f),
                     "encode token expansion microbenchmark");
                 require_gpu(test, h3_gpu_adaln_bf16(
                     test->gpu, output, residual, norm, modulation,
@@ -1233,7 +1233,7 @@ static void test_wide_token_adaln(test_context *test) {
     require_gpu(test, h3_gpu_token_expand_delta_bf16(
         test->gpu, reference_residual, original, 0, reduced, reduced,
         (size_t)REDUCED_ROWS * WIDTH, gpu_baseline_indices, gpu_parents,
-        ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH, 1, 1.0f),
+        ROWS, REDUCED_ROWS, BASELINE_ROWS, WIDTH, 1, 0u, 0u, 1.0f),
         "encode wide token expansion reference");
     require_gpu(test, h3_gpu_adaln_bf16(
         test->gpu, reference_output, reference_residual, norm, modulation,
@@ -1243,7 +1243,7 @@ static void test_wide_token_adaln(test_context *test) {
         test->gpu, fused_residual, fused_output, original, 0, reduced,
         reduced, (size_t)REDUCED_ROWS * WIDTH, gpu_baseline_indices,
         gpu_parents, norm, modulation, gpu_row_map, ROWS, REDUCED_ROWS,
-        BASELINE_ROWS, WIDTH, 1, 1.0f, SLOTS, 0, 1, 1e-5f),
+        BASELINE_ROWS, WIDTH, 1, 0u, 0u, 1.0f, SLOTS, 0, 1, 1e-5f),
         "encode wide fused token AdaLN");
     require_gpu(test, h3_gpu_submit(test->gpu),
                 "submit wide token AdaLN parity");

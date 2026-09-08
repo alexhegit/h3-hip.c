@@ -140,7 +140,7 @@ static int test_token_pool_expand(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_token_expand_delta_bf16(
         gpu, expanded, original, PADDING, processed, pooled,
         REDUCED_ROWS * WIDTH, gpu_baseline_indices, gpu_parents, FULL_ROWS,
-        REDUCED_ROWS, BASELINE_ROWS, WIDTH, 1, 1.0f), "expand"));
+        REDUCED_ROWS, BASELINE_ROWS, WIDTH, 1, 0u, 0u, 1.0f), "expand"));
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit expand"));
     uint16_t got_expanded[FULL_ROWS * WIDTH];
     CHECK(h3_gpu_tensor_read_bf16(expanded, got_expanded, FULL_ROWS * WIDTH));
