@@ -686,6 +686,24 @@ __global__ void h3_layer_norm_bf16_kernel(const uint16_t *input,
     }
 }
 
+__global__ void h3_l2_norm_bf16_kernel(const uint16_t *a, const uint16_t *b,
+                                       float *result, uint32_t elements) {
+    __shared__ float reductions[256];
+    uint32_t tid = threadIdx.x;
+    float local_sum = 0.0f;
+    for (uint32_t k = tid; k < elements; k += blockDim.x) {
+        float diff = h3_bf16_to_f32(a[k]) - h3_bf16_to_f32(b[k]);
+        local_sum = fmaf(diff, diff, local_sum);
+    }
+    reductions[tid] = local_sum;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] += reductions[tid + stride];
+        __syncthreads();
+    }
+    if (tid == 0) *result = reductions[0];
+}
+
 __global__ void h3_linear_bf16_kernel(const uint16_t *input,
                                       const uint16_t *weight,
                                       const uint16_t *bias, uint16_t *output,
@@ -4177,6 +4195,17 @@ extern "C" int h3_launch_linear_bf16(const uint16_t *input,
     dim3 grid((host_args.output_dim + 15) / 16, (host_args.rows + 15) / 16, 1);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_linear_bf16_kernel), grid,
+               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_l2_norm_bf16(const uint16_t *a, const uint16_t *b,
+                                       float *result, uint32_t elements,
+                                       hipStream_t stream) {
+    void *kernel_args[] = {&a, &b, &result, &elements};
+    dim3 block(256, 1, 1);
+    dim3 grid(1, 1, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_l2_norm_bf16_kernel), grid,
                block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
 }
 

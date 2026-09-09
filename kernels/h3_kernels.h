@@ -375,6 +375,9 @@ int h3_launch_layer_norm_f32(const float *input, const float *weight,
 int h3_launch_linear_bf16(const uint16_t *input, const uint16_t *weight,
                           const uint16_t *bias, uint16_t *output,
                           const h3_linear_args *args, hipStream_t stream);
+int h3_launch_l2_norm_bf16(const uint16_t *a, const uint16_t *b,
+                           float *result, uint32_t elements,
+                           hipStream_t stream);
 int h3_try_linear_bf16_hipblaslt(const uint16_t *input, const uint16_t *weight,
                                  const uint16_t *bias, uint16_t *output,
                                  const h3_linear_args *args, hipStream_t stream);

@@ -110,6 +110,9 @@ struct h3_dit {
     unsigned core_reuse_interval;
     unsigned core_forward_count;
     int core_residual_ready;
+    float first_block_threshold;
+    float previous_first_block_norm;
+    int first_block_cache_valid;
     unsigned active_block_count;
     uint8_t block_active[H3_DIT_BLOCKS];
     h3_layout layout;
@@ -168,6 +171,7 @@ struct h3_dit {
     h3_gpu_tensor *hidden;
     h3_gpu_tensor *core_input;
     h3_gpu_tensor *core_residual;
+    h3_gpu_tensor *first_block_cache;
     h3_gpu_tensor *mod_attention;
     h3_gpu_tensor *qkv;
     h3_gpu_tensor *query;
@@ -1798,7 +1802,7 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             return 0;
         }
     }
-    if (dit->core_reuse_interval > 1) {
+    if (dit->core_reuse_interval > 1 || dit->first_block_threshold > 0.0f) {
         dit->core_input = h3_gpu_tensor_new_bf16_device(
             dit->gpu, sequence * HIDDEN);
         dit->core_residual = h3_gpu_tensor_new_bf16_device(
@@ -1806,6 +1810,16 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
         if (!dit->core_input || !dit->core_residual) {
             fail(error, error_size,
                  "cannot allocate DiT core residual cache: %s",
+                 h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
+    if (dit->first_block_threshold > 0.0f) {
+        dit->first_block_cache = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, sequence * HIDDEN);
+        if (!dit->first_block_cache) {
+            fail(error, error_size,
+                 "cannot allocate first block cache: %s",
                  h3_gpu_error(dit->gpu));
             return 0;
         }
@@ -1872,6 +1886,11 @@ static h3_dit *load_dit(const char *weight_directory,
      * Keep the old path available for close-reference diagnosis. */
     dit->bf16_final = getenv("H3_DIT_F32_FINAL") == NULL;
     dit->core_reuse_interval = core_reuse_interval;
+    dit->first_block_threshold = 0.0f;
+    dit->previous_first_block_norm = 0.0f;
+    dit->first_block_cache_valid = 0;
+    { const char *thr = getenv("H3_FIRST_BLOCK_THRESHOLD");
+      if (thr && *thr) dit->first_block_threshold = (float)atof(thr); }
     dit->ssd_streaming = ssd_streaming;
     dit->spatial_rope_scale = spatial_rope_scale;
     configure_active_blocks(dit, active_blocks);
@@ -2486,6 +2505,7 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
         return 0;
     }
     int evaluate_core = dit->core_reuse_interval == 1 ||
+        dit->first_block_threshold > 0.0f ||
         !dit->core_residual_ready ||
         dit->core_forward_count % dit->core_reuse_interval == 0 ||
         step == h3_dit_schedule_steps(dit->schedule) - 1;
@@ -2496,17 +2516,24 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
         (unsigned)step < dit->token_reduction_early_steps ?
             dit->token_reduction_early_end : dit->token_reduction_end;
     uint32_t hidden_elements = dit->sequence * HIDDEN;
-    if (evaluate_core && dit->core_reuse_interval > 1)
+    if (evaluate_core && (dit->core_reuse_interval > 1 ||
+                          dit->first_block_threshold > 0.0f))
         OP(h3_gpu_copy_bf16(dit->gpu, dit->core_input, 0, dit->hidden, 0,
                             hidden_elements), "save DiT core input");
     if (evaluate_core) {
+        int use_first_block_cache =
+            dit->first_block_threshold > 0.0f &&
+            dit->core_reuse_interval == 1;
         unsigned command_blocks = disable_command_split
             ? 0 : command_block_interval(dit);
         if (dit->ssd_streaming) command_blocks = 0;
         unsigned completed_blocks = 0;
         int carried_attention_adaln = 0;
         int carried_attention_input_quantized = 0;
+        int first_block_done = 0;
+        int skip_remaining = 0;
         for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
+            if (skip_remaining) break;
             int fused_token_adaln = carried_attention_adaln;
             int fused_attention_input_quantized =
                 carried_attention_input_quantized;
@@ -2595,6 +2622,32 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                 return 0;
             }
             completed_blocks++;
+            if (!first_block_done && block == first_active_block(dit)) {
+                first_block_done = 1;
+                float current_norm = 0.0f;
+                OP(h3_gpu_l2_norm_bf16(dit->gpu, &current_norm,
+                    dit->hidden, dit->core_input, hidden_elements),
+                   "first block L2 norm");
+                if (use_first_block_cache && dit->first_block_cache_valid &&
+                    dit->previous_first_block_norm > 0.0f) {
+                    float ratio = current_norm / dit->previous_first_block_norm;
+                    if (ratio > dit->first_block_threshold) {
+                        skip_remaining = 1;
+                        if (getenv("H3_PROFILE"))
+                            fprintf(stderr,
+                                "h3: first block cache hit at step %d "
+                                "(norm_ratio=%.4f > %.4f)\n",
+                                step, ratio, dit->first_block_threshold);
+                    }
+                }
+                dit->previous_first_block_norm = current_norm;
+                dit->first_block_cache_valid = 1;
+                if (skip_remaining) {
+                    OP(h3_gpu_copy_bf16(dit->gpu, dit->hidden, 0,
+                        dit->first_block_cache, 0, hidden_elements),
+                       "restore cached full output");
+                }
+            }
             if (command_blocks &&
                 completed_blocks < dit->active_block_count &&
                 completed_blocks % command_blocks == 0)
@@ -2635,6 +2688,11 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                                dit->core_input, hidden_elements),
                "cache DiT core residual");
             dit->core_residual_ready = 1;
+        }
+        if (dit->first_block_threshold > 0.0f) {
+            OP(h3_gpu_copy_bf16(dit->gpu, dit->first_block_cache, 0,
+                                dit->hidden, 0, hidden_elements),
+               "save first block cache");
         }
     } else {
         OP(h3_gpu_add_bf16(dit->gpu, dit->hidden, dit->hidden,

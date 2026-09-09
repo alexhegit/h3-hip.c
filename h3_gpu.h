@@ -710,4 +710,8 @@ int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          const h3_gpu_tensor *gate,
                          const h3_gpu_tensor *up, uint32_t elements);
 
+int h3_gpu_l2_norm_bf16(h3_gpu *gpu, float *result,
+                        const h3_gpu_tensor *a, const h3_gpu_tensor *b,
+                        uint32_t elements);
+
 #endif

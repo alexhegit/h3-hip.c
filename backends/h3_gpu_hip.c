@@ -3159,6 +3159,34 @@ int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_silu_mul_bf16");
 }
 
+int h3_gpu_l2_norm_bf16(h3_gpu *gpu, float *result,
+                        const h3_gpu_tensor *a, const h3_gpu_tensor *b,
+                        uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_bf16(ctx, a, elements, "L2 norm a") ||
+        !h3_hip_require_bf16(ctx, b, elements, "L2 norm b")) {
+        return 0;
+    }
+    float *d_result = NULL;
+    if (hipMalloc(&d_result, sizeof(float)) != hipSuccess) {
+        h3_hip_set_error(ctx, "L2 norm result allocation failed");
+        return 0;
+    }
+    int ok = h3_hip_launch_ok(ctx, h3_launch_l2_norm_bf16(
+        (const uint16_t *)tensor_ptr(a)->data,
+        (const uint16_t *)tensor_ptr(b)->data,
+        d_result, elements, ctx->stream),
+        "h3_l2_norm_bf16");
+    if (ok) {
+        ok = hipMemcpyAsync(result, d_result, sizeof(float),
+                            hipMemcpyDeviceToHost, ctx->stream) == hipSuccess;
+        if (ok) ok = hipStreamSynchronize(ctx->stream) == hipSuccess;
+    }
+    hipFree(d_result);
+    return ok;
+}
+
 int h3_gpu_token_pool_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                            const h3_gpu_tensor *input, size_t input_offset,
                            h3_gpu_tensor *original, size_t original_offset,
