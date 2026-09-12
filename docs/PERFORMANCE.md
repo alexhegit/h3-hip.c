@@ -219,21 +219,21 @@ Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
 
 ### Default (INT8, no opt-in flags)
 
-| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
-|--------|---------------|----:|------------:|----------:|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~14 s** | **0.34 s** | **~79 GiB** |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **1.86 s** | **19.7 GiB** |
-| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **27.9 GiB** |
+| Preset | Command knobs | E2E | Denoise GPU | Peak VRAM | PSNR |
+|--------|---------------|----:|------------:|----------:|-----:|
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **~14 s** | **0.34 s** | **~79 GiB** | 29.5 dB |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **~12 s** | **1.86 s** | **19.7 GiB** | 29.5 dB |
+| **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **3 min 46 s** | **3 min 39 s** | **27.9 GiB** | 29.5 dB |
 
 ### BF16 DiT (`H3_INT8_MLP=0`)
 
 BF16 is available by setting `H3_INT8_MLP=0`. Slower and higher VRAM than INT8.
 
-| Preset | E2E | Denoise GPU | Peak VRAM | vs INT8 denoise |
-|--------|----:|------------:|----------:|----------------:|
-| fox-s2 | **~16 s** | **0.92 s** | **25.7 GiB** | 0.37× (slower) |
-| fox-fast | **~12 s** | **2.89 s** | **25.4 GiB** | 0.64× (slower) |
-| 15 s cinematic | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** | 0.95× (slower) |
+| Preset | E2E | Denoise GPU | Peak VRAM | PSNR | vs INT8 |
+|--------|----:|------------:|----------:|-----:|--------:|
+| fox-s2 | **~16 s** | **0.92 s** | **25.7 GiB** | **33.5 dB** | +4 dB |
+| fox-fast | **~12 s** | **2.89 s** | **25.4 GiB** | **33.5 dB** | +4 dB |
+| 15 s cinematic | **3 min 46 s** | **3 min 39 s** | **25.7 GiB** | **33.5 dB** | +4 dB |
 
 ### FP8 DiT (`H3_FP8_MLP=1`, gfx942 only)
 
@@ -245,9 +245,9 @@ FP8 uses hipBLASLt `HIPBLAS_COMPUTE_32F` with `HIP_R_8F_E4M3_FNUZ` inputs,
 FP32 accumulation, and custom epilogue kernels for scale+cast to BF16. FP8
 supersedes INT8 when both are set (clears INT8 flags in DIT init).
 
-| Preset | E2E | Denoise GPU | Peak VRAM | vs BF16 | vs INT8 |
-|--------|----:|------------:|----------:|--------:|--------:|
-| 15 s cinematic | ~221 s | **178.7 s** | **30.9 GiB** | denoise −4.6% / VRAM −25% | denoise −0.7% |
+| Preset | E2E | Denoise GPU | Peak VRAM | PSNR | vs BF16 | vs INT8 |
+|--------|----:|------------:|----------:|-----:|--------:|--------:|
+| 15 s cinematic | ~221 s | **178.7 s** | **30.9 GiB** | **25.9 dB** | −8 dB | −4 dB |
 
 FP8 weight quantize: per-row absmax with max=240.0 (AMD FNUZ, not OCP 448.0).
 Same theoretical peak as INT8 (2,615 TFLOPS) but wider range avoids overflow.
@@ -259,10 +259,16 @@ FP8 linear GEMM: 25.5 s vs INT8 28.5 s (−10%) vs BF16 34.6 s (−26%).
 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1
 ```
 
-| Preset | E2E | Denoise GPU | Video VAE | Peak VRAM |
-|--------|----:|------------:|----------:|----------:|
-| **fox-s2** | **~8 s** | **0.34 s** | **~1.3 s** | **~30 GiB** |
-| **15 s cinematic** | **~2.4 min** | **113 s** | **24.6 s** | **~32 GiB** |
+| Preset | E2E | Denoise GPU | Video VAE | Peak VRAM | PSNR |
+|--------|----:|------------:|----------:|----------:|-----:|
+| **fox-s2** | **~8 s** | **0.34 s** | **~1.3 s** | **~30 GiB** | 20.4 dB |
+| **15 s cinematic** | **~2.4 min** | **113 s** | **24.6 s** | **~32 GiB** | 20.4 dB |
+
+With TR schedule (`H3_TOKEN_REDUCTION_SCHEDULE="0:4:50,10:4:45,20:4:30"`):
+
+| Preset | E2E | Denoise GPU | PSNR | vs all-opts |
+|--------|----:|------------:|-----:|------------:|
+| **15 s cinematic** | **~1.85 min** | **79.3 s** | **~19 dB** | −30% denoise |
 
 INT8 is now the default on all ISAs. MI300X denoise is ~3× faster than MI210
 on the same 15 s path (180 s vs 540 s). fox-s2 / fox-fast E2E is I/O-bound
@@ -290,6 +296,7 @@ MI300X profile breakdown (15 s cinematic, BF16):
 | Text encoder | 2.5 s | 2.5 s | 2.5 s | — |
 | Audio VAE | 0.8 s | 0.8 s | 0.8 s | — |
 | **E2E total** | **~219 s** | **~212 s** | **~142 s** | **−35%** |
+| **PSNR** | **33.5 dB** | **29.5 dB** | **20.4 dB** | **−13 dB** |
 
 All Opts = `H3_INT8_MLP=1 H3_GPU_SAMPLER=1 H3_TOKEN_REDUCTION=1 H3_INT8_VAE=1`
 
@@ -319,8 +326,13 @@ fox-s2 denoise: 1.95 s → 0.84 s (57% faster). fox-fast denoise: 2.89 s →
 ### Optimization: Token reduction (`H3_TOKEN_REDUCTION=1`)
 
 Drops half spatial width in middle layers (blocks 4–30). 15 s cinematic denoise:
-185.7 s → 116.8 s (37% faster). Quality impact: slight detail loss in fine
-textures.
+185.7 s → 116.8 s (37% faster).
+
+**Quality impact (5 s test, PSNR vs no TR):**
+- TR 4:30: **20.4 dB** — spatial detail (fur, textures) softens in middle blocks,
+  temporal consistency preserved, scene structure intact
+- TR schedule 50→45→30: **19.3 dB** — wider early range = more blur in early steps
+- reuse=3 + TR 4:45: **~15 dB** — noticeable softness, suitable for previews
 
 **VRAM impact:** Strix Halo (gfx1151) 15 s default peak is **27.9 GiB** (not ~48 GiB).
 The 2026-09-02 TR run peaked at **25.7 GiB** in denoise.
@@ -379,11 +391,27 @@ Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
 pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
 **tagged** quality-path row (40 min 46 s / 12 min 11 s) with these numbers.
 
-| | quality path | **`--token-reduction`** |
-|--|--:|--:|
-| Strix Halo (gfx1151) 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts / TR+INT8 VAE) |
-| MI210 (gfx90a) 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) |
-| MI300X (gfx942) 15 s E2E | 3 min 46 s | **~2.5 min** (−34%) |
+| | quality path | **`--token-reduction`** | **TR schedule** |
+|--|--:|--:|--:|
+| Strix Halo (gfx1151) 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts / TR+INT8 VAE) | — |
+| MI210 (gfx90a) 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) | — |
+| MI300X (gfx942) 15 s E2E | 3 min 46 s (29.5 dB) | **~2.5 min** (20.4 dB, −34%) | **~1.85 min** (~19 dB, −55%) |
+
+### TR schedule benchmark (MI300X, 5 s video)
+
+`H3_TOKEN_REDUCTION_SCHEDULE` provides per-step TR range control. Tested on
+864×480, 20 steps, 45 layers, reuse=2:
+
+| Config | DiT denoise | vs no TR | PSNR vs no TR |
+|--------|------------|---------|---------------|
+| no TR (baseline) | 30.5 s | — | gold |
+| `--token-reduction` (TR 4:30) | 20.4 s | −33% | 20.4 dB |
+| Schedule `0:4:50,10:4:45,20:4:30` | 15.4 s | −50% | 19.3 dB |
+| Schedule `0:4:50` (full) | 14.3 s | −53% | lower |
+| Schedule `0:4:50,10:0:0` (partial) | 23.2 s | −24% | 19.0 dB |
+
+TR schedule auto-enables TR without `--token-reduction`. `STEP:0:0` disables
+TR from that step onward for quality recovery in later denoising steps.
 
 Strix Halo fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 
