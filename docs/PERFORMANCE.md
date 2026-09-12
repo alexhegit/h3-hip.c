@@ -18,10 +18,10 @@ Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 E2E | ~85–90 s (I/O) | **11.2 s** | **~16 s** |
-| fox-fast E2E | ~2 min (I/O) | **19.5 s** | **~12 s** |
-| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **3 min 46 s** |
-| 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | **8 min 13 s** (2026-09-12) | see MI300X table |
+| fox-s2 E2E | ~85–90 s (I/O) | **11.2 s** | **3.3 s** |
+| fox-fast E2E | ~2 min (I/O) | **19.5 s** | **5.2 s** |
+| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **179.5 s** (no TR, 2026-09-12) |
+| 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | **8 min 13 s** (2026-09-12) | **114.7 s** (2026-09-12) |
 
 Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
@@ -246,6 +246,38 @@ Token reduction is the 15 s speed path. INT8 VAE is the VRAM path.
 
 INT8 DiT is the pipeline-peak cut. INT8 VAE is the VAE-peak cut. Default 15 s
 already fits a 64 GiB card; all-opts is headroom, not an enablement story.
+
+## MI300X (gfx942) — `main` 2026-09-12
+
+Machine: MI300X. `h3 --info`: **AMD Instinct MI300X VF**
+(`gfx942:sramecc+:xnack-`), max HIP buffer **192.0 GiB**. Tree: `origin/main`
+@ `d7de7c9`. Build: `make HIP_ARCH=gfx942`. Default DiT is **INT8**.
+Model: `/mnt/doscratch/MiniMax-H3`.
+
+Canonical scripts from `bench/`. 15 s **without** TR used `fox-15s.sh` minus
+`--token-reduction`. Neither 15 s run used `H3_INT8_VAE` or `H3_GPU_SAMPLER`.
+
+| Preset | Script | E2E (total wall) | Denoise wall | sdpa / linear | Video VAE | Peak |
+|--------|--------|-----------------:|-------------:|---------------|----------:|-----:|
+| fox-s2 | `bench/fox-s2.sh` | **3.27 s** | **0.29 s** | 0.05 / 0.18 s | 1.34 s | 15.1 GiB |
+| fox-fast | `bench/fox-fast.sh` | **5.21 s** | **1.94 s** | 0.39 / 1.17 s | 1.30 s | 19.7 GiB |
+| 15 s no TR | quality knobs, no `--token-reduction` | **179.5 s** | **176.2 s** | 139.8 / 28.7 s | 26.8 s | 27.9 GiB |
+| 15 s lossless TR | `bench/fox-15s.sh` | **114.7 s** | **111.3 s** | 83.4 / 21.1 s | 26.8 s | 27.9 GiB |
+| 15 s-fast | `bench/fox-15s-fast.sh` | **83.1 s** | **79.9 s** | 59.8 / 15.1 s | 26.6 s | 27.9 GiB |
+
+`fox-15s.sh` is reuse=2 + `--token-reduction` (default 4:30). `fox-15s-fast.sh`
+is reuse=3 + TR (script default 4:30). VAE tiles **2×1 @ 480 px** on all 15 s
+runs. VAE wall is unchanged across TR (decode is after DiT).
+
+vs no-TR 15 s denoise: `fox-15s.sh` **−37%**. `fox-15s-fast.sh` **−55%**.
+
+Logs:
+
+- [`gfx942-2026-09-12-fox-s2.log`](perf-runs/gfx942-2026-09-12-fox-s2.log)
+- [`gfx942-2026-09-12-fox-fast.log`](perf-runs/gfx942-2026-09-12-fox-fast.log)
+- [`gfx942-2026-09-12-fox-15s-notr.log`](perf-runs/gfx942-2026-09-12-fox-15s-notr.log)
+- [`gfx942-2026-09-12-fox-15s.log`](perf-runs/gfx942-2026-09-12-fox-15s.log)
+- [`gfx942-2026-09-12-fox-15s-fast.log`](perf-runs/gfx942-2026-09-12-fox-15s-fast.log)
 
 ## MI300X (gfx942) — v0.11.0 (2026-09-02)
 
