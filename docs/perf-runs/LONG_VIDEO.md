@@ -1,7 +1,7 @@
 # Long T2VA timings (864×480, Strix Halo)
 
 Halo ledger for the 10 s / 15 s cinematic clips. Same knobs on MI210 (gfx90a)
-(`main` 2026-09-02) run the 15 s clip in **12 min 11 s** — see
+(`main` 2026-09-12) run the 15 s clip in **12 min 12 s** — see
 [`../PERFORMANCE.md`](../PERFORMANCE.md) and
 [`../perf-mi210/STATUS.md`](../perf-mi210/STATUS.md). 10 s was not re-timed
 on MI210.

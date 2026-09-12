@@ -59,6 +59,22 @@ AMD Ryzen AI MAX+ 395 / Radeon 8060S. Logs under
 Do not use `--token-reduction` on fox-s2 / fox-fast (same as MI300X). GPU
 sampler is not a Halo win.
 
+## MI210 (gfx90a) — `main` 2026-09-12
+
+Four-GPU MI210 box, 64 GiB/card. Logs under
+[`docs/perf-runs/MI210_2026-09-12.md`](../docs/perf-runs/MI210_2026-09-12.md).
+Default DiT is INT8.
+
+| Script | DiT denoise | E2E | vs 2026-09-02 INT8 denoise |
+|--------|----------:|----:|---------------------------:|
+| `fox-s2.sh` | **1.38 s** | **11.16 s** | 1.33 s → +4% |
+| `fox-fast.sh` | **9.04 s** | **19.50 s** | 9.11 s → −1% |
+| no TR 15 s | **647 s** | **12 min 12 s** | 660 s → −2% |
+| `fox-15s.sh` | **408 s** | **8 min 13 s** | no-TR 647 s → **−37%** |
+| `fox-15s-fast.sh` | **294 s** | **6 min 18 s** | reuse=3 |
+
+Do not use `--token-reduction` on fox-s2 / fox-fast.
+
 ## MI300X (gfx942) — perf-v2 branch
 
 ### fox-fast (512×512, 22f, 20 steps, reuse=2)

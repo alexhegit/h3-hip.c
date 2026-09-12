@@ -9,7 +9,7 @@ were not timed.
 | Product | `HIP_ARCH` | Default DiT | SDPA |
 |---------|------------|-------------|------|
 | **Strix Halo** (RDNA) | `gfx1151` | INT8 + BF16 activations | wave32 rocWMMA |
-| **MI210** (CDNA2) | `gfx90a` | BF16 GEMM | wave64 MFMA flash |
+| **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | BF16 GEMM | wave64 MFMA flash |
 
 Tagged **v0.11.0** is that three-product line with 512 px VAE tiles, INT8
@@ -35,9 +35,9 @@ Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.m
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 | ~85–90 s (I/O) | **10.8 s** | **~16 s** |
-| fox-fast | ~2 min (I/O) | **18.2 s** | **~12 s** |
-| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 11 s** | **3 min 46 s** |
+| fox-s2 | ~85–90 s (I/O) | **11.2 s** | **~16 s** |
+| fox-fast | ~2 min (I/O) | **19.5 s** | **~12 s** |
+| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **3 min 46 s** |
 
 These are **complete muxed MP4s** (video + audio), not stubs. fox-s2 and
 fox-fast are both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only
@@ -69,9 +69,9 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
 without TR (`main` 2026-09-12); `./bench/fox-15s.sh` (TR 4:30) is **26 min 56 s**
-on Strix Halo (gfx1151); **15 s E2E 12 min 11 s** on
-MI210 (gfx90a). Opt-in `--token-reduction` + `H3_INT8_VAE=1` on the same 15 s
-clip was **27 min 3 s** (Strix Halo, v0.11.0) / **8 min 21 s** (MI210);
+on Strix Halo (gfx1151); **15 s E2E 12 min 12 s** / `fox-15s.sh` **8 min 13 s**
+on MI210 (gfx90a). Opt-in `--token-reduction` + `H3_INT8_VAE=1` on the same 15 s
+clip was **27 min 3 s** (Strix Halo, v0.11.0) / **8 min 21 s** (MI210, 2026-09-02 all-opts);
 quality trade, not the showcase path.
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
@@ -128,8 +128,8 @@ MODEL=/path/to/MiniMax-H3
   -o assets/showcase/amd-developer-community-raw.mp4
 
 # Long T2VA — 15 s cinematic office (864×480, 362 frames;
-# E2E 40 min 4 s Strix Halo (gfx1151) no TR / 12 min 11 s MI210 (gfx90a);
-# ./bench/fox-15s.sh → 26 min 56 s on Halo)
+# E2E 40 min 4 s Strix Halo (gfx1151) no TR / 12 min 12 s MI210 (gfx90a);
+# ./bench/fox-15s.sh → 26 min 56 s Halo / 8 min 13 s MI210
 ./h3 --profile -d "$MODEL" \
   -p "15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
 
@@ -159,7 +159,7 @@ Current tagged line is **v0.11.0**. `h3 --info` prints `h3-hip 0.11.0`.
 | Dual HIP ISA (`HIP_ARCH=gfx1151` / `gfx90a` / `gfx942`) | ✅ |
 | FL2VA (`--first-frame` / `--last-frame`) | ✅ |
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
-| Runtime INT8 DiT (hipBLAS) | ✅ Strix Halo (gfx1151) default; MI210/MI300X via `H3_INT8_MLP=1` |
+| Runtime INT8 DiT (hipBLAS) | ✅ default on all ISAs (`H3_INT8_MLP=0` for BF16) |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; visible quality trade |
 
@@ -183,7 +183,8 @@ bound on both ISAs. Strix Halo fox-fast denoise with CLI TR was 34.6 s →
 25.8 s (v0.9.0); on 2026-09-12 `main` default fox-fast denoise is **26.4 s**.
 Same 15 s cinematic: Strix Halo (gfx1151) no-TR **40 min 4 s**;
 `./bench/fox-15s.sh` **26 min 56 s**; `./bench/fox-15s-fast.sh` **20 min 44 s**.
-MI210 (gfx90a) all-opts **8 min 21 s** (vs 12 min 11 s).
+MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
+`fox-15s-fast.sh` **6 min 18 s**.
 Tagged scoreboard stays without TR. Generate prints a stderr warning when
 the flag is on.
 

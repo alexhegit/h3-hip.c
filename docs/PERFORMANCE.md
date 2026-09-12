@@ -18,10 +18,10 @@ Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 E2E | ~85–90 s (I/O) | **~10.8 s** | **~16 s** |
-| fox-fast E2E | ~2 min (I/O) | **~18 s** | **~12 s** |
-| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 11 s** | **3 min 46 s** |
-| 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | — | see MI300X table |
+| fox-s2 E2E | ~85–90 s (I/O) | **11.2 s** | **~16 s** |
+| fox-fast E2E | ~2 min (I/O) | **19.5 s** | **~12 s** |
+| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **3 min 46 s** |
+| 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | **8 min 13 s** (2026-09-12) | see MI300X table |
 
 Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
@@ -144,34 +144,49 @@ wall** on an M5 Max, not T2VA end-to-end. On the same fox-fast knobs that
 figure is 16.7 s; HIP fox-fast denoise wall here is **24.5 s**. That ratio mixes two GPUs and
 two memory systems and is not a port-quality score.
 
-## MI210 (gfx90a) — v0.11.0 (2026-09-02)
+## MI210 (gfx90a) — `main` 2026-09-12
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx90a`. Default DiT is
-**BF16 hipBLAS** (not INT8). Four-GPU box: fox gates on `H3_HIP_DEVICE=1`,
-15 s on GPU 2. **64 GiB** VRAM per GPU (`h3 --info` max HIP buffer). Peak
-VRAM below is `--profile` `peak=` (live tensors), not `rocm-smi`.
+**INT8** (all ISAs). Four-GPU box: fox gates on `H3_HIP_DEVICE=1`, 15 s on
+GPU 2. **64 GiB** VRAM per GPU (`h3 --info` max HIP buffer). Peak VRAM is
+`--profile` `peak=` (live tensors). VAE tiles **480 px / 2×1** at 864×480.
 
-VAE default tile on this tree is **480 px / 2×1** for 864×480 (was 272 px /
-4×2). That is why 15 s VAE wall is ~72 s vs the older 93 s flash run.
+Retimed the `bench/` presets on `b04f95c`, plus 15 s **without** TR.
 
-### Default (INT8, no opt-in flags)
+| Preset | E2E | Denoise wall | Video VAE | Peak VRAM | Log |
+|--------|----:|-------------:|----------:|----------:|-----|
+| **fox-s2** | **11.16 s** | **1.38 s** | 2.63 s | 15.1 GiB | [`gfx90a-2026-09-12-fox-s2.log`](perf-runs/gfx90a-2026-09-12-fox-s2.log) |
+| **fox-fast** | **19.50 s** | **9.04 s** | 2.57 s | 19.7 GiB | [`gfx90a-2026-09-12-fox-fast.log`](perf-runs/gfx90a-2026-09-12-fox-fast.log) |
+| **15 s no TR** | **12 min 12 s** (732 s) | **10 min 47 s** (647 s) | 71.5 s | 27.9 GiB | [`gfx90a-2026-09-12-fox-15s-notr.log`](perf-runs/gfx90a-2026-09-12-fox-15s-notr.log) |
+| **15 s** `fox-15s.sh` (TR 4:30, reuse 2) | **8 min 13 s** (493 s) | **6 min 48 s** (408 s) | 71.4 s | 27.9 GiB | [`gfx90a-2026-09-12-fox-15s.log`](perf-runs/gfx90a-2026-09-12-fox-15s.log) |
+| **15 s-fast** `fox-15s-fast.sh` (TR, reuse 3) | **6 min 18 s** (378 s) | **4 min 54 s** (294 s) | 71.6 s | 27.9 GiB | [`gfx90a-2026-09-12-fox-15s-fast.log`](perf-runs/gfx90a-2026-09-12-fox-15s-fast.log) |
 
-INT8 is now the default on all ISAs (including MI210). On MI210 this is a
-**VRAM** knob, not a denoise win — denoise speed is identical to BF16.
+15 s no TR split: sdpa **466 s**, linear **168 s**. vs 2026-09-02 INT8 denoise
+660 s: **−2%** (now matches the old BF16 647 s). TR 4:30 vs this no-TR denoise:
+**−37%**. Ledger:
+[`perf-runs/MI210_2026-09-12.md`](perf-runs/MI210_2026-09-12.md).
+
+## MI210 (gfx90a) — v0.11.0 (2026-09-02)
+
+Historical BF16 / INT8 / all-opts A/B on the previous tree. Default DiT is
+now INT8; use `H3_INT8_MLP=0` for BF16. Four-GPU box, **64 GiB** per GPU.
+
+### Default (INT8, no opt-in flags) — 2026-09-02
+
+On that tree INT8 was a **VRAM** knob and denoise was slightly slower than
+BF16. The 2026-09-12 retune (above) is the current default INT8 scoreboard.
 
 | Preset | Command knobs | E2E | Denoise GPU | Peak VRAM |
 |--------|---------------|----:|------------:|----------:|
-| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **10.78 s** | **1.25 s** | **15.1 GiB** |
-| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **18.24 s** | **8.14 s** | **19.7 GiB** |
+| **fox-s2** | 512² · 22 f · `--steps 2 --layers 35 --reuse 1` | **11.13 s** | **1.33 s** | **15.1 GiB** |
+| **fox-fast** | 512² · 22 f · `--steps 20 --layers 45 --reuse 2` | **19.54 s** | **9.11 s** | **19.7 GiB** |
 | **15 s cinematic** | 864×480 · 362 f · `--steps 20 --layers 45 --reuse 2` | **12 min 25 s** | **11 min 00 s** | **27.9 GiB** |
 
-15 s INT8 split: sdpa **476.9 s** (74% of denoise), linear 156.8 s, VAE
-72.2 s (peak 10.2 GiB). E2E **731.18 s**.
+### BF16 DiT (`H3_INT8_MLP=0`) — 2026-09-02
 
-### BF16 DiT (`H3_INT8_MLP=0`)
-
-BF16 is available by setting `H3_INT8_MLP=0`. Same denoise speed as INT8 on
-MI210 but uses ~41 GiB peak VRAM vs ~28 GiB for INT8.
+BF16 is available by setting `H3_INT8_MLP=0`. On 2026-09-02, BF16 denoise
+matched this table; INT8 was slightly slower (see INT8 rows above). Peak VRAM
+is ~41 GiB vs ~28 GiB for INT8.
 
 | Preset | E2E | Denoise GPU | Peak VRAM | vs INT8 denoise |
 |--------|----:|------------:|----------:|----------------:|
@@ -290,9 +305,9 @@ With TR schedule (`H3_TOKEN_REDUCTION_SCHEDULE="0:4:50,10:4:45,20:4:30"`):
 |--------|----:|------------:|-----:|------------:|
 | **15 s cinematic** | **~1.85 min** | **79.3 s** | **~19 dB** | −30% denoise |
 
-INT8 is now the default on all ISAs. MI300X denoise is ~3× faster than MI210
-on the same 15 s path (180 s vs 540 s). fox-s2 / fox-fast E2E is I/O-bound
-on both CDNA cards.
+INT8 is now the default on all ISAs. MI300X denoise is ~3.5× faster than
+MI210 on the same 15 s no-TR path (186 s vs 647 s). fox-s2 / fox-fast E2E is
+I/O-bound on both CDNA cards.
 
 MI300X profile breakdown (15 s cinematic, BF16):
 - **SDPA (flash MFMA)**: 144.5 s — **77%** of denoise
@@ -415,7 +430,7 @@ is **40 min 4 s** (2026-09-12); v0.11.0 was 40 min 46 s.
 | | quality path | **`--token-reduction`** | **TR schedule** |
 |--|--:|--:|--:|
 | Strix Halo (gfx1151) 15 s E2E | **40 min 4 s** (2026-09-12) | **26 min 56 s** (`fox-15s.sh`) | — |
-| MI210 (gfx90a) 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) | — |
+| MI210 (gfx90a) 15 s E2E | **12 min 12 s** (2026-09-12) | **8 min 13 s** (`fox-15s.sh`); [MI210_2026-09-12.md](perf-runs/MI210_2026-09-12.md) | — |
 | MI300X (gfx942) 15 s E2E | 3 min 46 s (29.5 dB) | **~2.5 min** (20.4 dB, −34%) | **~1.85 min** (~19 dB, −55%) |
 
 ### TR schedule benchmark (MI300X, 5 s video)
