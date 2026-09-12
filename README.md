@@ -10,14 +10,14 @@ were not timed.
 |---------|------------|-------------|------|
 | **Strix Halo** (RDNA) | `gfx1151` | INT8 + BF16 activations | wave32 rocWMMA |
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
-| **MI300X** (CDNA3) | `gfx942` | BF16 GEMM | wave64 MFMA flash |
+| **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.11.0** is that three-product line with 512 px VAE tiles, INT8
-workspace reuse, and opt-in `--token-reduction` / `H3_INT8_VAE` /
-`H3_GPU_SAMPLER`. v0.10.x remains the dual-ISA history; v0.9.x is Strix Halo
-only. The original project is a native MiniMax-H3 inference engine
-(Apple Metal / macOS); this repository reimplements the GPU backend in pure
-HIP so the same CLI and model stack run on ROCm.
+Tagged **v0.12.0** adds per-step TR schedule, fused gate+AdaLN kernel,
+and 3-GPU retune. INT8 DiT is now default on all ISAs (`H3_INT8_MLP=0`
+for BF16). v0.11.x had opt-in INT8; v0.10.x is the dual-ISA history;
+v0.9.x is Strix Halo only. The original project is a native MiniMax-H3
+inference engine (Apple Metal / macOS); this repository reimplements the
+GPU backend in pure HIP so the same CLI and model stack run on ROCm.
 
 [![h3-hip.c ident](assets/showcase/h3-hip-ident.jpg)](assets/showcase/h3-hip-ident.mp4)
 
@@ -35,9 +35,9 @@ Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.m
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 | ~85–90 s (I/O) | **11.2 s** | **~16 s** |
-| fox-fast | ~2 min (I/O) | **19.5 s** | **~12 s** |
-| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **3 min 46 s** |
+| fox-s2 | ~85–90 s (I/O) | **11.2 s** | **3.3 s** |
+| fox-fast | ~2 min (I/O) | **19.5 s** | **5.2 s** |
+| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **179.5 s** (no TR) / **114.7 s** (`fox-15s.sh`) |
 
 These are **complete muxed MP4s** (video + audio), not stubs. fox-s2 and
 fox-fast are both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only
@@ -70,9 +70,8 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
 without TR (`main` 2026-09-12); `./bench/fox-15s.sh` (TR 4:30) is **26 min 56 s**
 on Strix Halo (gfx1151); **15 s E2E 12 min 12 s** / `fox-15s.sh` **8 min 13 s**
-on MI210 (gfx90a). Opt-in `--token-reduction` + `H3_INT8_VAE=1` on the same 15 s
-clip was **27 min 3 s** (Strix Halo, v0.11.0) / **8 min 21 s** (MI210, 2026-09-02 all-opts);
-quality trade, not the showcase path.
+on MI210 (gfx90a); **15 s E2E 179.5 s** / `fox-15s.sh` **114.7 s**
+on MI300X (gfx942) / `fox-15s-fast.sh` **83.1 s**.
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
 [Wiki: Long video](docs/wiki/Long-video.md) ·
@@ -151,7 +150,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.11.0**. `h3 --info` prints `h3-hip 0.11.0`.
+Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
 
 | Capability | Status |
 |------------|--------|
@@ -161,7 +160,7 @@ Current tagged line is **v0.11.0**. `h3 --info` prints `h3-hip 0.11.0`.
 | Ref2VA (`--ref-image`, `--ref-silent-video`, `--ref-video`, `--ref-audio`) | ✅ |
 | Runtime INT8 DiT (hipBLAS) | ✅ default on all ISAs (`H3_INT8_MLP=0` for BF16) |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
-| `--token-reduction` | ✅ opt-in; off by default; visible quality trade |
+| `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
 
 ## Documentation
 
@@ -179,12 +178,14 @@ commands are in PERFORMANCE.md. **`--token-reduction`** is the same opt-in
 speed flag as [h3-spark.c](https://github.com/alexhegit/h3-spark.c) (pair
 video tokens in middle DiT blocks). It is **off by default**. Use it when
 wall clock matters more than fox-s2 bit identity — long T2VA is DiT-SDPA
-bound on both ISAs. Strix Halo fox-fast denoise with CLI TR was 34.6 s →
+bound on all ISAs. Strix Halo fox-fast denoise with CLI TR was 34.6 s →
 25.8 s (v0.9.0); on 2026-09-12 `main` default fox-fast denoise is **26.4 s**.
 Same 15 s cinematic: Strix Halo (gfx1151) no-TR **40 min 4 s**;
 `./bench/fox-15s.sh` **26 min 56 s**; `./bench/fox-15s-fast.sh` **20 min 44 s**.
 MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
 `fox-15s-fast.sh` **6 min 18 s**.
+MI300X (gfx942) no-TR **179.5 s**; `fox-15s.sh` **114.7 s**;
+`fox-15s-fast.sh` **83.1 s**.
 Tagged scoreboard stays without TR. Generate prints a stderr warning when
 the flag is on.
 
@@ -212,7 +213,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.11.0
+git checkout v0.12.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
