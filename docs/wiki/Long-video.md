@@ -14,8 +14,10 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 | Clip | Product | Duration | E2E wall | Denoise wall | File |
 |------|---------|----------|----------|--------------|------|
 | 10 s cinematic office | Strix Halo (gfx1151) | 10.1 s (243 f) | **24.7 min** | 21.2 min | [`long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
-| **15 s cinematic office** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **40 min 46 s** | **36 min 38 s** | [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
-| **15 s all-opts** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **27 min 3 s** | **23 min 10 s** | sampler+TR+INT8 VAE; [`long-15s-all-opts-2026-09-03.log`](../perf-runs/long-15s-all-opts-2026-09-03.log) |
+| **15 s cinematic office** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **40 min 4 s** | **36 min 7 s** | no TR, 2026-09-12; [`gfx1151-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log) |
+| **15 s all-opts** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **27 min 3 s** | **23 min 10 s** | sampler+TR+INT8 VAE; v0.11.0 |
+| **15 s `fox-15s.sh`** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **26 min 56 s** | **22 min 53 s** | reuse=2+TR; [`gfx1151-2026-09-12-fox-15s.log`](../perf-runs/gfx1151-2026-09-12-fox-15s.log) |
+| **15 s-fast** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **20 min 44 s** | **16 min 28 s** | reuse=3+TR; [`gfx1151-2026-09-12-fox-15s-fast.log`](../perf-runs/gfx1151-2026-09-12-fox-15s-fast.log) |
 | **15 s cinematic office** | MI210 (gfx90a) | **15.1 s (362 f)** | **12 min 11 s** | **10 min 47 s** | v0.11.0; 480 px VAE tiles |
 | **15 s + `--token-reduction`** | MI210 (gfx90a) | **15.1 s (362 f)** | **8 min 21 s** | **6 min 56 s** | opt-in; [`TOKEN_REDUCTION.md`](../perf-mi210/TOKEN_REDUCTION.md) |
 
@@ -23,10 +25,11 @@ Posters: `assets/showcase/long-*-cinematic.jpg`
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
 MI210 session: [`docs/perf-mi210/STATUS.md`](../perf-mi210/STATUS.md)
 
-10 s was not re-timed on MI210 or on v0.11.0 Strix Halo. The gallery MP4 is the
-**quality path** (no TR). Strix Halo (gfx1151) quality path on **v0.11.0**: E2E
-**40 min 46 s**, denoise **36 min 38 s**, VAE **174 s** (2×1 @ 480 px), DiT
-peak **27.9 GiB**. Log: [`long-15s-default-2026-09-03.log`](../perf-runs/long-15s-default-2026-09-03.log).
+10 s was not re-timed on MI210. The gallery MP4 is the **quality path** (no
+TR). Strix Halo (gfx1151) quality path on **`main` 2026-09-12**: E2E
+**40 min 4 s**, denoise **36 min 7 s**, VAE **171 s** (2×1 @ 480 px), DiT
+peak **27.9 GiB**. Log: [`gfx1151-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log).
+v0.11.0 on the same knobs was 40 min 46 s / 36 min 38 s / 174 s.
 
 ## Reproduce the 15 s clip
 
@@ -57,7 +60,7 @@ the quality path. GPU sampler is not required on Strix Halo (gfx1151).
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|
-| Strix Halo (gfx1151) 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts) |
+| Strix Halo (gfx1151) 15 s E2E | **40 min 4 s** (no TR, 2026-09-12) | **26 min 56 s** (`fox-15s.sh`) |
 | MI210 (gfx90a) 15 s E2E | 12 min 11 s | **8 min 21 s** (denoise 6 min 56 s all-opts) |
 | MI300X (gfx942) 15 s E2E | **3 min 46 s** | **~2.4 min** (all-opts) |
 

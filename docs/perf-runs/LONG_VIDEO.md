@@ -27,10 +27,13 @@ Prompt style: fal.ai timed shot list (T2VA, no references). Logs and MP4 under
 | 10.125 s | 243 | **24.7 min** (1479.8 s) | **21.2 min** (1273.2 s) | **2.3 min** (139.5 s) | [`assets/showcase/long-10s-cinematic.mp4`](../../assets/showcase/long-10s-cinematic.mp4) |
 | 15.083 s | 362 | **45.0 min** (2701.4 s) | **40.4 min** (2423.0 s) | **3.5 min** (207.1 s) | v0.9.0; [`long-15s-cinematic.mp4`](../../assets/showcase/long-15s-cinematic.mp4) |
 | 15.083 s (`main` 2026-09-03) | 362 | **40 min 46 s** (2446 s) | **36 min 38 s** (2198 s) | **2.9 min** (174 s) | 2×1 @ 480 px; peak 27.9 GiB; [`long-15s-default-2026-09-03.log`](long-15s-default-2026-09-03.log) |
+| 15.083 s no TR (`main` 2026-09-12) | 362 | **40 min 4 s** (2404 s) | **36 min 7 s** (2167 s) | **2.8 min** (171 s) | same knobs, no TR; [`gfx1151-2026-09-12-fox-15s-notr.log`](gfx1151-2026-09-12-fox-15s-notr.log) |
 | 15.083 s all-opts (`main` 2026-09-03) | 362 | **27 min 3 s** (1623 s) | **23 min 10 s** (1390 s) | **2.5 min** (150 s) | sampler+TR+INT8 VAE; VAE peak 3.7 GiB; [`long-15s-all-opts-2026-09-03.log`](long-15s-all-opts-2026-09-03.log) |
+| 15.083 s `fox-15s.sh` (`main` 2026-09-12) | 362 | **26 min 56 s** (1616 s) | **22 min 53 s** (1373 s) | **2.8 min** (171 s) | reuse=2 + TR 4:30; [`gfx1151-2026-09-12-fox-15s.log`](gfx1151-2026-09-12-fox-15s.log) |
+| 15.083 s `fox-15s-fast.sh` (`main` 2026-09-12) | 362 | **20 min 44 s** (1244 s) | **16 min 28 s** (988 s) | **2.8 min** (171 s) | reuse=3 + TR; [`gfx1151-2026-09-12-fox-15s-fast.log`](gfx1151-2026-09-12-fox-15s-fast.log) |
 
 For reference, fox-fast (512² · 22 frames) on this machine is I/O-bound E2E
-with **24.5 s** denoise GPU on `main` ([`PERFORMANCE.md`](../PERFORMANCE.md)).
+with **26.4 s** denoise GPU on `main` 2026-09-12 ([`PERFORMANCE.md`](../PERFORMANCE.md)).
 
 Long clips are dominated by DiT denoise. Scaling 22 → 362 frames is ~16× in
 frame count; denoise wall grows ~86× (28 s → 2423 s), reflecting super-linear

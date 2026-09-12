@@ -20,12 +20,32 @@ Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 |--------|---------------------:|---------------:|----------------:|
 | fox-s2 E2E | ~85–90 s (I/O) | **~10.8 s** | **~16 s** |
 | fox-fast E2E | ~2 min (I/O) | **~18 s** | **~12 s** |
-| 15 s cinematic E2E | **40 min 46 s** | **12 min 11 s** | **3 min 46 s** |
+| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 11 s** | **3 min 46 s** |
+| 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | — | see MI300X table |
 
 Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
 `34507f072c5cabbde6592b3f70b8fa35` (2026-09-03). `halo-regression` still
 expects the v0.9.0 hash unless you set `H3_FOX_S2_MD5` / `H3_VAE_TILE_PIXELS`.
+
+## Strix Halo (gfx1151) — `main` 2026-09-12
+
+Same box as v0.11.0 (`rocminfo` **gfx1151**, Ryzen AI MAX+ 395 / 8060S).
+Retimed the `bench/` presets on `ee49f8c`, plus 15 s **without** TR.
+
+| Preset | E2E | Denoise wall | Video VAE | Peak VRAM | Log |
+|--------|----:|-------------:|----------:|----------:|-----|
+| **fox-s2** | I/O | **3.81 s** | 13.4 s | 15.1 GiB | [`gfx1151-2026-09-12-fox-s2.log`](perf-runs/gfx1151-2026-09-12-fox-s2.log) |
+| **fox-fast** | I/O | **26.4 s** | 7.76 s | 19.7 GiB | [`gfx1151-2026-09-12-fox-fast.log`](perf-runs/gfx1151-2026-09-12-fox-fast.log) |
+| **15 s no TR** | **40 min 4 s** | **36 min 7 s** (2167 s) | 171 s | 27.9 GiB | [`gfx1151-2026-09-12-fox-15s-notr.log`](perf-runs/gfx1151-2026-09-12-fox-15s-notr.log) |
+| **15 s** `fox-15s.sh` (TR 4:30, reuse 2) | **26 min 56 s** | **22 min 53 s** (1373 s) | 171 s | 27.9 GiB | [`gfx1151-2026-09-12-fox-15s.log`](perf-runs/gfx1151-2026-09-12-fox-15s.log) |
+| **15 s-fast** `fox-15s-fast.sh` (TR, reuse 3) | **20 min 44 s** | **16 min 28 s** (988 s) | 171 s | 27.9 GiB | [`gfx1151-2026-09-12-fox-15s-fast.log`](perf-runs/gfx1151-2026-09-12-fox-15s-fast.log) |
+
+15 s no TR split: sdpa **1581 s**, linear 553 s. vs v0.11.0 quality 2198 s /
+2446 s: denoise **−1.4%**, E2E **−1.7%**. TR 4:30 vs this no-TR denoise:
+**−37%**. fox-s2 / fox-fast denoise is a few percent slower than 3.36 s /
+24.5 s on 2026-09-03. Ledger:
+[`perf-runs/HALO_2026-09-12.md`](perf-runs/HALO_2026-09-12.md).
 
 ## Strix Halo (gfx1151) — v0.11.0 (2026-09-03)
 
@@ -389,11 +409,12 @@ Override at runtime: `H3_VAE_TILE_PIXELS=272` restores old behaviour.
 
 Optional **`--token-reduction`** (off by default; same CLI as h3-spark.c):
 pairs middle-block video tokens so long-N SDPA shrinks. Do not replace the
-**tagged** quality-path row (40 min 46 s / 12 min 11 s) with these numbers.
+**tagged** quality-path row with these numbers. Halo no-TR on current `main`
+is **40 min 4 s** (2026-09-12); v0.11.0 was 40 min 46 s.
 
 | | quality path | **`--token-reduction`** | **TR schedule** |
 |--|--:|--:|--:|
-| Strix Halo (gfx1151) 15 s E2E | **40 min 46 s** (v0.11.0) | **27 min 3 s** (all-opts / TR+INT8 VAE) | — |
+| Strix Halo (gfx1151) 15 s E2E | **40 min 4 s** (2026-09-12) | **26 min 56 s** (`fox-15s.sh`) | — |
 | MI210 (gfx90a) 15 s E2E | 12 min 11 s | **8 min 21 s** (−31% all-opts / CLI TR); [perf-mi210/TOKEN_REDUCTION.md](perf-mi210/TOKEN_REDUCTION.md) | — |
 | MI300X (gfx942) 15 s E2E | 3 min 46 s (29.5 dB) | **~2.5 min** (20.4 dB, −34%) | **~1.85 min** (~19 dB, −55%) |
 

@@ -1626,6 +1626,39 @@ int h3_gpu_sdpa_bf16_head_major_output(
                        1);
 }
 
+int h3_gpu_sdpa_bf16_head_major_output_int8(
+                     h3_gpu *opaque, h3_gpu_tensor *quantized_output,
+                     h3_gpu_tensor *head_scales, h3_gpu_tensor *row_scales,
+                     const h3_gpu_tensor *query, const h3_gpu_tensor *key,
+                     const h3_gpu_tensor *value, uint32_t sequence,
+                     uint32_t heads, uint32_t head_dim, float scale) {
+    (void)opaque;
+    (void)quantized_output;
+    (void)head_scales;
+    (void)row_scales;
+    (void)query;
+    (void)key;
+    (void)value;
+    (void)sequence;
+    (void)heads;
+    (void)head_dim;
+    (void)scale;
+    return 0;
+}
+
+int h3_gpu_linear_int8_prequant(
+                     h3_gpu *opaque, h3_gpu_tensor *output,
+                     const h3_gpu_tensor *quantized_input,
+                     const h3_gpu_tensor *input_scales,
+                     const h3_gpu_tensor *weight,
+                     const h3_gpu_tensor *weight_scales,
+                     uint32_t rows, uint32_t input_dim, uint32_t output_dim) {
+    return h3_gpu_linear_int8_bf16(
+        opaque, output, (h3_gpu_tensor *)quantized_input,
+        (h3_gpu_tensor *)input_scales, quantized_input, weight, weight_scales,
+        rows, input_dim, output_dim, 0);
+}
+
 int h3_gpu_swiglu_f32(h3_gpu *opaque, h3_gpu_tensor *output,
                       const h3_gpu_tensor *fused, uint32_t rows,
                       uint32_t width) {
