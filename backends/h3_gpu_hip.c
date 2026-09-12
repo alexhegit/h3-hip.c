@@ -4109,13 +4109,26 @@ int h3_gpu_gate_adaln_quantize_int8(
         }
         own_adaln = 1;
     }
-    int ok = h3_gpu_gate_adaln_bf16(
-        gpu, gated_residual, adaln_out, residual, branch, norm_weight,
-        gate_modulation, norm_modulation, row_map, rows, width, slots,
-        gate_slot, shift_slot, scale_slot, epsilon) &&
-             h3_hip_quantize_bf16_int8_rows(
-                 ctx, quantized_output, quantized_scales, adaln_out, rows,
-                 padded_rows, width);
+    /* Use fused gate+AdaLN+quantize kernel to eliminate intermediate BF16
+     * buffer round-trip. The fused kernel writes gated_residual and directly
+     * quantizes the AdaLN output to INT8, saving one full seq*HIDDEN BF16
+     * global memory write+read. */
+    h3_gate_adaln_args gate_args = {rows, width, slots, gate_slot,
+                                     shift_slot, scale_slot, epsilon};
+    int ok = h3_hip_launch_ok(
+        ctx,
+        h3_launch_gate_adaln_quantize_int8(
+            (const uint16_t *)tensor_ptr(residual)->data,
+            (const uint16_t *)tensor_ptr(branch)->data,
+            (const uint16_t *)tensor_ptr(gate_modulation)->data,
+            (const uint32_t *)tensor_ptr(row_map)->data,
+            (const uint16_t *)tensor_ptr(norm_weight)->data,
+            (const uint16_t *)tensor_ptr(norm_modulation)->data,
+            (uint16_t *)tensor_ptr(gated_residual)->data,
+            (int8_t *)tensor_ptr(quantized_output)->data,
+            (float *)tensor_ptr(quantized_scales)->data,
+            &gate_args, ctx->stream),
+        "fused gate AdaLN quantize int8");
     if (own_adaln) h3_gpu_tensor_free(adaln_out);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_gate_adaln_quantize_int8 failed");
