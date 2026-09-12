@@ -29,6 +29,8 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/long-15s-all-opts-2026-09-03.log`](../perf-runs/long-15s-all-opts-2026-09-03.log) | gfx1151 15 s all-opts (sampler+TR+INT8 VAE) |
 | [`../perf-runs/long-15s-tr-int8vae-2026-09-03.log`](../perf-runs/long-15s-tr-int8vae-2026-09-03.log) | gfx1151 15 s TR+INT8 VAE (no sampler) |
 | [`../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt`](../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt) | gfx1151 fox default / sampler / all-opts `--profile` |
+| [`../perf-runs/HALO_2026-09-12.md`](../perf-runs/HALO_2026-09-12.md) | gfx1151 `bench/` retune on current `main` |
+| [`../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log) | gfx1151 15 s quality path, no TR |
 | [`../perf-runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md) | What antirez/h3.c publishes vs HIP reruns |
 | `docs/perf-day*/STATUS.md` | Session logs |
 | [`../deprecated/`](../deprecated/README.md) | Superseded whole docs (e.g. the pre-port plan) |

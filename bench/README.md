@@ -43,6 +43,22 @@ All scripts use `--profile` and print per-phase GPU timing.
 | `H3_GPU_SAMPLER` | 0 | GPU Euler sampler |
 | `H3_PROFILE` | 0 | Enable profiling (always on via --profile) |
 
+## Strix Halo (gfx1151) — `main` 2026-09-12
+
+AMD Ryzen AI MAX+ 395 / Radeon 8060S. Logs under
+[`docs/perf-runs/HALO_2026-09-12.md`](../docs/perf-runs/HALO_2026-09-12.md).
+
+| Script | DiT denoise | E2E (phase sum) | vs v0.11.0 Halo denoise |
+|--------|----------:|----------------:|------------------------|
+| `fox-s2.sh` | **3.81 s** | I/O | 3.36 s → +13% |
+| `fox-fast.sh` | **26.4 s** | I/O | 24.5 s → +8% |
+| no TR 15 s | **2167 s** | **40 min 4 s** | 2198 s → −1.4% |
+| `fox-15s.sh` | **1373 s** | **26 min 56 s** | no-TR 2167 s → **−37%** |
+| `fox-15s-fast.sh` | **988 s** | **20 min 44 s** | reuse=3 |
+
+Do not use `--token-reduction` on fox-s2 / fox-fast (same as MI300X). GPU
+sampler is not a Halo win.
+
 ## MI300X (gfx942) — perf-v2 branch
 
 ### fox-fast (512×512, 22f, 20 steps, reuse=2)

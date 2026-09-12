@@ -596,6 +596,22 @@ int h3_gpu_sdpa_bf16_head_major_output(
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,
                      uint32_t heads, uint32_t head_dim, float scale);
+/* Opt-in INT8 SDPA (`H3_ENABLE_INT8_SDPA`). HIP returns 0 until a kernel
+ * lands; the DiT path stays on BF16 SDPA. */
+int h3_gpu_sdpa_bf16_head_major_output_int8(
+                     h3_gpu *gpu, h3_gpu_tensor *quantized_output,
+                     h3_gpu_tensor *head_scales, h3_gpu_tensor *row_scales,
+                     const h3_gpu_tensor *query, const h3_gpu_tensor *key,
+                     const h3_gpu_tensor *value, uint32_t sequence,
+                     uint32_t heads, uint32_t head_dim, float scale);
+/* INT8 GEMM with activations already quantized (row scales). */
+int h3_gpu_linear_int8_prequant(
+                     h3_gpu *gpu, h3_gpu_tensor *output,
+                     const h3_gpu_tensor *quantized_input,
+                     const h3_gpu_tensor *input_scales,
+                     const h3_gpu_tensor *weight,
+                     const h3_gpu_tensor *weight_scales,
+                     uint32_t rows, uint32_t input_dim, uint32_t output_dim);
 int h3_gpu_swiglu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                        const h3_gpu_tensor *fused, uint32_t rows,
                        uint32_t width);
