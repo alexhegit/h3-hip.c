@@ -11,9 +11,9 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.11.0 (2026-09-03)
+## Current release — v0.12.0 (2026-09-12)
 
-One tree, three timed products. `h3 --info` prints `h3-hip 0.11.0`.
+One tree, three timed products. `h3 --info` prints `h3-hip 0.12.0`.
 Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
