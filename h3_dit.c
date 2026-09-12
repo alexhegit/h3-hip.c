@@ -105,6 +105,10 @@ struct h3_dit {
     unsigned token_reduction_early_steps;
     unsigned token_reduction_early_end;
     float token_reduction_scale;
+    /* Per-step TR schedule: overrides begin/end based on denoising step. */
+    struct { unsigned step; unsigned begin; unsigned end; }
+        token_reduction_schedule[16];
+    unsigned token_reduction_schedule_count;
     float spatial_rope_scale;
     int bf16_final;
     unsigned core_reuse_interval;
@@ -191,6 +195,8 @@ struct h3_dit {
     h3_gpu_tensor *int8_mlp_ws;
     h3_gpu_tensor *int8_qkv_ws;
     h3_gpu_tensor *int8_adaln_ws;
+    h3_gpu_tensor *int8_attention_head_scales;
+    h3_gpu_tensor *int8_attention_row_scales;
     h3_gpu_tensor *final_audio_input;
     h3_gpu_tensor *final_video_input;
     h3_gpu_tensor *final_audio_inverse;
@@ -388,8 +394,10 @@ static int validate_layout(h3_dit *dit, const h3_text_embedding *text,
 static int configure_token_reduction(h3_dit *dit, int requested,
                                      char *error, size_t error_size) {
     const char *enabled = getenv("H3_TOKEN_REDUCTION");
+    const char *sched_env = getenv("H3_TOKEN_REDUCTION_SCHEDULE");
     if (!requested &&
-        (!enabled || !*enabled || !strcmp(enabled, "0"))) return 1;
+        (!enabled || !*enabled || !strcmp(enabled, "0")) &&
+        (!sched_env || !*sched_env)) return 1;
     unsigned begin = 4, end = 30;
     const char *range = getenv("H3_TOKEN_REDUCTION_BLOCKS");
     if (range && *range) {
@@ -475,6 +483,41 @@ static int configure_token_reduction(h3_dit *dit, int requested,
     dit->token_reduction_early_steps = early_steps;
     dit->token_reduction_early_end = early_end;
     dit->token_reduction_scale = scale;
+    /* Parse optional per-step TR schedule: "STEP:BEGIN:END,STEP:BEGIN:END,..." */
+    dit->token_reduction_schedule_count = 0;
+    if (sched_env && *sched_env) {
+        char buf[256];
+        strncpy(buf, sched_env, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *save = NULL;
+        char *tok = strtok_r(buf, ",", &save);
+        while (tok && dit->token_reduction_schedule_count < 16) {
+            unsigned long s = strtoul(tok, &tok, 10);
+            if (*tok != ':') goto sched_fail;
+            tok++;
+            unsigned long b = strtoul(tok, &tok, 10);
+            if (*tok != ':') goto sched_fail;
+            tok++;
+            unsigned long e = strtoul(tok, NULL, 10);
+            if (e > H3_DIT_BLOCKS || (b == 0 && e == 0)) {
+                /* STEP:0:0 is a special "disable TR from this step" marker. */
+            } else if (b >= e) goto sched_fail;
+            dit->token_reduction_schedule[
+                dit->token_reduction_schedule_count].step = (unsigned)s;
+            dit->token_reduction_schedule[
+                dit->token_reduction_schedule_count].begin = (unsigned)b;
+            dit->token_reduction_schedule[
+                dit->token_reduction_schedule_count].end = (unsigned)e;
+            dit->token_reduction_schedule_count++;
+            tok = strtok_r(NULL, ",", &save);
+        }
+        if (dit->token_reduction_schedule_count == 0) {
+sched_fail:
+            fail(error, error_size,
+                 "H3_TOKEN_REDUCTION_SCHEDULE must be STEP:BEGIN:END,...");
+            return 0;
+        }
+    }
     dit->reduced_video_rows = (uint32_t)reduced_video;
     dit->token_baseline_rows = dit->video_rows - dit->reduced_video_rows;
     dit->reduced_sequence = dit->video_target_start +
@@ -1735,6 +1778,20 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
                  h3_gpu_error(dit->gpu));
             return 0;
         }
+        if (dit->int8_attention_out) {
+            size_t padded_sequence = (sequence + 127) & ~(size_t)127;
+            dit->int8_attention_head_scales = h3_gpu_tensor_new_f32_device(
+                dit->gpu, (size_t)sequence * HEADS);
+            dit->int8_attention_row_scales = h3_gpu_tensor_new_f32_device(
+                dit->gpu, padded_sequence);
+            if (!dit->int8_attention_head_scales ||
+                !dit->int8_attention_row_scales) {
+                fail(error, error_size,
+                     "cannot allocate int8 attention scales: %s",
+                     h3_gpu_error(dit->gpu));
+                return 0;
+            }
+        }
     }
     if (dit->int8_mlp || dit->fp8_mlp) {
         dit->int8_mlp_ws = h3_gpu_tensor_new_bf16_device(
@@ -2223,30 +2280,49 @@ static int run_block(h3_dit *dit, unsigned index, int step,
         !dit->use_slower_row_major_attention_output &&
         !dit->use_slower_uncached_int8_scales &&
         !getenv("H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT");
-    if (head_major_attention_output)
+    int int8_sdpa = head_major_attention_output &&
+        dit->int8_attention_head_scales && dit->int8_attention_row_scales &&
+        !getenv("H3_DISABLE_INT8_SDPA") &&
+        getenv("H3_ENABLE_INT8_SDPA");
+    if (int8_sdpa) {
+        OP(h3_gpu_sdpa_bf16_head_major_output_int8(
+            dit->gpu, dit->int8_activation, dit->int8_attention_head_scales,
+            dit->int8_attention_row_scales,
+            dit->query, dit->key, dit->value,
+            rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM)),
+           "DiT int8 SDPA + scale reduction");
+    } else if (head_major_attention_output) {
         OP(h3_gpu_sdpa_bf16_head_major_output(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
             rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM)),
            "DiT head-major full attention");
-    else
+    } else {
         OP(h3_gpu_sdpa_bf16(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
             rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM)),
            "DiT full attention");
+    }
     if (int8_attention_output) {
-        if (head_major_attention_output)
+        if (int8_sdpa) {
+            OP(h3_gpu_linear_int8_prequant(
+                dit->gpu, dit->attention_output, dit->int8_activation,
+                dit->int8_attention_row_scales,
+                weight->out_int8, weight->out_scales, rows, HEADS * HEAD_DIM,
+                HIDDEN), "DiT int8 SDPA prequant attention output");
+        } else if (head_major_attention_output) {
             OP(h3_gpu_linear_int8_head_major_bf16(
                 dit->gpu, dit->attention_output, dit->int8_activation,
                 dit->int8_activation_scales, dit->attention_heads,
                 weight->out_int8, weight->out_scales, rows, HEADS, HEAD_DIM,
                 HIDDEN), "DiT head-major int8 attention output");
-        else
+        } else {
             OP(h3_gpu_linear_int8_bf16(
                 dit->gpu, dit->attention_output, dit->int8_activation,
                 dit->int8_activation_scales, dit->attention_heads,
                 weight->out_int8, weight->out_scales, rows, INNER, HIDDEN,
                 dit->use_slower_uncached_int8_scales),
                "DiT int8 attention output");
+        }
     } else if (dit->fp8_attention_out && !getenv("H3_DISABLE_FP8_ATTENTION_OUT")) {
         OP(h3_gpu_linear_fp8_bf16(
             dit->gpu, dit->attention_output, dit->int8_activation,
@@ -2495,6 +2571,19 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
         dit->token_reduction_early_steps &&
         (unsigned)step < dit->token_reduction_early_steps ?
             dit->token_reduction_early_end : dit->token_reduction_end;
+    unsigned token_reduction_begin = dit->token_reduction_begin;
+    /* Override with per-step schedule if set. */
+    if (dit->token_reduction_schedule_count) {
+        for (unsigned i = 0; i < dit->token_reduction_schedule_count; i++) {
+            if ((unsigned)step >= dit->token_reduction_schedule[i].step) {
+                token_reduction_begin = dit->token_reduction_schedule[i].begin;
+                token_reduction_end = dit->token_reduction_schedule[i].end;
+            }
+        }
+        /* STEP:0:0 disables TR from that step onward. */
+        if (token_reduction_begin == 0 && token_reduction_end == 0)
+            use_token_reduction = 0;
+    }
     uint32_t hidden_elements = dit->sequence * HIDDEN;
     if (evaluate_core && dit->core_reuse_interval > 1)
         OP(h3_gpu_copy_bf16(dit->gpu, dit->core_input, 0, dit->hidden, 0,
@@ -2513,7 +2602,7 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
             carried_attention_adaln = 0;
             carried_attention_input_quantized = 0;
             if (use_token_reduction &&
-                block == dit->token_reduction_begin) {
+                block == token_reduction_begin) {
                 fused_token_adaln = dit->block_active[block] &&
                     !getenv("H3_DISABLE_FUSED_TOKEN_POOL_ADALN");
                 if (fused_token_adaln) {
@@ -2536,7 +2625,7 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
             if (!dit->block_active[block]) continue;
             unsigned next_block = block + 1;
             int next_is_token_boundary = use_token_reduction &&
-                (next_block == dit->token_reduction_begin ||
+                (next_block == token_reduction_begin ||
                  next_block == token_reduction_end);
             int fuse_next_attention =
                 !getenv("H3_DISABLE_FUSED_CROSS_BLOCK_ADALN") &&
@@ -3364,7 +3453,8 @@ void h3_dit_free(h3_dit *dit) {
     FREE(token_expand_parents); FREE(token_original); FREE(mod_mlp); FREE(fc1);
     FREE(activated); FREE(mlp_output); FREE(int8_activation);
     FREE(int8_activation_scales); FREE(int8_mlp_ws);
-    FREE(int8_qkv_ws); FREE(int8_adaln_ws); FREE(final_audio_input);
+    FREE(int8_qkv_ws); FREE(int8_adaln_ws);
+    FREE(int8_attention_head_scales); FREE(int8_attention_row_scales); FREE(final_audio_input);
     FREE(final_video_input); FREE(final_audio_inverse);
     FREE(final_video_inverse); FREE(final_audio_norm); FREE(final_video_norm);
     FREE(final_audio_f32); FREE(final_video_f32); FREE(audio_output);

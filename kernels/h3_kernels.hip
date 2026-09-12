@@ -862,6 +862,87 @@ __global__ void h3_gate_adaln_bf16_kernel(const uint16_t *residual,
     }
 }
 
+/* Fused gate + AdaLN + INT8 quantization kernel.
+ * Merges h3_gate_adaln_bf16_kernel (pass 1+2) with h3_quantize_bf16_int8_rows
+ * to eliminate the intermediate BF16 adaln_out global memory round-trip.
+ * Pass 1: compute gated values, RMS sum, write gated_residual
+ * Pass 2: apply AdaLN, store BF16 in gated_values[], track local max
+ * Pass 3: quantize from shared memory, write INT8 + scales
+ * clip is always 1.0 for INT8. */
+__global__ void h3_gate_adaln_quantize_int8_kernel(
+    const uint16_t *residual, const uint16_t *branch,
+    const uint16_t *gate_modulation, const uint32_t *row_map,
+    const uint16_t *weight, const uint16_t *norm_modulation,
+    uint16_t *gated_residual,
+    int8_t *quantized_output, float *quantized_scales,
+    h3_gate_adaln_args args) {
+    uint32_t row = blockIdx.x;
+    uint32_t tid = threadIdx.x;
+    uint32_t threads = blockDim.x;
+    if (row >= args.rows) return;
+    __shared__ float reductions[256];
+    __shared__ uint16_t gated_values[5376];
+    uint32_t base = row_map[row] * args.slots * args.width;
+    /* Pass 1: gated values + RMS sum + write gated_residual */
+    float local_sum = 0.0f;
+    for (uint32_t column = tid; column < args.width; column += threads) {
+        uint32_t index = row * args.width + column;
+        float gate = h3_bf16_to_f32(
+            gate_modulation[base + args.gate_slot * args.width + column]);
+        uint16_t gated = h3_f32_to_bf16(
+            h3_bf16_to_f32(residual[index]) +
+            h3_bf16_to_f32(branch[index]) * gate);
+        gated_residual[index] = gated;
+        gated_values[column] = gated;
+        float value = h3_bf16_to_f32(gated);
+        local_sum = fmaf(value, value, local_sum);
+    }
+    reductions[tid] = local_sum;
+    __syncthreads();
+    for (uint32_t stride = threads / 2; stride; stride >>= 1) {
+        if (tid < stride) reductions[tid] += reductions[tid + stride];
+        __syncthreads();
+    }
+    float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
+    /* Pass 2: AdaLN + find max, store BF16 in gated_values for pass 3 */
+    float local_max = 0.0f;
+    for (uint32_t column = tid; column < args.width; column += threads) {
+        float normalized = h3_bf16_to_f32(gated_values[column]) * inverse *
+            h3_bf16_to_f32(weight[column]);
+        float shift = h3_bf16_to_f32(
+            norm_modulation[base + args.shift_slot * args.width + column]);
+        float scale = h3_bf16_to_f32(
+            norm_modulation[base + args.scale_slot * args.width + column]);
+        float adaln = normalized * (1.0f + scale) + shift;
+        local_max = fmaxf(local_max, fabsf(adaln));
+        gated_values[column] = h3_f32_to_bf16(adaln);
+    }
+    /* Warp reduction for max */
+    for (int offset = 16; offset > 0; offset >>= 1)
+        local_max = fmaxf(local_max, h3_shfl_xor32(local_max, offset));
+    if ((tid & 31u) == 0u) reductions[tid >> 5] = local_max;
+    __syncthreads();
+    if (tid < 16u) {
+        float val = (tid < (threads >> 5)) ? reductions[tid] : 0.0f;
+        for (int offset = 8; offset > 0; offset >>= 1)
+            val = fmaxf(val, h3_shfl_xor32(val, offset));
+        if (tid == 0) reductions[0] = val;
+    }
+    __syncthreads();
+    float max_val = reductions[0];
+    float qscale = max_val > 0.0f ? max_val / 127.0f : 1.0f / 127.0f;
+    float qinv = max_val > 0.0f ? 127.0f / max_val : 127.0f;
+    if (tid == 0) quantized_scales[row] = qscale;
+    /* Pass 3: quantize from shared memory */
+    for (uint32_t column = tid; column < args.width; column += threads) {
+        float val = h3_bf16_to_f32(gated_values[column]);
+        int q = (int)rintf(val * qinv);
+        if (q > 127) q = 127;
+        if (q < -127) q = -127;
+        quantized_output[row * args.width + column] = (int8_t)q;
+    }
+}
+
 __device__ inline float h3_warp_reduce_sum(float value) {
 #pragma unroll
     for (int mask = 16; mask > 0; mask >>= 1)
@@ -4128,6 +4209,25 @@ extern "C" int h3_launch_gate_adaln_bf16(const uint16_t *residual,
     uint32_t threads = h3_row_threads(host_args.width);
     return hipLaunchKernel(
                reinterpret_cast<const void *>(h3_gate_adaln_bf16_kernel),
+               dim3(host_args.rows), dim3(threads), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_gate_adaln_quantize_int8(
+    const uint16_t *residual, const uint16_t *branch,
+    const uint16_t *gate_modulation, const uint32_t *row_map,
+    const uint16_t *weight, const uint16_t *norm_modulation,
+    uint16_t *gated_residual,
+    int8_t *quantized_output, float *quantized_scales,
+    const h3_gate_adaln_args *args, hipStream_t stream) {
+    h3_gate_adaln_args host_args = *args;
+    void *kernel_args[] = {&residual, &branch, &gate_modulation, &row_map,
+                           &weight, &norm_modulation, &gated_residual,
+                           &quantized_output, &quantized_scales, &host_args};
+    uint32_t threads = h3_row_threads(host_args.width);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_gate_adaln_quantize_int8_kernel),
                dim3(host_args.rows), dim3(threads), kernel_args,
                sizeof(kernel_args), stream) == hipSuccess;
 }

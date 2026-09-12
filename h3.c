@@ -898,6 +898,11 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         fprintf(stderr,
                 "h3: --token-reduction is on: faster DiT, visible quality "
                 "loss (off by default)\n");
+    if (getenv("H3_TOKEN_REDUCTION_SCHEDULE") &&
+        *getenv("H3_TOKEN_REDUCTION_SCHEDULE"))
+        fprintf(stderr,
+                "h3: TR schedule active: %s\n",
+                getenv("H3_TOKEN_REDUCTION_SCHEDULE"));
     int render_width = params->render_width ? params->render_width :
                                                params->width;
     int render_height = params->render_height ? params->render_height :

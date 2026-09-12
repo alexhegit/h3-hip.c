@@ -404,6 +404,13 @@ int h3_launch_gate_adaln_bf16(const uint16_t *residual, const uint16_t *branch,
                               uint16_t *gated_residual, uint16_t *output,
                               const h3_gate_adaln_args *args,
                               hipStream_t stream);
+int h3_launch_gate_adaln_quantize_int8(
+    const uint16_t *residual, const uint16_t *branch,
+    const uint16_t *gate_modulation, const uint32_t *row_map,
+    const uint16_t *weight, const uint16_t *norm_modulation,
+    uint16_t *gated_residual,
+    int8_t *quantized_output, float *quantized_scales,
+    const h3_gate_adaln_args *args, hipStream_t stream);
 int h3_launch_qkv_rope_bf16(const uint16_t *qkv, const uint16_t *q_weight,
                             const uint16_t *k_weight, const uint16_t *rope_cos,
                             const uint16_t *rope_sin, uint16_t *query,
