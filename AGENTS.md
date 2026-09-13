@@ -55,6 +55,9 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   win on MI300X; **not** a gfx1151 short-clip win in the 2026-09-03 retune).
 - `H3_TOKEN_REDUCTION=1` halves spatial width in middle DiT blocks (~37% faster
   long video). Same as `--token-reduction`.
+- `H3_TOKEN_REDUCTION_SCHEDULE` is per-step TR (`STEP:BEGIN:END,...`); setting
+  it enables TR. On-demand bench only: `./bench/fox-15s-sched.sh` — not part of
+  the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.

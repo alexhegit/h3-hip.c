@@ -12,6 +12,26 @@ All scripts use `--profile` and print per-phase GPU timing.
 | `fox-15s.sh` | 864×480 | 362 | 20 | 45 | 2 | Lossless | Long cinematic (~180s MI300X) |
 | `fox-15s-fast.sh` | 864×480 | 362 | 20 | 45 | 3 | **~15 dB** | Fast long cinematic (~90s MI300X) |
 
+Default scoreboard is the four scripts above (plus a hand-run 15 s **without**
+TR). Do **not** include schedule in automated / default retunes.
+
+## On-demand: TR schedule
+
+`fox-15s-sched.sh` is **opt-in**. Same 15 s knobs as `fox-15s.sh` (reuse=2)
+with `H3_TOKEN_REDUCTION_SCHEDULE` (default `0:4:50,10:4:45,20:4:30`).
+Visible quality trade vs TR 4:30; not the tagged quality path. v0.12.0 has
+no Halo / MI210 / current-`main` MI300X numbers yet
+([issue #4](https://github.com/alexhegit/h3-hip.c/issues/4)).
+
+```bash
+./bench/fox-15s-sched.sh /path/to/MiniMax-H3
+
+# Override the schedule string
+H3_TOKEN_REDUCTION_SCHEDULE="0:4:50,10:0:0" ./bench/fox-15s-sched.sh
+```
+
+A wider reuse=3 sweep lives in `tools/tr_sweep.sh` (not a scoreboard script).
+
 ## Usage
 
 ```bash
@@ -39,6 +59,7 @@ All scripts use `--profile` and print per-phase GPU timing.
 | `H3_TOKEN_REDUCTION` | 0 | Enable token reduction (TR) |
 | `H3_TOKEN_REDUCTION_BLOCKS` | 4:30 | TR block range BEGIN:END |
 | `H3_TOKEN_REDUCTION_EARLY` | 10:40 | Early steps wider range (STEPS:END) |
+| `H3_TOKEN_REDUCTION_SCHEDULE` | (none) | Per-step `STEP:BEGIN:END,...` (set by `fox-15s-sched.sh`) |
 | `H3_INT8_VAE` | 0 | INT8 Video VAE weights (−64% VRAM, −9% wall) |
 | `H3_GPU_SAMPLER` | 0 | GPU Euler sampler |
 | `H3_PROFILE` | 0 | Enable profiling (always on via --profile) |

@@ -99,6 +99,7 @@ H3_INT8_MLP=1          # default on all ISAs; H3_INT8_MLP=0 for BF16
 H3_INT8_MLP=0          # disable INT8, use BF16 DiT weights
 H3_GPU_SAMPLER=1       # GPU Euler sampler (opt-in on HIP)
 H3_TOKEN_REDUCTION=1   # same as --token-reduction
+H3_TOKEN_REDUCTION_SCHEDULE=0:4:50,10:4:45,20:4:30  # per-step TR; or ./bench/fox-15s-sched.sh
 H3_INT8_VAE=1          # INT8 Video VAE weights (VRAM; fox VAE wall may not fall)
 H3_VAE_TILE_PIXELS=272 # restore v0.9.0-sized VAE tiles
 H3_SDPA_CDNA_FLASH=0   # gfx90a: hipBLAS score-matrix SDPA fallback

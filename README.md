@@ -186,8 +186,9 @@ MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
 `fox-15s-fast.sh` **6 min 18 s**.
 MI300X (gfx942) no-TR **179.5 s**; `fox-15s.sh` **114.7 s**;
 `fox-15s-fast.sh` **83.1 s**.
-Tagged scoreboard stays without TR. Generate prints a stderr warning when
-the flag is on.
+Tagged scoreboard stays without TR. Per-step schedule is on-demand only:
+`./bench/fox-15s-sched.sh` (not the default `bench/` retune). Generate prints a
+stderr warning when `--token-reduction` or `H3_TOKEN_REDUCTION_SCHEDULE` is on.
 
 Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
 Known issues) live only on GitHub wiki. In-tree copies of Getting started,
