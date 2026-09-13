@@ -27,5 +27,6 @@ const char *h3d_mode_name(h3d_mode mode);
 const char *h3d_status_name(h3d_job_status status);
 int h3d_geometry_is_valid(h3d_ctx *ctx, int width, int height, int frames);
 int h3d_generate_poster(const char *mp4_path, const char *poster_path);
+int h3d_extract_ffprobe(const char *mp4_path, char *buf, size_t len);
 
 #endif

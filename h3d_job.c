@@ -2,6 +2,7 @@
 #include "h3d_json.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -265,4 +266,102 @@ int h3d_generate_poster(const char *mp4_path, const char *poster_path) {
 
     int ret = system(cmd);
     return ret == 0 ? 0 : -1;
+}
+
+/* ── ffprobe extraction (compact summary) ─────────────────────── */
+
+int h3d_extract_ffprobe(const char *mp4_path, char *buf, size_t len) {
+    if (!mp4_path || !buf || len == 0) return -1;
+
+    /* Run ffprobe with -show_entries for compact output */
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "ffprobe -v quiet -print_format json "
+        "-show_entries stream=codec_name,codec_type,width,height,nb_frames "
+        "-show_entries format=duration,bit_rate "
+        "\"%s\" 2>/dev/null",
+        mp4_path);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+
+    char raw[4096];
+    size_t total = 0;
+    while (total < sizeof(raw) - 1) {
+        size_t n = fread(raw + total, 1, sizeof(raw) - total - 1, fp);
+        if (n == 0) break;
+        total += n;
+    }
+    raw[total] = '\0';
+    pclose(fp);
+
+    if (total == 0) return -1;
+
+    /* Extract fields from compact JSON */
+    char codec[64] = "unknown";
+    int width = 0, height = 0;
+    float duration_sec = 0.0f;
+    int64_t bit_rate = 0;
+    int nb_frames = 0;
+    int has_audio = 0;
+
+    /* Video stream: find "codec_type": "video" (with possible spaces) */
+    const char *video_block = strstr(raw, "\"codec_type\": \"video\"");
+    const char *audio_block = strstr(raw, "\"codec_type\": \"audio\"");
+
+    /* codec_name from video stream (find last codec_name before codec_type:video) */
+    if (video_block) {
+        const char *last_cn = NULL;
+        const char *scan = raw;
+        while (scan < video_block) {
+            const char *cn = strstr(scan, "\"codec_name\":");
+            if (!cn || cn >= video_block) break;
+            last_cn = cn;
+            scan = cn + 13;
+        }
+        if (last_cn) {
+            last_cn += 13;
+            while (*last_cn == ' ' || *last_cn == ':') last_cn++;
+            if (*last_cn == '"') last_cn++;
+            size_t i = 0;
+            while (*last_cn && *last_cn != '"' && *last_cn != ',' && i < sizeof(codec) - 1) {
+                codec[i++] = *last_cn++;
+            }
+            codec[i] = '\0';
+        }
+    }
+
+    /* width, height, nb_frames from video stream */
+    if (video_block) {
+        const char *p;
+        p = strstr(video_block, "\"width\":");
+        if (p) { p += 8; while (*p == ' ' || *p == ':' || *p == '"') p++; width = atoi(p); }
+        p = strstr(video_block, "\"height\":");
+        if (p) { p += 9; while (*p == ' ' || *p == ':' || *p == '"') p++; height = atoi(p); }
+        p = strstr(video_block, "\"nb_frames\":");
+        if (p) { p += 12; while (*p == ' ' || *p == ':' || *p == '"') p++; nb_frames = atoi(p); }
+    }
+
+    /* has_audio */
+    if (audio_block) has_audio = 1;
+
+    /* duration, bit_rate from format block */
+    const char *format_block = strstr(raw, "\"format\":");
+    if (format_block) {
+        const char *p;
+        p = strstr(format_block, "\"duration\":");
+        if (p) { p += 11; while (*p == ' ' || *p == ':' || *p == '"') p++; duration_sec = strtof(p, NULL); }
+        p = strstr(format_block, "\"bit_rate\":");
+        if (p) { p += 11; while (*p == ' ' || *p == ':' || *p == '"') p++; bit_rate = strtoll(p, NULL, 10); }
+    }
+
+    /* Build compact JSON */
+    int n = snprintf(buf, len,
+        "{\"codec\":\"%s\",\"width\":%d,\"height\":%d,"
+        "\"duration_sec\":%.3f,\"bit_rate\":%" PRId64 ","
+        "\"nb_frames\":%d,\"has_audio\":%s}",
+        codec, width, height, duration_sec, bit_rate,
+        nb_frames, has_audio ? "true" : "false");
+
+    return n > 0 ? 0 : -1;
 }

@@ -192,13 +192,11 @@ void *h3d_worker_loop(void *arg) {
                      "%s", err ? err : "Unknown error");
             pthread_mutex_unlock(&job->lock);
 
-            char err_data[1024];
-            char escaped[512];
-            h3d_json_escape(escaped, sizeof(escaped), err ? err : "Unknown");
-            snprintf(err_data, sizeof(err_data),
-                "{\"status\":\"failed\",\"error\":{\"code\":\"GENERATION_FAILED\","
-                "\"message\":\"%s\"}}", escaped);
-            h3d_job_record_event(job, "failed", err_data);
+            char fail_data[8192];
+            int fail_len = h3d_json_job_response(job, fail_data, sizeof(fail_data));
+            if (fail_len > 0) {
+                h3d_job_record_event(job, "failed", fail_data);
+            }
         } else {
             /* Success */
             pthread_mutex_lock(&job->lock);
@@ -210,6 +208,11 @@ void *h3d_worker_loop(void *arg) {
 
             /* Generate poster frame */
             h3d_generate_poster(job->mp4_path, job->poster_path);
+
+            /* Extract ffprobe metadata */
+            if (h3d_extract_ffprobe(job->mp4_path, job->ffprobe_json, sizeof(job->ffprobe_json)) == 0) {
+                job->has_ffprobe = 1;
+            }
 
             /* Calculate duration */
             if (job->frames > 0 && job->quality.steps > 0) {
@@ -223,29 +226,12 @@ void *h3d_worker_loop(void *arg) {
             job->seed = result->seed;
             pthread_mutex_unlock(&job->lock);
 
-            /* Record done event with result */
-            char done_data[4096];
-            char escaped_mp4[2048];
-            h3d_json_escape(escaped_mp4, sizeof(escaped_mp4), job->mp4_path);
-            char escaped_poster[2048];
-            h3d_json_escape(escaped_poster, sizeof(escaped_poster),
-                           job->poster_path ? job->poster_path : "");
-            char escaped_cli[4096];
-            h3d_json_escape(escaped_cli, sizeof(escaped_cli), job->cli_args);
-
-            snprintf(done_data, sizeof(done_data),
-                "{\"job_id\":\"%s\",\"result\":{"
-                "\"mp4_path\":\"%s\","
-                "\"poster_path\":\"%s\","
-                "\"duration_sec\":%.2f,"
-                "\"width\":%d,\"height\":%d,\"frames\":%d,"
-                "\"seed\":%" PRIu64 ","
-                "\"cli\":\"%s\"}}",
-                job->job_id, escaped_mp4, escaped_poster,
-                job->duration_sec,
-                result->width, result->height, result->frames, result->seed,
-                escaped_cli);
-            h3d_job_record_event(job, "done", done_data);
+            /* Record done event with full job object */
+            char done_data[8192];
+            int done_len = h3d_json_job_response(job, done_data, sizeof(done_data));
+            if (done_len > 0) {
+                h3d_job_record_event(job, "done", done_data);
+            }
 
             h3_result_free(result);
         }

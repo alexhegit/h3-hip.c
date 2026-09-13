@@ -187,8 +187,7 @@ int h3d_json_job_response(h3d_job *job, char *buf, size_t len) {
             "\"width\":%d,\"height\":%d,\"frames\":%d,"
             "\"seed\":%" PRIu64 ","
             "\"partial\":%s,"
-            "\"cli\":\"%s\""
-            "}",
+            "\"cli\":\"%s\"",
             escaped_mp4,
             job->poster_path ? escaped_poster : "",
             job->duration_sec,
@@ -197,6 +196,15 @@ int h3d_json_job_response(h3d_job *job, char *buf, size_t len) {
             job->partial ? "true" : "false",
             escaped_cli);
         off += n;
+
+        /* ffprobe */
+        if (job->has_ffprobe && job->ffprobe_json[0]) {
+            n = snprintf(buf + off, len - (size_t)off,
+                ",\"ffprobe\":%s", job->ffprobe_json);
+            off += n;
+        }
+
+        if (off < (int)len) buf[off++] = '}';
     } else {
         n = snprintf(buf + off, len - (size_t)off, "\"result\":null");
         off += n;
