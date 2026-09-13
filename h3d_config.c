@@ -35,19 +35,38 @@ static void ensure_dir(const char *path) {
     mkdir(path, 0755);
 }
 
+/* Expand ~ in path to $HOME */
+static void expand_home(char *dest, size_t dest_len, const char *src) {
+    const char *home = getenv("HOME");
+    if (src[0] == '~' && home) {
+        snprintf(dest, dest_len, "%s%s", home, src + 1);
+    } else {
+        snprintf(dest, dest_len, "%s", src);
+    }
+}
+
 void h3d_config_init(h3d_ctx *ctx) {
     memset(ctx, 0, sizeof(*ctx));
     snprintf(ctx->bind_addr, sizeof(ctx->bind_addr), "127.0.0.1");
     ctx->port = H3D_DEFAULT_PORT;
-    ctx->quota_bytes = 20ULL * 1024 * 1024 * 1024;
-    ctx->timeout_tier1 = 1200;
-    ctx->timeout_tier2 = 3600;
-    ctx->timeout_tier3 = 7200;
+    ctx->quota_bytes = 21474836480ULL;  /* 20GB per §17 */
+    ctx->timeout_tier1 = 1200;   /* fox-s2: ~20min */
+    ctx->timeout_tier2 = 3600;   /* fox-fast: ~1hr */
+    ctx->timeout_tier3 = 7200;   /* cinematic: ~2hr */
     snprintf(ctx->log_level, sizeof(ctx->log_level), "INFO");
     ctx->max_queued_per_client = 8;
     ctx->prompt_max_chars = 8000;
     ctx->gpu_indices[0] = 0;
     ctx->gpu_count = 1;
+
+    /* Default geometry whitelist (verified on h3-hip.c) */
+    ctx->geometry_whitelist_count = 0;
+    /* 512x512: all frame counts */
+    ctx->geometry_whitelist[ctx->geometry_whitelist_count++] =
+        (h3d_geometry){512, 512, 0};  /* 0 = any frames */
+    /* 864x480: cinematic long video */
+    ctx->geometry_whitelist[ctx->geometry_whitelist_count++] =
+        (h3d_geometry){864, 480, 0};
 }
 
 int h3d_config_load(h3d_ctx *ctx) {
@@ -56,15 +75,34 @@ int h3d_config_load(h3d_ctx *ctx) {
 
     ctx->port = getenv_int("H3D_PORT", H3D_DEFAULT_PORT);
 
+    /* Model paths: explicit FL2VA/REF2VA take priority */
+    const char *fl2va = getenv("H3D_MODEL_PATH_FL2VA");
+    const char *ref2va = getenv("H3D_MODEL_PATH_REF2VA");
     const char *model = getenv("H3D_MODEL_PATH");
-    if (model && *model)
-        snprintf(ctx->model_path, sizeof(ctx->model_path), "%s", model);
 
+    if (fl2va && *fl2va)
+        snprintf(ctx->model_path_fl2va, sizeof(ctx->model_path_fl2va), "%s", fl2va);
+    if (ref2va && *ref2va)
+        snprintf(ctx->model_path_ref2va, sizeof(ctx->model_path_ref2va), "%s", ref2va);
+
+    /* Compatibility: H3D_MODEL_PATH as fallback for both */
+    if (model && *model) {
+        if (!ctx->model_path_fl2va[0])
+            snprintf(ctx->model_path_fl2va, sizeof(ctx->model_path_fl2va), "%s", model);
+        if (!ctx->model_path_ref2va[0])
+            snprintf(ctx->model_path_ref2va, sizeof(ctx->model_path_ref2va), "%s", model);
+        snprintf(ctx->model_path, sizeof(ctx->model_path), "%s", model);
+    }
+
+    /* Paths */
+    char expanded[1024];
     const char *output = getenv_or("H3D_OUTPUT_ROOT", "~/.h3d/outputs");
-    snprintf(ctx->output_root, sizeof(ctx->output_root), "%s", output);
+    expand_home(expanded, sizeof(expanded), output);
+    snprintf(ctx->output_root, sizeof(ctx->output_root), "%s", expanded);
 
     const char *media = getenv_or("H3D_MEDIA_ROOT", "~/.h3d/media");
-    snprintf(ctx->media_root, sizeof(ctx->media_root), "%s", media);
+    expand_home(expanded, sizeof(expanded), media);
+    snprintf(ctx->media_root, sizeof(ctx->media_root), "%s", expanded);
 
     ctx->quota_bytes = getenv_u64("H3D_QUOTA_BYTES", ctx->quota_bytes);
     ctx->timeout_tier1 = getenv_int("H3D_TIMEOUT_TIER1", ctx->timeout_tier1);
@@ -76,7 +114,8 @@ int h3d_config_load(h3d_ctx *ctx) {
         snprintf(ctx->log_level, sizeof(ctx->log_level), "%s", log_level);
 
     const char *log_dir = getenv_or("H3D_LOG_DIR", "~/.h3d/logs");
-    snprintf(ctx->log_dir, sizeof(ctx->log_dir), "%s", log_dir);
+    expand_home(expanded, sizeof(expanded), log_dir);
+    snprintf(ctx->log_dir, sizeof(ctx->log_dir), "%s", expanded);
 
     ctx->max_queued_per_client = getenv_int("H3D_MAX_QUEUED", ctx->max_queued_per_client);
     ctx->prompt_max_chars = getenv_int("H3D_PROMPT_MAX_CHARS", ctx->prompt_max_chars);
@@ -97,24 +136,6 @@ int h3d_config_load(h3d_ctx *ctx) {
     if (ctx->gpu_count == 0) {
         ctx->gpu_indices[0] = 0;
         ctx->gpu_count = 1;
-    }
-
-    /* Expand ~ in paths */
-    const char *home = getenv("HOME");
-    if (home) {
-        char expanded[1024];
-        if (ctx->output_root[0] == '~') {
-            snprintf(expanded, sizeof(expanded), "%s%s", home, ctx->output_root + 1);
-            snprintf(ctx->output_root, sizeof(ctx->output_root), "%s", expanded);
-        }
-        if (ctx->media_root[0] == '~') {
-            snprintf(expanded, sizeof(expanded), "%s%s", home, ctx->media_root + 1);
-            snprintf(ctx->media_root, sizeof(ctx->media_root), "%s", expanded);
-        }
-        if (ctx->log_dir[0] == '~') {
-            snprintf(expanded, sizeof(expanded), "%s%s", home, ctx->log_dir + 1);
-            snprintf(ctx->log_dir, sizeof(ctx->log_dir), "%s", expanded);
-        }
     }
 
     /* Ensure directories exist */

@@ -10,7 +10,8 @@
 #include <unistd.h>
 #include <signal.h>
 
-/* Progress callback that updates job state and records SSE events. */
+/* ── Progress callback ───────────────────────────────────────── */
+
 static int worker_progress(const char *phase, int completed, int total,
                            void *opaque) {
     h3d_job *job = opaque;
@@ -35,9 +36,10 @@ static int worker_progress(const char *phase, int completed, int total,
         phase, completed, total, (long)job->elapsed_sec, job->eta_hint_sec);
     h3d_job_record_event(job, "progress", data);
 
-    /* Check cancel */
     return atomic_load(&job->cancel_requested) ? 1 : 0;
 }
+
+/* ── Find next job ───────────────────────────────────────────── */
 
 static h3d_job *find_next_job(h3d_ctx *dctx) {
     pthread_mutex_lock(&dctx->jobs_lock);
@@ -55,6 +57,71 @@ static h3d_job *find_next_job(h3d_ctx *dctx) {
     pthread_mutex_unlock(&dctx->jobs_lock);
     return NULL;
 }
+
+/* ── Select worker context by mode ───────────────────────────── */
+
+static h3_ctx *select_worker_ctx(h3d_worker *worker, h3d_mode mode) {
+    /* Ref2VA uses separate context if loaded */
+    if (mode == H3D_MODE_REF2VA && worker->ctx_ref2va) {
+        return worker->ctx_ref2va;
+    }
+    return worker->ctx;
+}
+
+/* ── Build h3_params from job ────────────────────────────────── */
+
+static h3_reference g_refs[H3D_MAX_REFERENCES];
+
+static void build_h3_params(h3d_job *job, h3_params *params) {
+    /* Zero-init with designated initializer */
+    *params = (h3_params){
+        .width = job->width,
+        .height = job->height,
+        .frames = job->frames,
+        .steps = job->quality.steps,
+        .seed = job->seed,
+        .output_path = job->mp4_path,
+        .denoise_reuse = job->quality.reuse,
+        .dit_layers = job->quality.layers,
+        .core_reuse = 1,
+        .preview_denoise = 0,
+        .on_progress = worker_progress,
+        .callback_opaque = job,
+    };
+
+    /* Build references array */
+    memset(g_refs, 0, sizeof(g_refs));
+    int ref_count = 0;
+
+    if (job->refs_image_count > 0) {
+        for (int i = 0; i < job->refs_image_count && ref_count < H3D_MAX_REFERENCES; i++) {
+            g_refs[ref_count].kind = H3_REFERENCE_IMAGE;
+            g_refs[ref_count].path = job->refs_images[i].path;
+            g_refs[ref_count].audio_path = NULL;
+            g_refs[ref_count].include_embedded_audio = 0;
+            ref_count++;
+        }
+    }
+    if (job->has_refs_video) {
+        g_refs[ref_count].kind = H3_REFERENCE_VIDEO;
+        g_refs[ref_count].path = job->refs_video.path;
+        g_refs[ref_count].audio_path = NULL;
+        g_refs[ref_count].include_embedded_audio = 0;
+        ref_count++;
+    }
+    for (int i = 0; i < job->refs_audio_count && ref_count < H3D_MAX_REFERENCES; i++) {
+        g_refs[ref_count].kind = H3_REFERENCE_AUDIO;
+        g_refs[ref_count].path = job->refs_audio[i].path;
+        g_refs[ref_count].audio_path = NULL;
+        g_refs[ref_count].include_embedded_audio = 0;
+        ref_count++;
+    }
+
+    params->references = g_refs;
+    params->reference_count = (size_t)ref_count;
+}
+
+/* ── Worker loop ─────────────────────────────────────────────── */
 
 void *h3d_worker_loop(void *arg) {
     h3d_worker *worker = arg;
@@ -83,29 +150,29 @@ void *h3d_worker_loop(void *arg) {
         job->started_at = time(NULL);
         pthread_mutex_unlock(&job->lock);
 
-        h3d_job_record_event(job, "status",
-            "{\"status\":\"running\"}");
+        h3d_job_record_event(job, "status", "{\"status\":\"running\"}");
 
-        /* Set up h3_params for generation */
-        h3_params params = job->params;
-        params.output_path = job->mp4_path;
-        params.on_progress = worker_progress;
-        params.callback_opaque = job;
-        params.preview_denoise = 0;
-        params.on_frame = NULL;
-        params.references = job->references;
-        params.reference_count = job->reference_count;
+        /* Select context based on mode */
+        h3_ctx *ctx = select_worker_ctx(worker, job->mode);
 
         /* Enable cache for weight reuse between jobs */
-        h3_cache_set_enabled(worker->ctx, 1);
+        h3_cache_set_enabled(ctx, 1);
+
+        /* Build params */
+        h3_params params;
+        build_h3_params(job, &params);
 
         /* Generate */
-        h3_result *result = h3_generate(worker->ctx, job->prompt, &params);
+        h3_result *result = h3_generate(ctx, job->prompt, &params);
 
         if (atomic_load(&job->cancel_requested)) {
             /* Cancelled during generation */
             pthread_mutex_lock(&job->lock);
-            job->status = H3D_JOB_CANCELLED;
+            if (job->finalize_partial_on_cancel && job->partial) {
+                job->status = H3D_JOB_DONE;
+            } else {
+                job->status = H3D_JOB_CANCELLED;
+            }
             job->finished_at = time(NULL);
             snprintf(job->error.code, sizeof(job->error.code), "CANCELLED");
             snprintf(job->error.message, sizeof(job->error.message),
@@ -116,7 +183,7 @@ void *h3d_worker_loop(void *arg) {
                 "{\"status\":\"cancelled\"}");
         } else if (!result) {
             /* Failed */
-            const char *err = h3_last_error(worker->ctx);
+            const char *err = h3_last_error(ctx);
             pthread_mutex_lock(&job->lock);
             job->status = H3D_JOB_FAILED;
             job->finished_at = time(NULL);
@@ -141,7 +208,14 @@ void *h3d_worker_loop(void *arg) {
             h3d_job_record_event(job, "status",
                 "{\"status\":\"finalizing\"}");
 
-            /* TODO: extract poster frame from first decoded frame */
+            /* Generate poster frame */
+            h3d_generate_poster(job->mp4_path, job->poster_path);
+
+            /* Calculate duration */
+            if (job->frames > 0 && job->quality.steps > 0) {
+                /* Rough estimate: frames / 24 fps */
+                job->duration_sec = (float)job->frames / 24.0f;
+            }
 
             pthread_mutex_lock(&job->lock);
             job->status = H3D_JOB_DONE;
@@ -150,16 +224,27 @@ void *h3d_worker_loop(void *arg) {
             pthread_mutex_unlock(&job->lock);
 
             /* Record done event with result */
-            char done_data[2048];
+            char done_data[4096];
             char escaped_mp4[2048];
             h3d_json_escape(escaped_mp4, sizeof(escaped_mp4), job->mp4_path);
+            char escaped_poster[2048];
+            h3d_json_escape(escaped_poster, sizeof(escaped_poster),
+                           job->poster_path ? job->poster_path : "");
+            char escaped_cli[4096];
+            h3d_json_escape(escaped_cli, sizeof(escaped_cli), job->cli_args);
+
             snprintf(done_data, sizeof(done_data),
                 "{\"job_id\":\"%s\",\"result\":{"
                 "\"mp4_path\":\"%s\","
+                "\"poster_path\":\"%s\","
+                "\"duration_sec\":%.2f,"
                 "\"width\":%d,\"height\":%d,\"frames\":%d,"
-                "\"seed\":%" PRIu64 "}}",
-                job->job_id, escaped_mp4,
-                result->width, result->height, result->frames, result->seed);
+                "\"seed\":%" PRIu64 ","
+                "\"cli\":\"%s\"}}",
+                job->job_id, escaped_mp4, escaped_poster,
+                job->duration_sec,
+                result->width, result->height, result->frames, result->seed,
+                escaped_cli);
             h3d_job_record_event(job, "done", done_data);
 
             h3_result_free(result);
@@ -171,6 +256,8 @@ void *h3d_worker_loop(void *arg) {
     return NULL;
 }
 
+/* ── Workers init ────────────────────────────────────────────── */
+
 int h3d_workers_init(h3d_ctx *ctx) {
     ctx->workers = NULL;
     ctx->worker_count = 0;
@@ -181,12 +268,32 @@ int h3d_workers_init(h3d_ctx *ctx) {
 
         worker->gpu_index = ctx->gpu_indices[i];
         worker->dctx = ctx;
-        worker->ctx = h3_load_dir(ctx->model_path);
-        if (!worker->ctx) {
-            fprintf(stderr, "h3d: cannot load model from %s: %s\n",
-                    ctx->model_path, h3_last_error(NULL));
+
+        /* Load FL2VA model (primary) */
+        const char *model_path = ctx->model_path_fl2va[0] ? ctx->model_path_fl2va : ctx->model_path;
+        if (!model_path || !model_path[0]) {
+            fprintf(stderr, "h3d: no model path configured\n");
             free(worker);
             continue;
+        }
+
+        worker->ctx = h3_load_dir(model_path);
+        if (!worker->ctx) {
+            fprintf(stderr, "h3d: cannot load model from %s: %s\n",
+                    model_path, h3_last_error(NULL));
+            free(worker);
+            continue;
+        }
+
+        /* Load Ref2VA model if configured and different */
+        if (ctx->model_path_ref2va[0] &&
+            strcmp(ctx->model_path_ref2va, model_path) != 0) {
+            worker->ctx_ref2va = h3_load_dir(ctx->model_path_ref2va);
+            if (!worker->ctx_ref2va) {
+                fprintf(stderr, "h3d: warning: cannot load Ref2VA model from %s: %s\n",
+                        ctx->model_path_ref2va, h3_last_error(NULL));
+                /* Non-fatal: continue without Ref2VA */
+            }
         }
 
         /* Set HIP_VISIBLE_DEVICES for this worker */
@@ -207,7 +314,8 @@ int h3d_workers_init(h3d_ctx *ctx) {
             fprintf(stderr, "h3d: cannot start worker thread for GPU %d\n",
                     worker->gpu_index);
             h3d_worker *next = worker->next;
-            h3_free(worker->ctx);
+            if (worker->ctx) h3_free(worker->ctx);
+            if (worker->ctx_ref2va) h3_free(worker->ctx_ref2va);
             free(worker);
             ctx->workers = next;
             ctx->worker_count--;
@@ -218,6 +326,8 @@ int h3d_workers_init(h3d_ctx *ctx) {
     return ctx->worker_count > 0 ? 0 : -1;
 }
 
+/* ── Workers shutdown ────────────────────────────────────────── */
+
 void h3d_workers_shutdown(h3d_ctx *ctx) {
     atomic_store(&ctx->shutdown, 1);
 
@@ -225,6 +335,7 @@ void h3d_workers_shutdown(h3d_ctx *ctx) {
     while (w) {
         pthread_join(w->thread, NULL);
         if (w->ctx) h3_free(w->ctx);
+        if (w->ctx_ref2va) h3_free(w->ctx_ref2va);
         h3d_worker *next = w->next;
         free(w);
         w = next;
