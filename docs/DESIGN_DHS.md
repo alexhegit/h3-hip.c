@@ -14,7 +14,7 @@
 │  ┌───────────────────────────────────────────────────┐  │
 │  │              Cordis Plugin System                 │  │
 │  │  ┌─────────────────────────────────────────────┐  │  │
-│  │  │         dsh-plugin-h3 (TypeScript)          │  │  │
+│  │  │         dsh-plugin-h3-hip (TypeScript)          │  │  │
 │  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │  │  │
 │  │  │  │ H3 Tool  │  │ H3 Skill │  │H3 Session│  │  │  │
 │  │  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  │  │  │
@@ -107,7 +107,7 @@
 ### 4.1 插件结构
 
 ```
-dsh-plugin-h3/
+dsh-plugin-h3-hip/
 ├── package.json          # 声明 dsh.bundle
 ├── cordis.patch.yml      # Cordis 配置层
 ├── src/
@@ -124,7 +124,7 @@ dsh-plugin-h3/
 ```typescript
 import type { Context } from '@deepseek-ai/cordis'
 
-export const name = 'dsh-plugin-h3'
+export const name = 'dsh-plugin-h3-hip'
 export const inject = ['tools', 'skills']
 
 export function apply(ctx: Context) {
@@ -186,7 +186,7 @@ class H3Client {
 ```yaml
 - insert:
     id: h3
-    name: '@anthropic/dsh-plugin-h3'
+    name: '@anthropic/dsh-plugin-h3-hip'
     config:
       h3:
         baseUrl: 'http://127.0.0.1:8571'
@@ -211,7 +211,7 @@ H3D_PORT=8571 H3D_GPUS=0,1 ./h3 -d /path/to/MiniMax-H3 --serve
 
 ```bash
 # 安装插件到 DeepSeek Harness profile
-dsh plugin --profile myprofile add @anthropic/dsh-plugin-h3
+dsh plugin --profile myprofile add @anthropic/dsh-plugin-h3-hip
 ```
 
 ### 5.3 在 DeepSeek Harness 中使用
@@ -235,7 +235,7 @@ Agent: [调用 h3_generate 工具]
 - [ ] 指标监控（/metrics 端点）
 - [ ] 多模型热切换
 
-### 6.2 dsh-plugin-h3（新 repo）
+### 6.2 dsh-plugin-h3-hip（新 repo）
 
 - [ ] 初始化 Cordis 插件项目
 - [ ] 实现 H3Client HTTP 客户端
