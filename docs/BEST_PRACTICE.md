@@ -170,6 +170,9 @@ H3_TOKEN_REDUCTION_SCHEDULE="0:4:30" ./h3 ...
 # Aggressive early, conservative late
 H3_TOKEN_REDUCTION_SCHEDULE="0:4:50,10:4:45,20:4:30" ./h3 ...
 
+# Same knobs as fox-15s.sh + default schedule (on-demand; not the default scoreboard)
+./bench/fox-15s-sched.sh /path/to/MiniMax-H3
+
 # TR for first 10 steps, then full quality
 H3_TOKEN_REDUCTION_SCHEDULE="0:4:50,10:0:0" ./h3 ...
 

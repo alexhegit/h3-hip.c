@@ -478,6 +478,12 @@ is **40 min 4 s** (2026-09-12); v0.11.0 was 40 min 46 s.
 | Schedule `0:4:50` (full) | 14.3 s | −53% | lower |
 | Schedule `0:4:50,10:0:0` (partial) | 23.2 s | −24% | 19.0 dB |
 
+On-demand bench (not the default `bench/` scoreboard):
+`./bench/fox-15s-sched.sh` sets `H3_TOKEN_REDUCTION_SCHEDULE` on the same
+15 s reuse=2 knobs as `fox-15s.sh`. Halo / MI210 / v0.12.0 MI300X 15 s
+schedule times are not on the 2026-09-12 scoreboard yet
+([issue #4](https://github.com/alexhegit/h3-hip.c/issues/4)).
+
 TR schedule auto-enables TR without `--token-reduction`. `STEP:0:0` disables
 TR from that step onward for quality recovery in later denoising steps.
 
