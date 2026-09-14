@@ -1,6 +1,6 @@
 # h3-hip.c × DeepSeek Harness 集成 — 设计与协议文档
 
-> 版本：v1.0　日期：2026-09-12　状态：M0 设计冻结，待进入实现
+> 版本：v1.1　日期：2026-09-14　状态：M0 冻结后修订（插件仓名、DSH jobs、能力阶段）
 >
 > 本文档分两部分，修改规则不同：
 > **Part I 设计与决策**（宪法层，§1–§9）——变更需重新评审；
@@ -8,7 +8,10 @@
 > 每次 breaking change 递增协议版本号并写入发布说明。
 >
 > 两部分的交叉点仅一处：§9.4 管"协议该改什么"的决策，Part II 管
-> "具体怎么写"。
+> "具体怎么写"。v1.1 把插件体验阶段写进 Part I §6.1–§6.2 / §8；
+> 进度计时与 VRAM 以 **可选附加字段** 写入 Part II §13.6，不升协议号。
+>
+> 文件名 `DESIGN_DHS.md` 保留历史拼写；产品名是 DeepSeek Harness（DSH）。
 
 ---
 
@@ -22,8 +25,8 @@ h3-hip.c 是 MiniMax-H3 的 AMD GPU（ROCm/HIP）推理引擎，目前只有 CLI
 
 - **h3-hip.c 增加常驻 daemon 模式**（`--serve`）：进程常驻、权重流式、
   结构化进度、任务队列、优雅取消
-- **新增 dsh 插件 `dsh-h3`**：把 daemon 包装成 DeepSeek Harness 的
-  agent 工具，配 skill 指导提示词写作
+- **新增 dsh 插件 `dsh-plugin-h3-hip`**（GitHub `alexhegit/dsh-plugin-h3-hip`）：
+  把 daemon 包装成 DeepSeek Harness 的 agent 工具，配 skill 指导提示词写作
 
 远程访问、手机入口、IM 渠道、通知等**全部复用 dsh 生态现成插件**，
 本设计不为它们写一行代码。
@@ -39,13 +42,13 @@ h3-hip.c 是 MiniMax-H3 的 AMD GPU（ROCm/HIP）推理引擎，目前只有 CLI
 ┌─────────────────────────────────────────────────────┐
 │ dsh（唯一网络面）+ 生态插件：dsh-web-ui / dsh-im /    │
 │ modlens /（起步期不装其他体验插件）                   │
-│  ┌───────────────┐   ┌───────────────────────────┐  │
-│  │ agent + skill │──►│ dsh-h3 插件（独立仓库）     │  │
-│  │ (h3 skill)    │   │ · 语义化工具 schema        │  │
-│  └───────────────┘   │ · 执行器接口（daemon/CLI） │  │
-│                      │ · SQLite 任务记录          │  │
-│                      │ · 协议版本协商             │  │
-└──────────────────────┼───────────┬───────────────┘
+│  ┌───────────────┐   ┌───────────────────────────────────┐  │
+│  │ agent + skill │──►│ dsh-plugin-h3-hip（独立仓库）        │  │
+│  │ (h3-prompt)   │   │ · Host bundle（MVP 无 Web client） │  │
+│  └───────────────┘   │ · h3_generate + ctx.jobs 盯 SSE   │  │
+│                      │ · 执行器接口（daemon / CLI Plan B）│  │
+│                      │ · 协议版本协商                     │  │
+└──────────────────────┼───────────┬───────────────────────┘
                        │ loopback HTTP（协议见 Part II）
                        ▼
 ┌─────────────────────────────────────────────────────┐
@@ -80,20 +83,26 @@ h3-hip.c 是 MiniMax-H3 的 AMD GPU（ROCm/HIP）推理引擎，目前只有 CLI
 JSON 协议层、worker 队列、看门狗、配额清理、路径约束、结构化进度。
 全部围绕既有模型加载/推理代码做外壳，**不 fork 推理逻辑**。
 
-### 3.2 dsh-h3（新独立仓库）——接口层
+### 3.2 dsh-plugin-h3-hip（新独立仓库）——接口层
 
 | 项 | 内容 |
 | --- | --- |
-| 产物 | dsh 插件（工具 + skill + 执行器抽象） |
-| 技术栈 | Node.js / TypeScript（Cordis 插件框架） |
+| 产物 | DSH **Host bundle**（`package.json` `name` = `dsh-plugin-h3-hip`） |
+| 技术栈 | Node.js / TypeScript（Cordis）；`dsh.bundle.patch` + 提交的 `lib/` |
 | 质量门槛 | 测试套件须在 fake daemon 与真 daemon 上全部通过（对拍） |
 | 版本节奏 | 独立快速发版；dsh preview API breaking 时一周内可发适配版 |
 | 依赖声明 | `h3-hip.c ≥ v0.12-exp`（协议 v1alpha）；pin 测试过的 dsh 版本范围 |
 | issue 面 | agent 使用者（"为什么没生成/怎么改提示词"） |
 
-**范围**：四个工具（h3_generate / h3_status / h3_list / h3_cancel）、
-skill 文档、SQLite 任务记录、协议版本协商、CLI 直连执行器（Plan B）、
-fake daemon（开发期替身，可放本仓 tests/fixtures）。
+**范围（按 §6.1 分期，不是一次做完）**：
+
+- **M1**：可安装 bundle、`h3_generate`、`h3-prompt` skill、`GET /v1/info` 协商、
+  daemon HTTP 客户端、用 `ctx.jobs.start()` 订阅 SSE 文本进度、fake daemon
+- **Plan B**：执行器抽象上的 CLI 直连（同步+轮询），可晚于 M1
+- **不默认做**：与 DSH `job_*` 对称的 `h3_status` / `h3_list` / `h3_cancel`
+  轮询三件套；SQLite 跨进程账本（仅当需要跨 DSH 重启记住 h3 `job_id` 时再加，
+  并处理 `JOB_LOST_AFTER_RESTART`）
+- 插件 **不刮 GPU**（禁止在插件进程跑 `rocm-smi`）；指标由 daemon SSE 上报
 
 ### 3.3 为什么分仓
 
@@ -106,7 +115,7 @@ fake daemon（开发期替身，可放本仓 tests/fixtures）。
 
 ```
 ┌──────────────┐   HTTP/JSON + SSE, loopback    ┌──────────────┐
-│   dsh-h3     │ ◄──── 协议 v1alpha ──────────► │  h3 daemon   │
+│   dsh-plugin-h3-hip     │ ◄──── 协议 v1alpha ──────────► │  h3 daemon   │
 │  (接口层)     │   X-H3-Protocol 版本协商        │  (执行层)     │
 └──────────────┘                                └──────────────┘
 ```
@@ -114,10 +123,10 @@ fake daemon（开发期替身，可放本仓 tests/fixtures）。
 - **协调只靠协议版本**（`/v1/info` 的 `protocol` 字段），不靠仓库同步、
   不靠语义化版本对齐
 - 插件依赖"协议 ≥ v1alpha"，遇到 426 响应时引导用户升级对应一侧
-- 两侧文档互相链接：h3-hip.c README 设"生态集成"节指向 dsh-h3；
-  dsh-h3 README 顶部声明所需 h3-hip.c 最低版本
+- 两侧文档互相链接：h3-hip.c README 设"生态集成"节指向 dsh-plugin-h3-hip；
+  dsh-plugin-h3-hip README 顶部声明所需 h3-hip.c 最低版本
 
-## 4. 已确认决策（评审问答 Q1–Q11 汇总）
+## 4. 已确认决策（评审问答 Q1–Q13 汇总）
 
 | # | 决策点 | 结论 |
 | --- | --- | --- |
@@ -126,33 +135,59 @@ fake daemon（开发期替身，可放本仓 tests/fixtures）。
 | Q3 | 超时看门狗 | per-job 超时强杀，标记 `timeout`；默认三档 1200/3600/7200 秒，可配置 |
 | Q4 | 产物配额 | 输出根目录默认 **20GB**，满后 oldest-first 清理，运行中任务豁免 |
 | Q5 | Plan B | 插件抽象执行器接口，保留 CLI 直连实现（同步+轮询） |
-| Q6 | 日志 | 文件日志；插件 `~/.dsh-h3/logs/`，daemon 独立目录；INFO 默认/DEBUG 开关；10MB×5 轮转 |
+| Q6 | 日志 | 文件日志；插件 `~/.dsh-plugin-h3-hip/logs/`，daemon 独立目录；INFO 默认/DEBUG 开关；10MB×5 轮转 |
 | Q7 | 配置 | 环境变量为主 + 可选配置文件覆盖 |
 | Q8 | 开发并行 | 契约先行：fake daemon 与 daemon 真身按协议并行开发 |
 | Q9 | 等待期插件 | 起步期都不装（MVP 最简） |
 | Q10 | 起步外部依赖 | dsh-web-ui + dsh-im（飞书，受 Q1 门控）+ modlens；其余 backlog |
 | Q11 | 产出顺序 | 先协议草案（已产出，即 Part II） |
+| Q12 | 长任务与四工具 | **提交走 `h3_generate`，进度/取消接到 DSH `ctx.jobs` 与通用 `job_*`**；不为对称再造 list/status/cancel。需要 poster、mp4 路径、426 时再加薄包装。SQLite 账本延后 |
+| Q13 | 插件表面 | MVP **Host-only**；Web 进度条 / 内嵌 MP4 为 M2–M3 的可选 `dsh.client` |
 
 ## 5. 规格文档索引
 
 | 文档 | 位置 | 状态 |
 | --- | --- | --- |
 | daemon 协议（端点/schema/SSE/错误码/配置/验收） | 本文档 Part II | ✅ 已产出 |
-| 插件工具 schema + skill 大纲 | dsh-h3 仓 | ⏳ 待产出（设计冻结后下一步） |
-| 部署运维手册（隧道/反代/Tailscale/IM 白名单/配额运维） | dsh-h3 仓 docs/ | ⏳ 待产出 |
+| 插件工具 schema + skill 大纲 | `alexhegit/dsh-plugin-h3-hip` | ⏳ 待产出（随 M1） |
+| 部署运维手册（隧道/反代/Tailscale/IM 白名单/配额运维） | 插件仓 docs/ | ⏳ 待产出（M3） |
 | 许可审查结论 | h3-hip.c 仓 | ⏳ 待作者完成（Q1，阻塞 IM 上线） |
 
 ## 6. MVP 切割
 
-**做**：daemon（submit/status/cancel/events + 单 GPU 队列 + 结构化进度
+**Daemon（本仓，随 M1 可用）**：submit / status / cancel / events + 单 GPU 队列 +
+结构化进度 + 路径约束 + 看门狗 + 配额。CLI 与 fox-s2 md5 gate 不动。
 
-- 路径约束 + 看门狗 + 配额）｜插件四工具 + skill + SQLite + 双执行器
-- 协议版本协商｜fake daemon 对拍｜一致性 gate｜飞书入口（受 Q1 门控）
+**插件**：按 §6.1 分期。飞书入口仍受 Q1 门控，放到 M3，不阻塞 M1。
 
 **不做（backlog）**：微信渠道、夜间批处理（dsh-timer-scheduler）、记忆
 插件、多卡 worker 池（结构已预留）、PWA 推送、跨机 HTTP 开放（含 token
-鉴权与 /v1/media 上传）、whale-girl、通知插件、daemon 空闲预热、
-断点续跑、任务优先级。
+鉴权与 /v1/media 上传）、whale-girl、通用 GPU dashboard、ComfyUI 式节点图、
+插件进程内 `rocm-smi`、daemon 空闲预热、断点续跑、任务优先级。
+
+### 6.1 插件能力阶段
+
+提示词 skill 是质量杠杆；进度/性能是等待期信任；GPU 监控是防误用，不是生成质量。
+数字由 daemon 上报，插件只展示。
+
+| 阶段 | 目标 | 插件 | daemon / 协议 |
+| --- | --- | --- | --- |
+| **M1** | agent 能生成并知道卡在哪 | Host bundle；`h3_generate`；`h3-prompt` skill；`/v1/info` 协商；`ctx.jobs` 把已有 SSE 映成文本（phase / step / ETA / `cache_hint` / 队列） | v1alpha 现状即够 |
+| **M1.5** | 少交废任务、结果可复盘 | 提交前 prompt lint（三段式、引用标签、Ref/FL 上限、几何）；按 `arch` 的 preset/时长顾问；结果回写 poster、`cli`、粗计时 | 无协议变更（lint 在插件；计时可用 SSE 已有 `elapsed_sec`） |
+| **M2** | 可解释的慢、可展示的进度 | 可选 Web 进度卡片（`dsh.client` + `tool.call.toolview`）；把 §13.6 字段给人看 | **附加** SSE/`done` 字段：阶段耗时、步均 DiT、结束时与 `H3_PROFILE` 同构的摘要、起止 VRAM 快照。未知字段可忽略，不升 `v1alpha` |
+| **M3** | 体验闭环 | 中间预览帧（克制配额）；飞书海报（Q1 后）；skill 调优；部署文档；TR 语义字段 | `options.token_reduction` / schedule 替代裸 `extra_args`；可选预览帧事件 |
+
+同机「把用户文件拷进 `H3D_MEDIA_ROOT` 并返回 `<Picture N>`」属于 M1.5 资产管家，跨机 `/v1/media` 仍是 backlog。
+
+### 6.2 进度 / 性能 / GPU 分层
+
+| 层 | 做 | 不做 |
+| --- | --- | --- |
+| 进度 | M1 用现有 SSE → jobs 文本；M2 再上 Web 条 | 插件自造轮询 UI 框架 |
+| 性能 | M2 阶段耗时 + 步均 + profile 摘要（agent 能说「慢在 VAE」） | 在 DSH 里做完整 profiler UI |
+| GPU | M2 任务起止 VRAM + `/v1/info` idle free；单卡互斥硬提示 | 1Hz SM% 曲线；插件刮卡；集群看板 |
+
+`write_preview_frames` 已在 v1alpha 请求里；M3 才把中间帧推给 agent，并限制频率与体积。
 
 ## 7. 风险与开放项
 
@@ -165,14 +200,18 @@ fake daemon（开发期替身，可放本仓 tests/fixtures）。
 | MP4 在 dsh 前端的内嵌播放能力未验证 | 🟢 | 降级：海报帧 + 下载链接（poster 已在协议中） |
 | 几何组合白名单需按实测填写 | 🟢 | 实现期由作者提供，写入 daemon 校验表 |
 | 生态插件质量参差 | 🟢 | 装前用 dsh-plugin-check 体检；起步清单已收敛到 3 个 |
+| DSH jobs 不跨进程重启 | 🟢 | 与 daemon `JOB_LOST_AFTER_RESTART` 一致；SQLite 账本仅在明确需要时加 |
 
 ## 8. 里程碑
 
-1. **M0 设计冻结**（本文档）✅ 本次完成
-2. **M1 双端并行**：fake daemon + 插件骨架 ↔ daemon 真身 P0 端点
-3. **M2 对拍联调**：插件测试套件双端通过；fox-s2 一致性 gate 绿
-4. **M3 体验闭环**：skill 调优 + 飞书入口（Q1 通过后）+ 部署文档
-5. **M4 发布**：h3-hip.c v0.12-exp（含 --serve）＋ dsh-h3 v0.1.0；
+1. **M0 设计冻结**（v1.0）✅；**v1.1** 写入插件阶段与 DSH jobs（本文档）
+2. **M1 可生成**：本仓 `--serve` P0 端点；插件仓 Host bundle + `h3_generate` +
+   `h3-prompt` + jobs 文本进度 + 协议协商 + fake daemon 骨架
+3. **M1.5 少废片**：prompt lint、preset 顾问、poster/`cli`/粗计时回写；可选 CLI Plan B
+4. **M2 可观测**：§13.6 附加字段；插件测试双端对拍；fox-s2 daemon↔CLI 一致性
+   gate；可选 Web 进度卡
+5. **M3 体验闭环**：预览帧、TR 语义字段、skill 调优、飞书（Q1 后）、部署文档
+6. **M4 发布**：h3-hip.c v0.12-exp（含 `--serve`）＋ `dsh-plugin-h3-hip` v0.1.0；
    提交 h3-hip.c 收录至 MiniMax-AI/awesome-minimax-h3-integration
 
 ## 9. 生态位与外部参考（2026-09-10 更新）
@@ -205,7 +244,9 @@ v1alpha，理由：agent 场景需要 SSE 细粒度进度（分阶段、cache_hi
 H3 提示词为**固定三段式结构**，内联 `<Picture X>` / `<Video X>` /
 `<Audio X>` 引用标签与 `<d>` 对话标注；官方发布 Base（FL2VA）与
 Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
-dsh-h3 的 SKILL.md 采用官方三段式为规范主体并链接官方指南。
+`dsh-plugin-h3-hip` 的 `h3-prompt` skill（kebab-case）采用官方三段式为规范
+主体并链接官方指南。模型先看到 catalog，再 `skill({ name })` 拉全文；不要把
+整份规范塞进 tool description。M1.5 的 prompt lint 是同一份规则的执行面。
 
 可参考的现成产物：
 
@@ -358,7 +399,8 @@ dsh-h3 的 SKILL.md 采用官方三段式为规范主体并链接官方指南。
 - `refs.*` 路径必须在 media root 内，否则 400
 - `options.extra_args` 为逃生口，daemon 原样追加到 CLI 参数；含
   已废弃或危险参数时返回 422 并指明拒绝项（如 `--frames-dir`、
-  `--output` 由 daemon 托管，拒绝透传）
+  `--output` 由 daemon 托管，拒绝透传）。M3 起 `--token-reduction` 应走
+  §13.6 语义字段，避免只靠 `extra_args`
 - `idempotency_key` 有效期内（建议 24h）重复提交返回原 job，不重复入队
 
 响应 202：
@@ -451,6 +493,59 @@ data: {"job_id":"k3v9a2x1","result":{...同13.3...}}
 - 断线重连：客户端带 `Last-Event-ID` 头续传，daemon 保留每 job 最近
   50 条事件 1 小时（MVP 允许直接从头重放当前状态）
 - 心跳：每 15 秒 `event: ping`，防代理断链
+- M1 客户端必须能在没有下列附加字段时工作（忽略未知键）
+
+### 13.6 附加字段（M2 / M3，可选，不升协议号）
+
+客户端必须忽略未识别键。缺省字段视为「daemon 未实现该阶段」，不得当 426。
+
+**M2 — 性能与 VRAM（由 worker 写入，禁止插件刮卡）**
+
+`progress` 事件可附加：
+
+```json
+{
+  "phase": "dit",
+  "step": 3,
+  "total_steps": 20,
+  "elapsed_sec": 55,
+  "eta_hint_sec": 310,
+  "phase_elapsed_sec": 48,
+  "step_avg_sec": 16.0,
+  "vram": { "used_mb": 18432, "free_mb": 2048 }
+}
+```
+
+`done` / `GET /v1/jobs/{id}` 的 `result` 可附加（与 CLI `H3_PROFILE` 同构的摘要，字段名稳定后与实现锁定）：
+
+```json
+{
+  "profile": {
+    "load_sec": 12.1,
+    "dit_sec": 88.4,
+    "vae_sec": 9.2,
+    "mux_sec": 1.0,
+    "dit_step_avg_sec": 4.4
+  },
+  "vram": { "start_used_mb": 1024, "end_used_mb": 19000, "peak_used_mb": 20100 }
+}
+```
+
+`GET /v1/info` 的每个 worker 可附加 idle 时 `vram: { used_mb, free_mb }`，供 M1.5 preset 顾问与「不要并行第二个 T2VA」提示。不得以 1Hz 刷 SM%。
+
+**M3 — Token reduction 语义与预览帧**
+
+`options` 增加（与 `extra_args` 并存；显式字段优先，冲突时 422）：
+
+```json
+"options": {
+  "token_reduction": false,
+  "token_reduction_schedule": "4:30",
+  "write_preview_frames": false
+}
+```
+
+开启预览时，偶发 `event: preview`（路径必须在 output root 内，频率与分辨率由 daemon 限额）。插件不得把每一 DiT step 都当附件发出。
 
 ## 14. 任务生命周期
 
@@ -532,6 +627,9 @@ queued → preparing → running → finalizing → done
 - TLS（loopback 默认无此需求；跨机由反向代理负责）
 - 断点续跑、任务优先级、抢占
 - WebSocket（SSE 单向流已够）
+- 插件进程内 GPU 采集（`rocm-smi` / amd-smi）；通用 GPU dashboard
+- 1Hz SM% 曲线；完整 profiler UI（阶段摘要见 §13.6 即可）
+- M1 的 Web client / 内嵌 MP4 播放器（M2–M3 可选）
 
 ### 18.2 验收
 
