@@ -8,8 +8,8 @@ This PR **closes MI210**. Other SKUs are follow-ups, not merge blockers.
 | SKU | ISA | This PR | Notes |
 |---|---|---|---|
 | **MI210** | `gfx90a` | **measured** | 15 s no-TR A/B below; KEEP as opt-in only |
-| MI300X | `gfx942` | same MFMA source, **untimed** | should run; no 15 s PSNR/speed table yet |
-| Strix Halo | `gfx1151` | **not ported** | `--sol-attn` stays dense (safe no-op) |
+| MI300X | `gfx942` | same MFMA source, **untimed** | [issue #8](https://github.com/alexhegit/h3-hip.c/issues/8) |
+| Strix Halo | `gfx1151` | **not ported** | dense no-op; [issue #9](https://github.com/alexhegit/h3-hip.c/issues/9) |
 
 `--sol-attn` is an **opt-in quality/speed trade**: skipped 64-token KV tiles
 are pooled into the online softmax instead of computed exactly. Keep-all
