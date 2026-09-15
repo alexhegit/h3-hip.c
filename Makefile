@@ -58,7 +58,9 @@ LIB_C := h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c \
 LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c h3_ffmpeg.c \
 	h3_terminal.c h3_vision_encoder.c h3_multimodal.c
 LIB_OBJ := $(LIB_C:.c=.o) $(LIB_GPU)
-CLI_OBJ := main.o h3_cli.o linenoise.o
+DAEMON_C := h3d_config.c h3d_http.c h3d_json.c h3d_job.c h3d_worker.c h3d.c
+DAEMON_OBJ := $(DAEMON_C:.c=.o)
+CLI_OBJ := main.o h3_cli.o linenoise.o $(DAEMON_OBJ)
 
 .PHONY: all test parity real-parity clean hip-smoke hip-test hip-test-strict \
 	hip-functional halo-regression
