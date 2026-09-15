@@ -161,6 +161,7 @@ Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
 | Runtime INT8 DiT (hipBLAS) | ✅ default on all ISAs (`H3_INT8_MLP=0` for BF16) |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
+| `--sol-attn` | ✅ opt-in **lossy** long SDPA; off by default; see [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md) |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
 
 ## Daemon (experimental)
@@ -191,6 +192,7 @@ Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
   [Long video](docs/wiki/Long-video.md)
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
+- **`--sol-attn`** (lossy long SDPA; off by default): [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 - **`--serve` daemon / DSH plugin:** [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md)
 
@@ -207,6 +209,11 @@ MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
 `fox-15s-fast.sh` **6 min 18 s**.
 MI300X (gfx942) no-TR **179.5 s**; `fox-15s.sh` **114.7 s**;
 `fox-15s-fast.sh` **83.1 s**.
+**`--sol-attn`** is a separate opt-in. Default stays dense (quality). On
+MI210 15 s no-TR it cut E2E **−18%** and SDPA **−29%** versus that dense
+baseline, at **18.73 dB / 0.712 SSIM** video and **6.69 dB** audio SNR.
+Do not enable it for publication or audio-sensitive output. Details:
+[`docs/SOL_ATTN.md`](docs/SOL_ATTN.md).
 Tagged scoreboard stays without TR. Per-step schedule is on-demand only:
 `./bench/fox-15s-sched.sh` (not the default `bench/` retune). Generate prints a
 stderr warning when `--token-reduction` or `H3_TOKEN_REDUCTION_SCHEDULE` is on.

@@ -2284,6 +2284,22 @@ static int run_block(h3_dit *dit, unsigned index, int step,
         dit->int8_attention_head_scales && dit->int8_attention_row_scales &&
         !getenv("H3_DISABLE_INT8_SDPA") &&
         getenv("H3_ENABLE_INT8_SDPA");
+    if (getenv("H3_SOL_ATTN") && strcmp(getenv("H3_SOL_ATTN"), "0") != 0) {
+        unsigned begin = 4, end = 40;
+        const char *range = getenv("H3_SOL_ATTN_BLOCKS");
+        if (range && *range) {
+            char *middle = NULL;
+            unsigned long parsed_begin = strtoul(range, &middle, 10);
+            if (middle && *middle == ':') {
+                unsigned long parsed_end = strtoul(middle + 1, NULL, 10);
+                if (parsed_end > parsed_begin && parsed_end <= 50)
+                    begin = (unsigned)parsed_begin, end = (unsigned)parsed_end;
+            }
+        }
+        int prefix = (int)((dit->video_target_start + 63u) / 64u);
+        h3_gpu_sol_attn_configure(dit->gpu,
+                                  index >= begin && index < end, prefix);
+    }
     if (int8_sdpa) {
         OP(h3_gpu_sdpa_bf16_head_major_output_int8(
             dit->gpu, dit->int8_activation, dit->int8_attention_head_scales,

@@ -190,6 +190,17 @@ typedef struct {
     uint32_t kv_head_major;
 } h3_sdpa_args;
 
+/* Opt-in Sol-Attn routing. KV tiles are 64 tokens. */
+typedef struct {
+    uint32_t n_blocks;
+    float tau;
+    int band;
+    int prefix;
+    int drop_unselected;
+    /* Optional device counters: [kept exact tiles, total routed tiles]. */
+    uint64_t *route_stats;
+} h3_sdpa_sol_cfg;
+
 typedef struct {
     uint32_t sample_offset;
     uint32_t elements;
@@ -433,6 +444,11 @@ int h3_launch_video_qkv_rope_f32(const float *qkv, const float *rope_cos,
 int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                         const uint16_t *value, uint16_t *output,
                         const h3_sdpa_args *args, hipStream_t stream);
+int h3_launch_sdpa_bf16_sol(const uint16_t *query, const uint16_t *key,
+                            const uint16_t *value, uint16_t *output,
+                            const h3_sdpa_args *args, float *k_mean,
+                            float *v_sum, const h3_sdpa_sol_cfg *cfg,
+                            hipStream_t stream);
 int h3_launch_sdpa_bf16_hipblas(const uint16_t *query, const uint16_t *key,
                                 const uint16_t *value, uint16_t *output,
                                 const h3_sdpa_args *args, hipStream_t stream);

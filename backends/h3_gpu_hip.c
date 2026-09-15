@@ -6,6 +6,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -589,9 +591,17 @@ struct h3_gpu {
     size_t kv_hm_scratch_bytes;
     /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
     int sdpa_kv_already_hm;
+    /* Sol-Attn K-mean / V-sum: 2 * n_kv_blocks * heads * 128 floats. */
+    void *sol_scratch;
+    size_t sol_scratch_bytes;
+    uint64_t *sol_route_stats;
+    int sol_attn_layer;
+    int sol_attn_prefix;
     void *nax_fc1_temp;
     size_t nax_fc1_temp_elems;
 };
+
+static int h3_hip_env_on(const char *name);
 
 enum {
     H3_HIP_PROF_LINEAR = 0,
@@ -965,6 +975,8 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
         return NULL;
     }
     gpu->device_id = device;
+    gpu->sol_attn_layer = 1;
+    gpu->sol_attn_prefix = -1;
     snprintf(gpu->profile_label, sizeof(gpu->profile_label), "HIP context");
     gpu->profile_start_wall = h3_hip_now();
     gpu->profile_start_stats = gpu->stats;
@@ -983,6 +995,22 @@ void h3_gpu_free(h3_gpu *gpu) {
     h3_hip_profile_emit_load(ctx);
     h3_hip_profile_destroy_ops(ctx);
     if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
+    if (ctx->sol_scratch) {
+        if (h3_hip_env_on("H3_SOL_ATTN_STATS") && ctx->sol_route_stats) {
+            uint64_t stats[2] = {0, 0};
+            if (hipMemcpy(stats, ctx->sol_route_stats, sizeof(stats),
+                          hipMemcpyDeviceToHost) == hipSuccess &&
+                stats[1]) {
+                fprintf(stderr,
+                        "h3: Sol-Attn exact tiles %" PRIu64 "/%" PRIu64
+                        " (%.2f%% kept, %.2f%% skipped)\n",
+                        stats[0], stats[1], 100.0 * (double)stats[0] /
+                        (double)stats[1], 100.0 * (double)(stats[1] - stats[0]) /
+                        (double)stats[1]);
+            }
+        }
+        hipFree(ctx->sol_scratch);
+    }
     if (ctx->nax_fc1_temp) h3_gpu_tensor_free((h3_gpu_tensor *)ctx->nax_fc1_temp);
     hipStreamDestroy(ctx->stream);
     free(ctx);
@@ -2723,6 +2751,115 @@ int h3_gpu_vae_encoder_group_norm_silu_f32(
         "h3_vae_encoder_group_norm_silu_f32");
 }
 
+static int h3_hip_env_on(const char *name) {
+    const char *value = getenv(name);
+    return value && *value && strcmp(value, "0") != 0;
+}
+
+static int h3_hip_sol_scratch(struct h3_gpu *gpu, uint32_t n_blocks,
+                              uint32_t heads) {
+    size_t summary_bytes =
+        (size_t)2u * n_blocks * heads * 128u * sizeof(float);
+    size_t need = summary_bytes + 2u * sizeof(uint64_t);
+    if (gpu->sol_scratch_bytes >= need) return 1;
+    if (gpu->sol_scratch) hipFree(gpu->sol_scratch);
+    gpu->sol_scratch = NULL;
+    gpu->sol_route_stats = NULL;
+    gpu->sol_scratch_bytes = 0;
+    if (hipMalloc(&gpu->sol_scratch, need) != hipSuccess) {
+        h3_hip_set_error(gpu, "cannot allocate Sol-Attn scratch");
+        return 0;
+    }
+    gpu->sol_scratch_bytes = need;
+    gpu->sol_route_stats =
+        (uint64_t *)((unsigned char *)gpu->sol_scratch + summary_bytes);
+    if (hipMemsetAsync(gpu->sol_route_stats, 0, 2u * sizeof(uint64_t),
+                       gpu->stream) != hipSuccess) {
+        h3_hip_set_error(gpu, "cannot clear Sol-Attn route statistics");
+        return 0;
+    }
+    return 1;
+}
+
+static float h3_sol_attn_tau(void) {
+    const char *text = getenv("H3_SOL_ATTN_TAU");
+    if (!text || !*text) return 0.5f;
+    char *tail = NULL;
+    float tau = strtof(text, &tail);
+    if (tail == text || !isfinite(tau)) return 0.5f;
+    return tau;
+}
+
+static int h3_sol_attn_band(void) {
+    const char *text = getenv("H3_SOL_ATTN_BAND");
+    if (!text || !*text) return 1;
+    long band = strtol(text, NULL, 10);
+    if (band < 0 || band > 16) return 1;
+    return (int)band;
+}
+
+static int h3_sol_attn_prefix(void) {
+    const char *text = getenv("H3_SOL_ATTN_PREFIX");
+    if (!text || !*text) return 8;
+    long prefix = strtol(text, NULL, 10);
+    if (prefix < 0 || prefix > 64) return 8;
+    return (int)prefix;
+}
+
+static int h3_sol_attn_prefix_value(struct h3_gpu *gpu) {
+    if (gpu && gpu->sol_attn_prefix >= 0) return gpu->sol_attn_prefix;
+    return h3_sol_attn_prefix();
+}
+
+void h3_gpu_sol_attn_configure(h3_gpu *gpu, int layer_on, int prefix_blocks) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx) return;
+    ctx->sol_attn_layer = layer_on ? 1 : 0;
+    if (prefix_blocks >= 0) ctx->sol_attn_prefix = prefix_blocks;
+}
+
+static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
+                                  uint32_t head_dim) {
+    uint32_t min_sequence = 4096u;
+    const char *text = getenv("H3_SOL_ATTN_MIN_SEQ");
+    if (text && *text) {
+        unsigned long parsed = strtoul(text, NULL, 10);
+        if (parsed >= 512u && parsed <= 65536u)
+            min_sequence = (uint32_t)parsed;
+    }
+    return h3_hip_env_on("H3_SOL_ATTN") && gpu->sol_attn_layer &&
+           sequence >= min_sequence && head_dim == 128u;
+}
+
+static int h3_hip_sdpa_bf16_run(struct h3_gpu *ctx, uint16_t *output,
+                                const uint16_t *query, const uint16_t *key,
+                                const uint16_t *value, h3_sdpa_args args) {
+    if (h3_hip_sol_attn_wanted(ctx, args.sequence, args.head_dim)) {
+        uint32_t n_blocks = (args.sequence + 63u) / 64u;
+        if (n_blocks > 1024u) {
+            h3_hip_set_error(ctx, "Sol-Attn sequence exceeds 65536 tokens");
+            return 0;
+        }
+        if (!h3_hip_sol_scratch(ctx, n_blocks, args.heads)) return 0;
+        h3_sdpa_sol_cfg cfg = {
+            n_blocks, h3_sol_attn_tau(), h3_sol_attn_band(),
+            h3_sol_attn_prefix_value(ctx),
+            h3_hip_env_on("H3_SOL_ATTN_DROP") ? 1 : 0,
+            h3_hip_env_on("H3_SOL_ATTN_STATS") ? ctx->sol_route_stats : NULL};
+        float *k_mean = (float *)ctx->sol_scratch;
+        float *v_sum = k_mean + (size_t)n_blocks * args.heads * 128u;
+        return h3_hip_launch_sdpa(
+            ctx,
+            h3_launch_sdpa_bf16_sol(query, key, value, output, &args, k_mean,
+                                    v_sum, &cfg, ctx->stream),
+            "h3_sdpa_bf16_sol");
+    }
+    return h3_hip_launch_sdpa(ctx,
+                              h3_launch_sdpa_bf16(query, key, value, output,
+                                                  &args, ctx->stream),
+                              "h3_sdpa_bf16");
+}
+
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,
@@ -2776,10 +2913,9 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         value_ptr = value_hm;
         args.kv_head_major = 1u;
     }
-    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
-        (const uint16_t *)tensor_ptr(query)->data, key_ptr, value_ptr,
-        (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
-        "h3_sdpa_bf16");
+    return h3_hip_sdpa_bf16_run(
+        ctx, (uint16_t *)tensor_ptr(output)->data,
+        (const uint16_t *)tensor_ptr(query)->data, key_ptr, value_ptr, args);
 }
 
 int h3_gpu_sdpa_f32(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -2890,10 +3026,9 @@ int h3_gpu_sdpa_bf16_head_major_output(h3_gpu *gpu, h3_gpu_tensor *output,
         value_ptr = value_hm;
         args.kv_head_major = 1u;
     }
-    return h3_hip_launch_sdpa(ctx, h3_launch_sdpa_bf16(
-        (const uint16_t *)tensor_ptr(query)->data, key_ptr, value_ptr,
-        (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
-        "h3_sdpa_bf16_head_major_output");
+    return h3_hip_sdpa_bf16_run(
+        ctx, (uint16_t *)tensor_ptr(output)->data,
+        (const uint16_t *)tensor_ptr(query)->data, key_ptr, value_ptr, args);
 }
 
 int h3_gpu_sdpa_bf16_head_major_output_int8(

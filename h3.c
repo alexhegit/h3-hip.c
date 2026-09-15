@@ -175,11 +175,11 @@ static char *h3_prepared_key(const char *conditioning,
     if (!h3_key_append(
             &key,
             "%s|shape=%dx%dx%d|steps=%d|layers=%d|reuse-core=%d|reduce=%d"
-            "|row-fc2=%d|reference-rope=%d|ssd-streaming=%d"
+            "|sol-attn=%d|row-fc2=%d|reference-rope=%d|ssd-streaming=%d"
             "|slow=%d%d%d%d%d%d%d%d%d%d",
             conditioning, render_width, render_height, params->frames,
             params->steps, params->dit_layers, params->core_reuse,
-            params->token_reduction, params->use_int8_row_fc2,
+            params->token_reduction, params->sol_attn, params->use_int8_row_fc2,
             params->use_reference_rope,
             params->ssd_streaming,
             params->use_slower_bf16_mlp,
@@ -543,6 +543,10 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
         h3_set_error(ctx, "token reduction must be zero or one");
         return 0;
     }
+    if (params->sol_attn != 0 && params->sol_attn != 1) {
+        h3_set_error(ctx, "sol-attn must be zero or one");
+        return 0;
+    }
     if (params->use_int8_row_fc2 != 0 &&
         params->use_int8_row_fc2 != 1) {
         h3_set_error(ctx, "int8 row FC2 must be zero or one");
@@ -898,6 +902,14 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         fprintf(stderr,
                 "h3: --token-reduction is on: faster DiT, visible quality "
                 "loss (off by default)\n");
+    if (params->sol_attn) {
+        setenv("H3_SOL_ATTN", "1", 1);
+        fprintf(stderr,
+                "h3: --sol-attn is on: faster long SDPA, visible quality "
+                "loss (off by default). MI210 15 s no-TR vs dense: E2E "
+                "−18%, SDPA −29%; video ~18.7 dB / 0.71 SSIM, audio SNR "
+                "~6.7 dB. See docs/SOL_ATTN.md.\n");
+    }
     if (getenv("H3_TOKEN_REDUCTION_SCHEDULE") &&
         *getenv("H3_TOKEN_REDUCTION_SCHEDULE"))
         fprintf(stderr,

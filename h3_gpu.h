@@ -591,6 +591,9 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,
                      uint32_t heads, uint32_t head_dim, float scale);
+/* Per DiT block: layer_on selects sparse SDPA; prefix_blocks < 0 keeps
+ * the H3_SOL_ATTN_PREFIX default. */
+void h3_gpu_sol_attn_configure(h3_gpu *gpu, int layer_on, int prefix_blocks);
 /* Preserve SDPA's native [head,row,dimension] output for an immediately
  * following layout-aware projection. */
 int h3_gpu_sdpa_bf16_head_major_output(

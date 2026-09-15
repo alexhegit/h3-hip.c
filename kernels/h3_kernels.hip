@@ -4412,6 +4412,8 @@ extern "C" int h3_hip_rdna_wmma_default(void) {
     return cached;
 }
 
+#include "h3_kernels_sol.hip"
+
 extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, uint16_t *output,
                                    const h3_sdpa_args *args,

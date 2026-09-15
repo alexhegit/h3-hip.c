@@ -489,6 +489,26 @@ TR from that step onward for quality recovery in later denoising steps.
 
 Strix Halo fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 
+### Sol-Attn (`--sol-attn`, off by default)
+
+Quality path stays **dense**. `--sol-attn` is lossy long-sequence SDPA
+(CDNA only; gfx1151 still dense). Do not put these numbers on the tagged
+quality-path scoreboard. Full write-up: [`SOL_ATTN.md`](SOL_ATTN.md).
+
+MI210 (`gfx90a`) 15 s cinematic, **no TR**, τ=0.5, versus the same-run dense
+baseline:
+
+| | dense (quality) | `--sol-attn` | vs dense |
+|--|--:|--:|--:|
+| E2E | 725.31 s | 593.04 s | **−18.2%** |
+| denoise | 634.95 s | 502.89 s | **−20.8%** |
+| SDPA | 456.21 s | 324.38 s | **−28.9%** |
+| video PSNR / SSIM | — | 18.73 dB / 0.712 | preview vs dense |
+| audio SNR | — | 6.69 dB | large drop |
+
+fox-s2 stays dense (`H3_SOL_ATTN_MIN_SEQ` default 4096). Do not combine with
+`--token-reduction` unless you accept compounded quality loss.
+
 ## VRAM optimization summary (MI300X, 15 s cinematic)
 
 | Component | BF16 baseline | Optimized | Savings | Mechanism |

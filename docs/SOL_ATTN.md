@@ -1,7 +1,45 @@
-# Sol-Attn feasibility and implementation plan
+# Sol-Attn (lossy long-sequence SDPA)
 
-Status: **planned, not implemented**. Target branch: `sol-attn`, forked from
-`origin/main` at `088a24b`.
+**Default: quality.** Dense flash SDPA stays on unless you pass `--sol-attn`.
+Do not enable this for publication, audio-sensitive, or fox-s2 identity work.
+
+`--sol-attn` is an **opt-in quality/speed trade**: skipped 64-token KV tiles
+are pooled into the online softmax instead of computed exactly. Keep-all
+(`H3_SOL_ATTN_TAU=-100`) matches dense bit-for-bit; the default τ=0.5 path
+does not.
+
+CDNA MFMA (`gfx90a` / `gfx942`) is implemented. Wave32 rocWMMA (`gfx1151`)
+is not; `--sol-attn` there still runs dense SDPA. Sequences shorter than
+`H3_SOL_ATTN_MIN_SEQ` (default 4096) also stay dense.
+
+```bash
+./h3 -d MODEL --sol-attn -p '...' --seconds 15
+# or: H3_SOL_ATTN=1 H3_SOL_ATTN_TAU=0.5
+# keep-all (debug): H3_SOL_ATTN=1 H3_SOL_ATTN_TAU=-100
+# microbench: H3_BENCH_SDPA=1 H3_BENCH_SDPA_SOL=1 H3_BENCH_SDPA_SEQ=44800 ./h3_hip_bf16_tests
+```
+
+## Measured vs dense baseline (MI210, gfx90a)
+
+Fixed seed, 15 s cinematic, **no token reduction**, same prompt/checkpoint as
+the dense quality path. Sol-Attn τ=0.5, blocks 4–40, prefix tiles exact.
+Quality is versus that dense MP4 (not versus BF16 gold).
+
+| metric | dense (quality path) | `--sol-attn` τ=0.5 | vs dense |
+|---|---:|---:|---|
+| E2E | 725.31 s | 593.04 s | **−18.2%** (1.22×) |
+| denoise | 634.95 s | 502.89 s | **−20.8%** |
+| denoise SDPA | 456.21 s | 324.38 s | **−28.9%** |
+| peak VRAM | 27.91 GiB | 27.91 GiB | unchanged |
+| exact KV tiles | 100% | 33.43% | 66.57% pooled |
+| video PSNR / SSIM | reference | **18.73 dB / 0.712** | preview-grade vs dense |
+| decoded audio SNR | reference | **6.69 dB** | large waveform error |
+
+SDPA kernel microbench (56 heads, d128, τ=0.5): 8,192 tokens **2.05×**,
+44,800 tokens **2.56×**. fox-s2 (~1.9k tokens) stays on dense by default.
+
+Do not stack with `--token-reduction` unless you accept compounded error.
+Full design notes follow.
 
 This document evaluates porting the training-free, Sol-Attn-style sparse SDPA
 implemented in
@@ -85,10 +123,14 @@ Add an opt-in CLI flag and matching environment controls:
 | `H3_SOL_ATTN_BAND` | `1` | always keep nearby KV tiles |
 | `H3_SOL_ATTN_PREFIX` | derived | always keep text/condition/audio prefix tiles |
 | `H3_SOL_ATTN_BLOCKS` | `4:40` | DiT blocks allowed to use sparse SDPA |
+| `H3_SOL_ATTN_MIN_SEQ` | `4096` | shorter sequences stay dense on HIP |
+| `H3_SOL_ATTN_STATS` | off | print aggregate exact/skipped tile counts |
 | `H3_SOL_ATTN_DROP` | off | A/B-only mode that drops skipped tiles entirely |
 
-Sequences shorter than 512 tokens should remain on dense SDPA. The default
-generation path must remain unchanged.
+Sequences shorter than 4096 tokens remain on dense SDPA after MI210
+measurements showed that routing overhead exceeds the saved work below this
+point. Tests can override the gate down to 512. The default generation path
+must remain unchanged.
 
 Do not enable Sol-Attn and token reduction together by default. Both reduce
 attention work by different mechanisms, but their errors can compound. Measure
@@ -210,6 +252,7 @@ No combination becomes the default quality path.
 
 - feature off: existing tests and fox-s2 regression remain unchanged
 - keep-all: zero output differences versus the corresponding dense MMA kernel
+  (gfx90a: seq 512–44800, 56 heads, `H3_SOL_ATTN_TAU=-100`)
 - unsupported/short shapes: verified dense fallback
 
 ### Performance
@@ -219,6 +262,32 @@ For 44,800 tokens, target at least:
 - **2x** SDPA kernel speedup in sparse mode
 - **20%** reduction in 15 s `sdpa=`
 - no material regression outside SDPA
+
+MI210 (`gfx90a`) microbench, 56 heads, d128, 3 iters:
+
+| seq | dense | keep-all | tau=0.5 | vs dense |
+|---:|---:|---:|---:|---:|
+| 1,874 | 30.1 ms | 32.3 ms | 23.9 ms | 1.26x |
+| 8,192 | 534.8 ms | 539.8 ms | 261.4 ms | 2.05x |
+| 16,384 | 2.11 s | 2.12 s | 0.91 s | 2.33x |
+| 44,800 | 15.69 s | 15.75 s | 6.12 s | **2.56x** |
+
+MI210 fixed-seed 15 s no-TR A/B after batching 16 pooled pseudo-KV tiles
+through MFMA for both QK and PV:
+
+| metric | dense | Sol-Attn τ=0.5 | change |
+|---|---:|---:|---:|
+| E2E | 725.31 s | 593.04 s | **−18.2%** |
+| denoise | 634.95 s | 502.89 s | **−20.8%** |
+| denoise SDPA | 456.21 s | 324.38 s | **−28.9%** |
+| peak VRAM | 27.91 GiB | 27.91 GiB | unchanged |
+| exact KV tiles | — | 33.43% | 66.57% skipped |
+| video PSNR / SSIM | reference | 18.73 dB / 0.712 | approximate |
+| decoded audio SNR | reference | 6.69 dB | approximate |
+
+Same 15 s numbers as the table at the top of this document. Speed meets the
+20% SDPA gate; quality stays **REJECT for default on** (preview video, weak
+audio). Duplicate table kept only for the KEEP checklist.
 
 Reject or retune if routing/summary overhead erases the gain, particularly on
 short sequences.
@@ -232,9 +301,10 @@ Use the same prompt, seed, geometry, layers, reuse, and checkpoint as the dense
 - audio waveform SNR
 - representative MP4s for visual/temporal inspection
 
-Spark's 19.2 dB / 0.72 is a reference point, not an automatic HIP acceptance
-threshold. Compare Sol-Attn with token reduction and reuse 3 on the same AMD
-SKU. Keep the dense path for publication-quality or audio-sensitive output.
+Spark's 19.2 dB / 0.72 is a reference point, not an automatic HIP default.
+HIP KEEP for **default on** would need audio closer to the dense waveform.
+Until then the dense path is the quality default; `--sol-attn` is documented
+lossy acceleration only.
 
 ## Risks
 
@@ -248,8 +318,6 @@ SKU. Keep the dense path for publication-quality or audio-sensitive output.
 
 ## Expected result
 
-The project should treat Sol-Attn as an **optional long-video quality/speed
-trade-off**. A realistic initial goal is a 20-40% reduction in 15 s denoise,
-subject to AMD measurements and quality gates. The implementation should reuse
-one control plane and two ISA-specific flash-kernel families while preserving
-the default dense path exactly.
+The project treats Sol-Attn as optional long-video **lossy** acceleration.
+MI210 already meets the 20% SDPA speed gate; quality does not meet a default-on
+bar. Preserve the dense path exactly when the flag is off.

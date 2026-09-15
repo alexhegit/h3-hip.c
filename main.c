@@ -37,6 +37,9 @@ static void usage(const char *program) {
         "      --core-reuse N     Core refresh: 1 exact, 4 fast, 6 aggressive\n"
         "      --token-reduction  Pair video tokens in middle DiT blocks\n"
         "                         (faster; visible quality loss — off by default)\n"
+        "      --sol-attn         Lossy sparse SDPA for long T2VA (off by\n"
+        "                         default). Faster; visible quality loss.\n"
+        "                         See docs/SOL_ATTN.md\n"
         "      --ssd-streaming    Stream original BF16 DiT layers from SSD\n"
         "      --use-int8-row-fc2 Faster one-scale int8 FC2 (M5)\n"
         "      --use-reference-rope  Disable native 256 RoPE adaptation\n"
@@ -249,6 +252,7 @@ int main(int argc, char **argv) {
            OPT_LAYERS,
            OPT_CORE_REUSE,
            OPT_TOKEN_REDUCTION,
+           OPT_SOL_ATTN,
            OPT_SSD_STREAMING,
            OPT_USE_INT8_ROW_FC2,
            OPT_USE_REFERENCE_ROPE,
@@ -282,6 +286,7 @@ int main(int argc, char **argv) {
         {"layers", required_argument, NULL, OPT_LAYERS},
         {"core-reuse", required_argument, NULL, OPT_CORE_REUSE},
         {"token-reduction", no_argument, NULL, OPT_TOKEN_REDUCTION},
+        {"sol-attn", no_argument, NULL, OPT_SOL_ATTN},
         {"ssd-streaming", no_argument, NULL, OPT_SSD_STREAMING},
         {"use-int8-row-fc2", no_argument, NULL, OPT_USE_INT8_ROW_FC2},
         {"use-reference-rope", no_argument, NULL, OPT_USE_REFERENCE_ROPE},
@@ -371,6 +376,7 @@ int main(int argc, char **argv) {
                 params.core_reuse = parse_int(optarg, "core reuse");
                 break;
             case OPT_TOKEN_REDUCTION: params.token_reduction = 1; break;
+            case OPT_SOL_ATTN: params.sol_attn = 1; break;
             case OPT_SSD_STREAMING: params.ssd_streaming = 1; break;
             case OPT_USE_INT8_ROW_FC2:
                 params.use_int8_row_fc2 = 1;
