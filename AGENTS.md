@@ -57,8 +57,8 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - `H3_TOKEN_REDUCTION=1` halves spatial width in middle DiT blocks (~37% faster
   long video). Same as `--token-reduction`.
 - `--sol-attn` / `H3_SOL_ATTN=1` is **lossy** long SDPA (off by default).
-  Measured on MI210 and MI300X. gfx1151 is not ported (`--sol-attn` stays
-  dense). See `docs/SOL_ATTN.md`.
+  Measured on gfx1151, gfx90a, and gfx942. gfx1151 uses a separate wave32
+  rocWMMA sparse kernel. See `docs/SOL_ATTN.md`.
 - `H3_TOKEN_REDUCTION_SCHEDULE` is per-step TR (`STEP:BEGIN:END,...`); setting
   it enables TR. On-demand bench only: `./bench/fox-15s-sched.sh` — not part of
   the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).

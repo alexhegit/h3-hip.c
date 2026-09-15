@@ -2822,7 +2822,7 @@ void h3_gpu_sol_attn_configure(h3_gpu *gpu, int layer_on, int prefix_blocks,
     if (sparse_q0 >= 0) ctx->sol_attn_sparse_q0 = sparse_q0;
 }
 
-static int h3_hip_sol_cdna(void) {
+static int h3_hip_sol_supported(void) {
     static int cached = -1;
     if (cached >= 0) return cached;
     int device = 0;
@@ -2830,7 +2830,8 @@ static int h3_hip_sol_cdna(void) {
     cached = hipGetDevice(&device) == hipSuccess &&
              hipGetDeviceProperties(&props, device) == hipSuccess &&
              (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
-              strncmp(props.gcnArchName, "gfx942", 6) == 0);
+              strncmp(props.gcnArchName, "gfx942", 6) == 0 ||
+              strncmp(props.gcnArchName, "gfx1151", 7) == 0);
     return cached;
 }
 
@@ -2846,13 +2847,13 @@ static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
     if (!(h3_hip_env_on("H3_SOL_ATTN") && gpu->sol_attn_layer &&
           sequence >= min_sequence && head_dim == 128u))
         return 0;
-    if (h3_hip_sol_cdna()) return 1;
+    if (h3_hip_sol_supported()) return 1;
     static int warned;
     if (!warned) {
         warned = 1;
         fprintf(stderr,
-                "h3: --sol-attn: this GPU is not gfx90a/gfx942; using dense "
-                "SDPA (Strix Halo is not ported yet)\n");
+                "h3: --sol-attn: unsupported GPU; using dense SDPA "
+                "(supported: gfx90a, gfx942, gfx1151)\n");
     }
     return 0;
 }

@@ -3,13 +3,13 @@
 **Default: quality.** Dense flash SDPA stays on unless you pass `--sol-attn`.
 Do not enable this for publication, audio-sensitive, or fox-s2 identity work.
 
-This PR **closes MI210 and MI300X**. Strix Halo is a follow-up, not a merge blocker.
+This PR has measured implementations for all three timed SKUs.
 
 | SKU | ISA | This PR | Notes |
 |---|---|---|---|
 | **MI210** | `gfx90a` | **measured** | 15 s no-TR A/B below; KEEP as opt-in only |
 | **MI300X** | `gfx942` | **measured** | 15 s no-TR A/B below; same MFMA kernel as MI210 |
-| Strix Halo | `gfx1151` | **not ported** | dense no-op; [issue #9](https://github.com/alexhegit/h3-hip.c/issues/9) |
+| **Strix Halo** | `gfx1151` | **measured** | separate wave32 rocWMMA kernel; 15 s no-TR A/B below |
 
 `--sol-attn` is an **opt-in quality/speed trade**: skipped 64-token KV tiles
 are pooled into the online softmax instead of computed exactly. Keep-all
@@ -76,6 +76,30 @@ Same MFMA kernel as MI210; keep-all (`τ=-100`) is bit-identical to dense
 (−10.7% vs −18.2%) because MI300X has faster baseline SDPA and other phases
 (linear, VAE) form a larger fraction of E2E. SDPA speedup is higher (−32.5%
 vs −28.9%) reflecting MI300X's higher MFMA throughput.
+
+## Measured vs dense baseline (Strix Halo, gfx1151)
+
+Fixed seed, 15 s cinematic, **no token reduction**, same prompt/checkpoint as
+the dense quality path. Sol-Attn tau 0.5, blocks 4-40, prefix tiles and
+text/condition/audio query CTAs exact.
+
+| metric | dense (quality path) | `--sol-attn` tau 0.5 | vs dense |
+|---|---:|---:|---|
+| E2E | 2457.04 s | 1786.72 s | **-27.3%** (1.38x) |
+| denoise | 2170.15 s | 1506.12 s | **-30.6%** |
+| denoise SDPA | 1583.50 s | 917.19 s | **-42.1%** |
+| peak VRAM | 27.91 GiB | 27.91 GiB | unchanged |
+| exact KV tiles | 100% | 33.45% | 66.55% pooled |
+| video PSNR / SSIM | reference | **19.55 dB / 0.721** | preview-grade vs dense |
+| decoded audio SNR | reference | **10.99 dB** | approximate |
+
+SDPA kernel microbench (56 heads, d128, tau 0.5): 8,192 tokens **1.85x**,
+16,384 tokens **2.04x**, and 44,800 tokens **2.27x**. Keep-all is
+bit-identical at all four measured lengths, including 1,874 and 44,800
+tokens. fox-s2 stays dense under the default 4,096-token minimum.
+
+Full logs and validation notes:
+[`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
 
 Full design notes follow.
 
@@ -292,7 +316,8 @@ No combination becomes the default quality path.
 - feature off: existing tests and fox-s2 regression remain unchanged
 - keep-all: zero output differences versus the corresponding dense MMA kernel
   (gfx90a: seq 512–44800, 56 heads, `H3_SOL_ATTN_TAU=-100`);
-  (gfx942: seq 8192–44800, 56 heads, diffs 0)
+  (gfx942: seq 8192–44800, 56 heads, diffs 0);
+  (gfx1151: seq 512 targeted test and seq 1874–44800 microbench, diffs 0)
 - unsupported/short shapes: verified dense fallback
 
 ### Performance

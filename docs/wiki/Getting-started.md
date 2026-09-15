@@ -90,8 +90,9 @@ pairs video tokens in middle DiT blocks. Faster long T2VA; **visible quality
 loss**; fox-s2 md5 gate does not apply. Generate prints a warning when on.
 
 Optional **`--sol-attn`** (off by default): lossy sparse SDPA for long
-sequences. Quality path stays dense. MI210 15 s no-TR vs dense: E2E −18%,
-SDPA −29%, video ~18.7 dB / 0.71 SSIM, audio SNR ~6.7 dB. See
+sequences on gfx1151, gfx90a, and gfx942. Quality path stays dense. Fixed-seed
+15 s no-TR E2E/SDPA reductions: Halo −27%/−42%, MI210 −18%/−29%, MI300X
+−11%/−33%. See
 [`docs/SOL_ATTN.md`](../SOL_ATTN.md).
 
 On a multi-GPU box bind one card: `H3_HIP_DEVICE=N` (default 0). Do not run two

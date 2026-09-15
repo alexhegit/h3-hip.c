@@ -1,0 +1,12 @@
+sdpa bf16 seq=1874 heads=56 dim=128: 6.9 ms
+sdpa sol-attn tau=-100 seq=1874: 8.2 ms (0.84x vs dense) diffs 0 worst 0
+sdpa sol-attn tau=0.5 seq=1874: 5.9 ms (1.16x vs dense) diffs 9373769 worst 2.38419e-05
+sdpa bf16 seq=8192 heads=56 dim=128: 114.1 ms
+sdpa sol-attn tau=-100 seq=8192: 130.1 ms (0.88x vs dense) diffs 0 worst 0
+sdpa sol-attn tau=0.5 seq=8192: 61.7 ms (1.85x vs dense) diffs 53560749 worst 4.29153e-06
+sdpa bf16 seq=16384 heads=56 dim=128: 440.1 ms
+sdpa sol-attn tau=-100 seq=16384: 481.9 ms (0.91x vs dense) diffs 0 worst 0
+sdpa sol-attn tau=0.5 seq=16384: 215.9 ms (2.04x vs dense) diffs 111545201 worst 3.57628e-06
+sdpa bf16 seq=44800 heads=56 dim=128: 3286.2 ms
+sdpa sol-attn tau=-100 seq=44800: 3776.2 ms (0.87x vs dense) diffs 0 worst 0
+sdpa sol-attn tau=0.5 seq=44800: 1445.6 ms (2.27x vs dense) diffs 308874328 worst 8.90344e-07

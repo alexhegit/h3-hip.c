@@ -1,0 +1,3 @@
+sol-attn default min-seq fallback diffs 0 / 131072
+sol-attn keep-all bitwise diffs 0 / 131072 worst 0
+sol-attn sparse-path bitwise diffs 130986 / 131072

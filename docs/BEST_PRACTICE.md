@@ -101,10 +101,11 @@ Or use the preset script: `./bench/fox-15s-fast.sh`
 > details. Still recognisable; suitable for previews and rapid iteration.
 
 Optional **`--sol-attn`** is a different lossy knob (sparse SDPA, not token
-pairing). Default remains dense. On MI210, 15 s **no TR** vs that dense
-baseline: E2E **−18.2%**, denoise **−20.8%**, SDPA **−28.9%**; video
-**18.73 dB / 0.712 SSIM**, audio SNR **6.69 dB**. Use only when wall clock
-matters more than audio fidelity. Details: [`SOL_ATTN.md`](SOL_ATTN.md).
+pairing). Default remains dense. Fixed-seed 15 s **no TR** E2E/SDPA
+reductions are Halo **−27.3%/−42.1%**, MI210 **−18.2%/−28.9%**, and MI300X
+**−10.7%/−32.5%**. Halo quality is **19.55 dB / 0.721 SSIM**, audio SNR
+**10.99 dB**. Use only when wall clock matters more than fidelity. Details:
+[`SOL_ATTN.md`](SOL_ATTN.md).
 
 ### 4. Maximum Quality
 

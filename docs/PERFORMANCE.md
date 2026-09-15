@@ -492,7 +492,7 @@ Strix Halo fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 ### Sol-Attn (`--sol-attn`, off by default)
 
 Quality path stays **dense**. `--sol-attn` is lossy long-sequence SDPA.
-**MI210 and MI300X have 15 s A/Bs.** gfx1151 is not ported (dense no-op).
+**MI210, MI300X, and Strix Halo have fixed-seed 15 s no-TR A/Bs.**
 Do not put these numbers on the tagged quality-path scoreboard.
 Full write-up: [`SOL_ATTN.md`](SOL_ATTN.md).
 
@@ -516,6 +516,20 @@ MI300X (`gfx942`) same knobs:
 | SDPA | 142.59 s | 96.20 s | **−32.5%** |
 | video PSNR / SSIM | — | 19.19 dB / 0.721 | preview vs dense |
 | audio SNR | — | 8.69 dB | large drop |
+
+Strix Halo (`gfx1151`) uses its separate wave32 rocWMMA path:
+
+| | dense (quality) | `--sol-attn` | vs dense |
+|--|--:|--:|--:|
+| E2E | 2457.04 s | 1786.72 s | **−27.3%** |
+| denoise | 2170.15 s | 1506.12 s | **−30.6%** |
+| SDPA | 1583.50 s | 917.19 s | **−42.1%** |
+| video PSNR / SSIM | — | 19.55 dB / 0.721 | preview vs dense |
+| audio SNR | — | 10.99 dB | approximate |
+
+Halo's 44,800-token kernel is **2.27x** faster at tau 0.5; keep-all is
+bit-identical at every measured sequence length. Full run:
+[`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
 
 fox-s2 stays dense (`H3_SOL_ATTN_MIN_SEQ` default 4096). Do not combine with
 `--token-reduction` unless you accept compounded quality loss.

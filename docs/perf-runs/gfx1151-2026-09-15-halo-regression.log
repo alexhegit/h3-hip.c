@@ -1,0 +1,118 @@
+./tools/halo_regression.sh
+=== h3-hip halo regression ===
+root=/home/amd/Repo/h3-hip.c arch=gfx1151 model=/home/amd/HF-MODELS/MiniMax-H3
+=== build + unit + functional ===
+make[1]: Entering directory '/home/amd/Repo/h3-hip.c'
+make[1]: 'h3' is up to date.
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_h3.c -o tests/test_h3.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_hip_smoke.c -o tests/test_hip_smoke.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_tokenizer.c -o tests/test_tokenizer.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_audio_gpu.c -o tests/test_audio_gpu.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_av_mux.c -o tests/test_av_mux.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_hip_encoder_roundtrip.c -o tests/test_hip_encoder_roundtrip.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_hip_audio_smoke.c -o tests/test_hip_audio_smoke.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_hip_vision_smoke.c -o tests/test_hip_vision_smoke.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_hip_text_smoke.c -o tests/test_hip_text_smoke.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_hip_multimodal_smoke.c -o tests/test_hip_multimodal_smoke.o
+gcc -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE -D__HIP_PLATFORM_AMD__ -I. -Ikernels -I/opt/rocm/include -I. -c tests/test_hip_ref2va_smoke.c -o tests/test_hip_ref2va_smoke.o
+hipcc -o h3_tokenizer_tests tests/test_tokenizer.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_text_smoke tests/test_hip_text_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_smoke tests/test_hip_smoke.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_multimodal_smoke tests/test_hip_multimodal_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_av_mux_test tests/test_av_mux.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_vision_smoke tests/test_hip_vision_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_audio_smoke tests/test_hip_audio_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_ref2va_smoke tests/test_hip_ref2va_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_encoder_roundtrip tests/test_hip_encoder_roundtrip.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_audio_gpu_tests tests/test_audio_gpu.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+./h3_hip_encoder_roundtrip "/home/amd/HF-MODELS/MiniMax-H3"
+hipcc -o h3_tests tests/test_h3.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+./h3_tests
+ok: 1767 checks
+./h3_hip_smoke
+h3_hip_smoke ok
+H3_DEVICE_WEIGHTS=0 ./h3_hip_smoke
+h3_hip_smoke ok
+./h3_hip_bf16_tests
+FAIL tests/test_hip_bf16.c:276: fabsf(ref - got) < 0.15f
+make[1]: *** [Makefile:190: hip-test] Error 1
+make[1]: *** Waiting for unfinished jobs....
+hip encoder tile: 1/1
+hip decoder block: 1/36
+hip decoder block: 36/36
+visual encoder: shape 2 x 4 x 4, mean -0.02349, var 1.974, 34 convs, 18 submissions
+visual roundtrip RGB: left R/B 0.837/0.115  right R/B 0.061/0.796  linears=145 sdpa=36
+ok: HIP visual encoder/decoder roundtrip keeps left-red/right-blue
+./h3_hip_audio_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip audio decode: 1/7
+hip audio decode: 7/7
+hip audio encode: 1/7
+hip audio encode: 7/7
+hip audio roundtrip: 1/7
+hip audio roundtrip: 7/7
+audio decode zeros: samples=3200 convs=136 submissions=16 energy=0.002736
+audio encode sine: length=4 convs=38 sdpa=1 energy=0.3879
+audio roundtrip energy=0.08215
+ok: HIP AudioVAE encode/decode stays finite and non-collapsed
+./h3_hip_vision_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip vision T=1: 1/27 layers
+hip vision T=1: 8/27 layers
+hip vision T=1: 16/27 layers
+hip vision T=1: 24/27 layers
+hip vision T=1: 27/27 layers
+hip vision T=2: 1/27 layers
+hip vision T=2: 8/27 layers
+hip vision T=2: 16/27 layers
+hip vision T=2: 24/27 layers
+hip vision T=2: 27/27 layers
+vision smoke T=1: tokens=1 mean_abs=1.073 nan=0 sdpa=27 submissions=32
+vision smoke T=2: tokens=1 mean_abs=1.06 nan=0 sdpa=27 submissions=32
+ok: HIP Qwen vision encoder produces finite tokens for image and video
+./h3_hip_text_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip text: 1/50 layers
+hip text: 10/50 layers
+hip text: 20/50 layers
+hip text: 30/50 layers
+hip text: 40/50 layers
+hip text: 50/50 layers
+text smoke: tokens=3 mean_abs=3.681 nan=0 linears=350 sdpa=50 submissions=51
+ok: HIP Qwen text encoder produces finite tokens
+./h3_hip_multimodal_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip vision: 1/27
+hip vision: 10/27
+hip vision: 20/27
+hip vision: 27/27
+hip multimodal: 1/50
+hip multimodal: 10/50
+hip multimodal: 20/50
+hip multimodal: 30/50
+hip multimodal: 40/50
+hip multimodal: 50/50
+multimodal smoke: tokens=12 vision_tags=3 text_tags=9 mean_abs=2.338 nan=0 sdpa=50 submissions=51
+ok: HIP FL2VA multimodal presentation produces mixed vision/text rows
+./h3_hip_ref2va_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip ref2va vision: 1/27
+hip ref2va vision: 10/27
+hip ref2va vision: 20/27
+hip ref2va vision: 27/27
+hip ref2va text: 1/50
+hip ref2va text: 10/50
+hip ref2va text: 20/50
+hip ref2va text: 30/50
+hip ref2va text: 40/50
+hip ref2va text: 50/50
+hip ref2va video vision: 1/27
+hip ref2va video vision: 10/27
+hip ref2va video vision: 20/27
+hip ref2va video vision: 27/27
+hip ref2va video text: 1/50
+hip ref2va video text: 10/50
+hip ref2va video text: 20/50
+hip ref2va video text: 30/50
+hip ref2va video text: 40/50
+hip ref2va video text: 50/50
+ref2va smoke: tokens=12 vision_tags=3 text_tags=9 mean_abs=2.333 nan=0 sdpa=50 submissions=51
+ref2va video: tokens=18 nan=0 sdpa=50
+ok: HIP Ref2VA image and video presentations produce mixed rows
+make[1]: Leaving directory '/home/amd/Repo/h3-hip.c'
+make: *** [Makefile:209: halo-regression] Error 2

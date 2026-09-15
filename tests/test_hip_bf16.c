@@ -2171,9 +2171,20 @@ static int test_sol_attn_keep_all(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol-attn dense"));
     CHECK(h3_gpu_tensor_read_bf16(output, dense, count));
     setenv("H3_SOL_ATTN", "1", 1);
+    /* No synthetic prefix: tau=0.5 below must actually route tiles, which
+     * prevents an unsupported dense fallback from masquerading as Sol-Attn. */
+    h3_gpu_sol_attn_configure(gpu, 1, 0, 0);
+    setenv("H3_SOL_ATTN_TAU", "0.5", 1);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn short"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "sol-attn short"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol-attn short"));
+    CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
+    CHECK(memcmp(dense, sparse, count * sizeof(*dense)) == 0);
+    printf("sol-attn default min-seq fallback diffs 0 / %zu\n", count);
     setenv("H3_SOL_ATTN_TAU", "-100", 1);
     setenv("H3_SOL_ATTN_MIN_SEQ", "512", 1);
-    h3_gpu_sol_attn_configure(gpu, 1, -1, 0);
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn keep-all"));
     CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
                                              sequence, heads, head_dim, scale),
@@ -2190,6 +2201,19 @@ static int test_sol_attn_keep_all(h3_gpu *gpu) {
     printf("sol-attn keep-all bitwise diffs %zu / %zu worst %g\n", ndiff, count,
            worst);
     CHECK(ndiff == 0);
+    setenv("H3_SOL_ATTN_TAU", "0.5", 1);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn sparse"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "sol-attn sparse"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol-attn sparse"));
+    CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
+    ndiff = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (dense[i] != sparse[i]) ndiff++;
+    }
+    printf("sol-attn sparse-path bitwise diffs %zu / %zu\n", ndiff, count);
+    CHECK(ndiff > 0);
     unsetenv("H3_SOL_ATTN");
     unsetenv("H3_SOL_ATTN_TAU");
     unsetenv("H3_SOL_ATTN_MIN_SEQ");
@@ -6077,6 +6101,11 @@ int main(void) {
     CHECK(gpu != NULL);
     if (getenv("H3_BENCH_SDPA")) {
         int ok = bench_sdpa(gpu);
+        h3_gpu_free(gpu);
+        return ok;
+    }
+    if (getenv("H3_CHECK_SOL_ATTN")) {
+        int ok = test_sol_attn_keep_all(gpu);
         h3_gpu_free(gpu);
         return ok;
     }

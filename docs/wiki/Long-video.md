@@ -60,8 +60,9 @@ Add `--token-reduction` and `H3_INT8_VAE=1` when wall clock matters more than
 the quality path. GPU sampler is not required on Strix Halo (gfx1151).
 
 `--sol-attn` is a further **lossy** long-SDPA option (off by default; dense
-is the quality path). MI210 15 s no-TR vs dense: E2E **−18%**, SDPA **−29%**,
-video **18.73 dB / 0.712**, audio SNR **6.69 dB**. See
+is the quality path). Strix Halo 15 s no-TR vs dense: E2E **−27%**, SDPA
+**−42%**, video **19.55 dB / 0.721**, audio SNR **10.99 dB**. MI210:
+E2E **−18%**, SDPA **−29%**; MI300X: E2E **−11%**, SDPA **−33%**. See
 [`docs/SOL_ATTN.md`](../SOL_ATTN.md).
 
 | | quality path | **`--token-reduction`** |
