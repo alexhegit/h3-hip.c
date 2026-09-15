@@ -92,6 +92,18 @@ loss**; fox-s2 md5 gate does not apply. Generate prints a warning when on.
 On a multi-GPU box bind one card: `H3_HIP_DEVICE=N` (default 0). Do not run two
 weight-streaming T2VA jobs against the same NVMe at once.
 
+## Daemon (experimental)
+
+Loopback HTTP for the DSH plugin (protocol v1alpha, not stable):
+
+```bash
+./h3 -d "$MODEL" --serve
+# http://127.0.0.1:8571/v1/info  header X-H3-Protocol: v1alpha
+```
+
+Env: `H3D_BIND`, `H3D_PORT`, `H3D_MODEL_PATH`, `H3D_OUTPUT_ROOT`,
+`H3D_MEDIA_ROOT`, `H3D_GPUS`. Spec: [`docs/DESIGN_DHS.md`](../DESIGN_DHS.md).
+
 ## Optional knobs
 
 ```text

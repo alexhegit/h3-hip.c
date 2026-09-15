@@ -41,6 +41,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - **HIP backend:** `backends/h3_gpu_hip.c` (host-side GPU calls), `kernels/h3_kernels.hip` + `kernels/h3_kernels_extra.hip` (device kernels)
 - **Metal sources** (`h3_gpu.m`, `h3_shaders.metal`, `h3_metal.m`) are reference-only for upstream parity — not compiled on Linux
 - **Major pipelines:** DiT (`h3_dit.c`, `h3_dit_schedule.c`), Video VAE (`h3_video_vae.c`), Audio VAE (`h3_audio_vae.c`), Text encoder (`h3_text_encoder.c`), Vision encoder (`h3_vision_encoder.c`), FFmpeg mux (`h3_ffmpeg.c`)
+- **HTTP daemon (experimental):** `./h3 -d MODEL --serve` → `h3d.c` (loopback JSON+SSE, protocol **v1alpha**). Bind `127.0.0.1:8571` unless `H3D_BIND`/`H3D_PORT` are set. Do not expose the daemon on a public interface. Contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md). Agent plugin lives in a separate repo (`dsh-plugin-h3-hip`).
 - **Wave mode:** gfx1151 uses wave32 (rocWMMA); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
 
 ## Key gotchas
@@ -60,6 +61,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
+- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`).
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
 - `linenoise.o` is vendored and compiled with relaxed warnings (`-Wno-conversion`).
 

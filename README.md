@@ -161,6 +161,26 @@ Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
 | Runtime INT8 DiT (hipBLAS) | ✅ default on all ISAs (`H3_INT8_MLP=0` for BF16) |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
+| `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
+
+## Daemon (experimental)
+
+`--serve` starts a loopback HTTP daemon so [dsh-plugin-h3-hip](https://github.com/alexhegit/dsh-plugin-h3-hip)
+(or any v1alpha client) can submit jobs without changing the CLI generate path.
+Protocol **v1alpha** is not stable; a breaking change increments the protocol
+version. Bind stays on `127.0.0.1` unless you set `H3D_BIND` (do not expose
+this port on a public interface).
+
+```bash
+MODEL=/path/to/MiniMax-H3
+./h3 -d "$MODEL" --serve
+# GET http://127.0.0.1:8571/v1/info  with header X-H3-Protocol: v1alpha
+```
+
+Useful env: `H3D_BIND` / `H3D_PORT` (default `127.0.0.1:8571`),
+`H3D_MODEL_PATH` (or `H3D_MODEL_PATH_FL2VA` / `H3D_MODEL_PATH_REF2VA`),
+`H3D_OUTPUT_ROOT`, `H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_QUOTA_BYTES`.
+Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
 
 ## Documentation
 
@@ -172,6 +192,7 @@ Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
+- **`--serve` daemon / DSH plugin:** [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md)
 
 The fox showcase uses `--steps 20 --layers 50 --reuse 1`. Tagged scoreboard
 commands are in PERFORMANCE.md. **`--token-reduction`** is the same opt-in
