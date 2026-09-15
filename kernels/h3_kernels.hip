@@ -907,7 +907,8 @@ __global__ void h3_gate_adaln_quantize_int8_kernel(
         __syncthreads();
     }
     float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
-    /* Pass 2: AdaLN, store BF16 in gated_values for pass 3 */
+    /* Pass 2: AdaLN + local max, store BF16 in gated_values for pass 3 */
+    float local_max = 0.0f;
     for (uint32_t column = tid; column < args.width; column += threads) {
         float normalized = h3_bf16_to_f32(gated_values[column]) * inverse *
             h3_bf16_to_f32(weight[column]);
@@ -916,15 +917,11 @@ __global__ void h3_gate_adaln_quantize_int8_kernel(
         float scale = h3_bf16_to_f32(
             norm_modulation[base + args.scale_slot * args.width + column]);
         float adaln = normalized * (1.0f + scale) + shift;
+        local_max = fmaxf(local_max, fabsf(adaln));
         gated_values[column] = h3_f32_to_bf16(adaln);
     }
-    __syncthreads();
-    /* Max over stored BF16 so scale matches standalone quantize. Tree
-     * reduce: h3_row_threads() can be < 32 (width=8 unit test), where
-     * warp shuffles would see inactive lanes and collapse the max to 0. */
-    float local_max = 0.0f;
-    for (uint32_t column = tid; column < args.width; column += threads)
-        local_max = fmaxf(local_max, fabsf(h3_bf16_to_f32(gated_values[column])));
+    /* Tree reduce: h3_row_threads() can be < 32 (width=8 unit test). Warp
+     * shuffles then see inactive lanes and collapse the max to 0. */
     reductions[tid] = local_max;
     __syncthreads();
     for (uint32_t stride = threads / 2; stride; stride >>= 1) {
