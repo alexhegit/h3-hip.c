@@ -378,6 +378,30 @@ E2E speedup is smaller (−10.7% vs −18.2%) because MI300X's faster baseline
 makes non-SDPA phases (linear, VAE) a larger E2E fraction. Quality matches
 MI210 within noise (19.19 vs 18.73 dB PSNR, 0.721 vs 0.712 SSIM).
 
+Strix Halo (`gfx1151`) microbench, 56 heads, d128, 3 iters, wave32 rocWMMA:
+
+| seq | dense | keep-all | tau=0.5 | vs dense |
+|---:|---:|---:|---:|---:|
+| 1,874 | 6.9 ms | 8.2 ms (diffs 0) | 5.9 ms | 1.16x |
+| 8,192 | 114.1 ms | 130.1 ms (diffs 0) | 61.7 ms | 1.85x |
+| 16,384 | 440.1 ms | 481.9 ms (diffs 0) | 215.9 ms | 2.04x |
+| 44,800 | 3286.2 ms | 3776.2 ms (diffs 0) | 1445.6 ms | **2.27x** |
+
+Strix Halo fixed-seed 15 s no-TR A/B:
+
+| metric | dense | Sol-Attn τ=0.5 | change |
+|---|---:|---:|---:|
+| E2E | 2457.04 s | 1786.72 s | **−27.3%** |
+| denoise | 2170.15 s | 1506.12 s | **−30.6%** |
+| denoise SDPA | 1583.50 s | 917.19 s | **−42.1%** |
+| peak VRAM | 27.91 GiB | 27.91 GiB | unchanged |
+| exact KV tiles | — | 33.45% | 66.55% skipped |
+| video PSNR / SSIM | reference | 19.55 dB / 0.721 | approximate |
+| decoded audio SNR | reference | 10.99 dB | approximate |
+
+Absolute SDPA saving is largest on Halo (−666 s). Quality stays **REJECT for
+default on**. Details: [`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
+
 Reject or retune if routing/summary overhead erases the gain, particularly on
 short sequences.
 
