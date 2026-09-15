@@ -104,7 +104,18 @@ h3_sdpa_bf16_mfma_d128_sol_kernel(
     }
     __syncthreads();
 
+    const uint32_t q0 = blockIdx.x * BQ;
+    const int query_dense =
+        cfg.sparse_q0 > 0 && q0 < (uint32_t)cfg.sparse_q0;
+
     if (tid == 0) {
+        /* Packed H3 layout is text/cond/audio then video. Query CTAs below
+         * sparse_q0 (video_target_start) stay exact, including audio. */
+        if (query_dense) {
+            for (uint32_t block = 0; block < n_blocks; block++)
+                proxy[block] = 1.0f;
+            skipped_count = 0;
+        } else {
         float sum = 0.0f;
         float sumsq = 0.0f;
         for (uint32_t block = 0; block < n_blocks; block++) {
@@ -130,6 +141,7 @@ h3_sdpa_bf16_mfma_d128_sol_kernel(
                 if (proxy[block] <= 0.5f)
                     skipped[skipped_count++] = (uint16_t)block;
             }
+        }
         }
         if (cfg.route_stats) {
             uint64_t kept = 0;

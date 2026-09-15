@@ -2296,9 +2296,17 @@ static int run_block(h3_dit *dit, unsigned index, int step,
                     begin = (unsigned)parsed_begin, end = (unsigned)parsed_end;
             }
         }
+        int tail = 0;
+        const char *tail_env = getenv("H3_SOL_ATTN_DENSE_TAIL");
+        if (tail_env && *tail_env) {
+            unsigned long parsed_tail = strtoul(tail_env, NULL, 10);
+            if (parsed_tail <= 64ul) tail = (int)parsed_tail;
+        }
+        int step_sparse = step < dit->sigmas.steps - tail;
         int prefix = (int)((dit->video_target_start + 63u) / 64u);
-        h3_gpu_sol_attn_configure(dit->gpu,
-                                  index >= begin && index < end, prefix);
+        h3_gpu_sol_attn_configure(
+            dit->gpu, index >= begin && index < end && step_sparse, prefix,
+            (int)dit->video_target_start);
     }
     if (int8_sdpa) {
         OP(h3_gpu_sdpa_bf16_head_major_output_int8(

@@ -196,6 +196,8 @@ typedef struct {
     float tau;
     int band;
     int prefix;
+    /* Query tokens below this stay dense (text/cond/audio). Video starts here. */
+    int sparse_q0;
     int drop_unselected;
     /* Optional device counters: [kept exact tiles, total routed tiles]. */
     uint64_t *route_stats;

@@ -906,9 +906,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         setenv("H3_SOL_ATTN", "1", 1);
         fprintf(stderr,
                 "h3: --sol-attn is on: faster long SDPA, visible quality "
-                "loss (off by default). MI210 15 s no-TR vs dense: E2E "
-                "−18%, SDPA −29%; video ~18.7 dB / 0.71 SSIM, audio SNR "
-                "~6.7 dB. See docs/SOL_ATTN.md.\n");
+                "loss (off by default). See docs/SOL_ATTN.md for the MI210 "
+                "15s no-TR speed/quality table versus dense.\n");
     }
     if (getenv("H3_TOKEN_REDUCTION_SCHEDULE") &&
         *getenv("H3_TOKEN_REDUCTION_SCHEDULE"))

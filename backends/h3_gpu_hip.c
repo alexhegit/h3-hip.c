@@ -597,6 +597,7 @@ struct h3_gpu {
     uint64_t *sol_route_stats;
     int sol_attn_layer;
     int sol_attn_prefix;
+    int sol_attn_sparse_q0;
     void *nax_fc1_temp;
     size_t nax_fc1_temp_elems;
 };
@@ -977,6 +978,7 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
     gpu->device_id = device;
     gpu->sol_attn_layer = 1;
     gpu->sol_attn_prefix = -1;
+    gpu->sol_attn_sparse_q0 = 0;
     snprintf(gpu->profile_label, sizeof(gpu->profile_label), "HIP context");
     gpu->profile_start_wall = h3_hip_now();
     gpu->profile_start_stats = gpu->stats;
@@ -2811,11 +2813,13 @@ static int h3_sol_attn_prefix_value(struct h3_gpu *gpu) {
     return h3_sol_attn_prefix();
 }
 
-void h3_gpu_sol_attn_configure(h3_gpu *gpu, int layer_on, int prefix_blocks) {
+void h3_gpu_sol_attn_configure(h3_gpu *gpu, int layer_on, int prefix_blocks,
+                               int sparse_q0) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     if (!ctx) return;
     ctx->sol_attn_layer = layer_on ? 1 : 0;
     if (prefix_blocks >= 0) ctx->sol_attn_prefix = prefix_blocks;
+    if (sparse_q0 >= 0) ctx->sol_attn_sparse_q0 = sparse_q0;
 }
 
 static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
@@ -2844,6 +2848,7 @@ static int h3_hip_sdpa_bf16_run(struct h3_gpu *ctx, uint16_t *output,
         h3_sdpa_sol_cfg cfg = {
             n_blocks, h3_sol_attn_tau(), h3_sol_attn_band(),
             h3_sol_attn_prefix_value(ctx),
+            ctx->sol_attn_sparse_q0,
             h3_hip_env_on("H3_SOL_ATTN_DROP") ? 1 : 0,
             h3_hip_env_on("H3_SOL_ATTN_STATS") ? ctx->sol_route_stats : NULL};
         float *k_mean = (float *)ctx->sol_scratch;

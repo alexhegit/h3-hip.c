@@ -39,6 +39,14 @@ SDPA kernel microbench (56 heads, d128, τ=0.5): 8,192 tokens **2.05×**,
 44,800 tokens **2.56×**. fox-s2 (~1.9k tokens) stays on dense by default.
 
 Do not stack with `--token-reduction` unless you accept compounded error.
+
+Packed H3 layout is text/cond/audio then video. Query CTAs below
+`video_target_start` already ran exact SDPA via the prefix rule; making that
+explicit did not change outputs. Last-20% denoise dense
+(`H3_SOL_ATTN_DENSE_TAIL=4` on 20 steps) also did not help versus dense:
+video stayed ~18.72 dB / 0.713 SSIM and audio SNR ~6.67 dB, while denoise
+went 503 s → 547 s and SDPA 324 s → 366 s. Default tail is therefore 0.
+
 Full design notes follow.
 
 This document evaluates porting the training-free, Sol-Attn-style sparse SDPA
@@ -124,6 +132,7 @@ Add an opt-in CLI flag and matching environment controls:
 | `H3_SOL_ATTN_PREFIX` | derived | always keep text/condition/audio prefix tiles |
 | `H3_SOL_ATTN_BLOCKS` | `4:40` | DiT blocks allowed to use sparse SDPA |
 | `H3_SOL_ATTN_MIN_SEQ` | `4096` | shorter sequences stay dense on HIP |
+| `H3_SOL_ATTN_DENSE_TAIL` | `0` | last N denoise steps stay dense (off; no quality win on MI210) |
 | `H3_SOL_ATTN_STATS` | off | print aggregate exact/skipped tile counts |
 | `H3_SOL_ATTN_DROP` | off | A/B-only mode that drops skipped tiles entirely |
 

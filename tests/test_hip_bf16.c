@@ -2173,7 +2173,7 @@ static int test_sol_attn_keep_all(h3_gpu *gpu) {
     setenv("H3_SOL_ATTN", "1", 1);
     setenv("H3_SOL_ATTN_TAU", "-100", 1);
     setenv("H3_SOL_ATTN_MIN_SEQ", "512", 1);
-    h3_gpu_sol_attn_configure(gpu, 1, -1);
+    h3_gpu_sol_attn_configure(gpu, 1, -1, 0);
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn keep-all"));
     CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
                                              sequence, heads, head_dim, scale),
@@ -5649,7 +5649,7 @@ static int bench_sdpa(h3_gpu *gpu) {
         CHECK(dense && h3_gpu_tensor_read_bf16(output, dense, count));
         setenv("H3_SOL_ATTN", "1", 1);
         setenv("H3_SOL_ATTN_MIN_SEQ", "512", 1);
-        h3_gpu_sol_attn_configure(gpu, 1, -1);
+        h3_gpu_sol_attn_configure(gpu, 1, -1, 0);
         const char *modes[] = {"-100", "0.5"};
         for (int mode = 0; mode < 2; mode++) {
             setenv("H3_SOL_ATTN_TAU", modes[mode], 1);
