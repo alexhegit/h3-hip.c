@@ -3,12 +3,12 @@
 **Default: quality.** Dense flash SDPA stays on unless you pass `--sol-attn`.
 Do not enable this for publication, audio-sensitive, or fox-s2 identity work.
 
-This PR **closes MI210**. Other SKUs are follow-ups, not merge blockers.
+This PR **closes MI210 and MI300X**. Strix Halo is a follow-up, not a merge blocker.
 
 | SKU | ISA | This PR | Notes |
 |---|---|---|---|
 | **MI210** | `gfx90a` | **measured** | 15 s no-TR A/B below; KEEP as opt-in only |
-| MI300X | `gfx942` | same MFMA source, **untimed** | [issue #8](https://github.com/alexhegit/h3-hip.c/issues/8) |
+| **MI300X** | `gfx942` | **measured** | 15 s no-TR A/B below; same MFMA kernel as MI210 |
 | Strix Halo | `gfx1151` | **not ported** | dense no-op; [issue #9](https://github.com/alexhegit/h3-hip.c/issues/9) |
 
 `--sol-attn` is an **opt-in quality/speed trade**: skipped 64-token KV tiles
@@ -51,6 +51,31 @@ explicit did not change outputs. Last-20% denoise dense
 (`H3_SOL_ATTN_DENSE_TAIL=4` on 20 steps) also did not help versus dense:
 video stayed ~18.72 dB / 0.713 SSIM and audio SNR ~6.67 dB, while denoise
 went 503 s → 547 s and SDPA 324 s → 366 s. Default tail is therefore 0.
+
+## Measured vs dense baseline (MI300X, gfx942)
+
+Fixed seed, 15 s cinematic, **no token reduction**, same prompt/checkpoint as
+the dense quality path. Sol-Attn τ=0.5, blocks 4–40, prefix tiles exact.
+Quality is versus that dense MP4 (not versus BF16 gold).
+
+| metric | dense (quality path) | `--sol-attn` τ=0.5 | vs dense |
+|---|---:|---:|---|
+| E2E | 242.53 s | 216.53 s | **−10.7%** (1.12×) |
+| denoise | 182.92 s | 135.87 s | **−25.7%** |
+| denoise SDPA | 142.59 s | 96.20 s | **−32.5%** |
+| peak VRAM | 27.91 GiB | 27.91 GiB | unchanged |
+| exact KV tiles | 100% | 33.43% | 66.57% pooled |
+| video PSNR / SSIM | reference | **19.19 dB / 0.721** | preview-grade vs dense |
+| decoded audio SNR | reference | **8.69 dB** | approximate |
+
+SDPA kernel microbench (56 heads, d128, τ=0.5): 8,192 tokens **2.05×**,
+44,800 tokens **2.56×**. fox-s2 (~1.9k tokens) stays on dense by default.
+
+Same MFMA kernel as MI210; keep-all (`τ=-100`) is bit-identical to dense
+(diffs 0 at all measured sequence lengths). E2E speedup is smaller than MI210
+(−10.7% vs −18.2%) because MI300X has faster baseline SDPA and other phases
+(linear, VAE) form a larger fraction of E2E. SDPA speedup is higher (−32.5%
+vs −28.9%) reflecting MI300X's higher MFMA throughput.
 
 Full design notes follow.
 
@@ -266,7 +291,8 @@ No combination becomes the default quality path.
 
 - feature off: existing tests and fox-s2 regression remain unchanged
 - keep-all: zero output differences versus the corresponding dense MMA kernel
-  (gfx90a: seq 512–44800, 56 heads, `H3_SOL_ATTN_TAU=-100`)
+  (gfx90a: seq 512–44800, 56 heads, `H3_SOL_ATTN_TAU=-100`);
+  (gfx942: seq 8192–44800, 56 heads, diffs 0)
 - unsupported/short shapes: verified dense fallback
 
 ### Performance
@@ -302,6 +328,30 @@ through MFMA for both QK and PV:
 Same 15 s numbers as the table at the top of this document. Speed meets the
 20% SDPA gate; quality stays **REJECT for default on** (preview video, weak
 audio). Duplicate table kept only for the KEEP checklist.
+
+MI300X (`gfx942`) microbench, 56 heads, d128, 3 iters:
+
+| seq | dense | keep-all | tau=0.5 | vs dense |
+|---:|---:|---:|---:|---:|
+| 8,192 | 272.9 ms | 280.1 ms (diffs 0) | 133.1 ms | **2.05x** |
+| 44,800 | 8083.8 ms | 8161.2 ms (diffs 0) | 3161.2 ms | **2.56x** |
+
+MI300X fixed-seed 15 s no-TR A/B (same MFMA kernel as MI210):
+
+| metric | dense | Sol-Attn τ=0.5 | change |
+|---|---:|---:|---:|
+| E2E | 242.53 s | 216.53 s | **−10.7%** |
+| denoise | 182.92 s | 135.87 s | **−25.7%** |
+| denoise SDPA | 142.59 s | 96.20 s | **−32.5%** |
+| peak VRAM | 27.91 GiB | 27.91 GiB | unchanged |
+| exact KV tiles | — | 33.43% | 66.57% skipped |
+| video PSNR / SSIM | reference | 19.19 dB / 0.721 | approximate |
+| decoded audio SNR | reference | 8.69 dB | approximate |
+
+SDPA speedup exceeds MI210 (−32.5% vs −28.9%) due to higher MFMA throughput.
+E2E speedup is smaller (−10.7% vs −18.2%) because MI300X's faster baseline
+makes non-SDPA phases (linear, VAE) a larger E2E fraction. Quality matches
+MI210 within noise (19.19 vs 18.73 dB PSNR, 0.721 vs 0.712 SSIM).
 
 Reject or retune if routing/summary overhead erases the gain, particularly on
 short sequences.
