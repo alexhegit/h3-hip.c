@@ -491,9 +491,11 @@ Strix Halo fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 
 ### Sol-Attn (`--sol-attn`, off by default)
 
-Quality path stays **dense**. `--sol-attn` is lossy long-sequence SDPA
-(CDNA only; gfx1151 still dense). Do not put these numbers on the tagged
-quality-path scoreboard. Full write-up: [`SOL_ATTN.md`](SOL_ATTN.md).
+Quality path stays **dense**. `--sol-attn` is lossy long-sequence SDPA.
+**Only MI210 (`gfx90a`) has a 15 s A/B.** gfx942 compiles the same MFMA
+kernel but is untimed. gfx1151 is not ported (dense no-op). Do not put these
+numbers on the tagged quality-path scoreboard.
+Full write-up: [`SOL_ATTN.md`](SOL_ATTN.md).
 
 MI210 (`gfx90a`) 15 s cinematic, **no TR**, τ=0.5, versus the same-run dense
 baseline:

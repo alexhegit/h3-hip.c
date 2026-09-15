@@ -161,7 +161,7 @@ Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
 | Runtime INT8 DiT (hipBLAS) | ✅ default on all ISAs (`H3_INT8_MLP=0` for BF16) |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
-| `--sol-attn` | ✅ opt-in **lossy** long SDPA; off by default; see [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md) |
+| `--sol-attn` | ✅ opt-in **lossy** long SDPA on **MI210** (measured); gfx942 same kernel untimed; gfx1151 dense no-op |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
 
 ## Daemon (experimental)

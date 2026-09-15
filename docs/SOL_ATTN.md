@@ -3,14 +3,19 @@
 **Default: quality.** Dense flash SDPA stays on unless you pass `--sol-attn`.
 Do not enable this for publication, audio-sensitive, or fox-s2 identity work.
 
+This PR **closes MI210**. Other SKUs are follow-ups, not merge blockers.
+
+| SKU | ISA | This PR | Notes |
+|---|---|---|---|
+| **MI210** | `gfx90a` | **measured** | 15 s no-TR A/B below; KEEP as opt-in only |
+| MI300X | `gfx942` | same MFMA source, **untimed** | should run; no 15 s PSNR/speed table yet |
+| Strix Halo | `gfx1151` | **not ported** | `--sol-attn` stays dense (safe no-op) |
+
 `--sol-attn` is an **opt-in quality/speed trade**: skipped 64-token KV tiles
 are pooled into the online softmax instead of computed exactly. Keep-all
 (`H3_SOL_ATTN_TAU=-100`) matches dense bit-for-bit; the default τ=0.5 path
-does not.
-
-CDNA MFMA (`gfx90a` / `gfx942`) is implemented. Wave32 rocWMMA (`gfx1151`)
-is not; `--sol-attn` there still runs dense SDPA. Sequences shorter than
-`H3_SOL_ATTN_MIN_SEQ` (default 4096) also stay dense.
+does not. Sequences shorter than `H3_SOL_ATTN_MIN_SEQ` (default 4096) stay
+dense on every ISA.
 
 ```bash
 ./h3 -d MODEL --sol-attn -p '...' --seconds 15
