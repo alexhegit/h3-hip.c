@@ -38,10 +38,80 @@ static const char *json_find_string(const char *json, const char *key,
     p++;
     size_t i = 0;
     while (*p && *p != '"' && i < value_len - 1) {
-        if (*p == '\\') { p++; if (!*p) break; }
-        value[i++] = *p++;
+        if (*p != '\\') { value[i++] = *p++; continue; }
+        p++;
+        if (!*p) break;
+        switch (*p) {
+        case 'n': value[i++] = '\n'; p++; break;
+        case 't': value[i++] = '\t'; p++; break;
+        case 'r': value[i++] = '\r'; p++; break;
+        case 'b': value[i++] = '\b'; p++; break;
+        case 'f': value[i++] = '\f'; p++; break;
+        case 'u': {
+            /* \uXXXX → UTF-8; surrogate pairs are decoded when both halves
+             * are present, otherwise the code unit is replaced. */
+            unsigned cp = 0;
+            int ok = 1;
+            for (int k = 1; k <= 4; k++) {
+                char c = p[k];
+                if (c >= '0' && c <= '9') cp = cp * 16u + (unsigned)(c - '0');
+                else if (c >= 'a' && c <= 'f') cp = cp * 16u + (unsigned)(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') cp = cp * 16u + (unsigned)(c - 'A' + 10);
+                else { ok = 0; break; }
+            }
+            if (!ok) { value[i++] = *p++; break; }
+            p += 5;
+            if (cp >= 0xD800 && cp <= 0xDBFF && p[0] == '\\' && p[1] == 'u') {
+                unsigned lo = 0;
+                int ok2 = 1;
+                for (int k = 2; k <= 5; k++) {
+                    char c = p[k];
+                    if (c >= '0' && c <= '9') lo = lo * 16u + (unsigned)(c - '0');
+                    else if (c >= 'a' && c <= 'f') lo = lo * 16u + (unsigned)(c - 'a' + 10);
+                    else if (c >= 'A' && c <= 'F') lo = lo * 16u + (unsigned)(c - 'A' + 10);
+                    else { ok2 = 0; break; }
+                }
+                if (ok2 && lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000u + ((cp - 0xD800u) << 10) + (lo - 0xDC00u);
+                    p += 6;
+                }
+            }
+            if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
+            char utf8[4];
+            size_t n;
+            if (cp < 0x80) { utf8[0] = (char)cp; n = 1; }
+            else if (cp < 0x800) {
+                utf8[0] = (char)(0xC0 | (cp >> 6));
+                utf8[1] = (char)(0x80 | (cp & 0x3F));
+                n = 2;
+            } else if (cp < 0x10000) {
+                utf8[0] = (char)(0xE0 | (cp >> 12));
+                utf8[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                utf8[2] = (char)(0x80 | (cp & 0x3F));
+                n = 3;
+            } else {
+                utf8[0] = (char)(0xF0 | (cp >> 18));
+                utf8[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+                utf8[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                utf8[3] = (char)(0x80 | (cp & 0x3F));
+                n = 4;
+            }
+            if (i + n > value_len - 1) goto done;
+            memcpy(value + i, utf8, n);
+            i += n;
+            break;
+        }
+        default: value[i++] = *p++; break;
+        }
     }
+done:
     value[i] = '\0';
+    /* Leave p on the closing quote so nested lookups resume correctly even
+     * when the value was truncated. */
+    while (*p && *p != '"') {
+        if (*p == '\\' && p[1]) p++;
+        p++;
+    }
     return p;
 }
 
