@@ -206,8 +206,10 @@ int h3_gpu_scale_add_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                          const h3_gpu_tensor *branch,
                          const h3_gpu_tensor *scale, uint32_t rows,
                          uint32_t width);
+/* residual is updated in place: residual += branch * scale, and output
+ * receives rms_norm(residual, norm_weight, epsilon). */
 int h3_gpu_scale_add_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
-                                  const h3_gpu_tensor *residual,
+                                  h3_gpu_tensor *residual,
                                   const h3_gpu_tensor *branch,
                                   const h3_gpu_tensor *scale,
                                   const h3_gpu_tensor *norm_weight,

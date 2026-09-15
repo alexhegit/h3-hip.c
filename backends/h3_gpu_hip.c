@@ -1796,7 +1796,7 @@ int h3_gpu_scale_add_f32(h3_gpu *gpu, h3_gpu_tensor *output,
 }
 
 int h3_gpu_scale_add_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
-                                  const h3_gpu_tensor *residual,
+                                  h3_gpu_tensor *residual,
                                   const h3_gpu_tensor *branch,
                                   const h3_gpu_tensor *scale,
                                   const h3_gpu_tensor *norm_weight,
@@ -1814,7 +1814,7 @@ int h3_gpu_scale_add_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
     }
     h3_norm_args args = {rows, width, epsilon};
     return h3_hip_launch_ok(ctx, h3_launch_scale_add_rms_norm_f32(
-        (const float *)tensor_ptr(residual)->data,
+        (float *)tensor_ptr(residual)->data,
         (const float *)tensor_ptr(branch)->data,
         (const float *)tensor_ptr(scale)->data,
         (const float *)tensor_ptr(norm_weight)->data,
