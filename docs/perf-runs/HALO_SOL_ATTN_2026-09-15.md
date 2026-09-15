@@ -53,10 +53,11 @@ feature-off fox-s2 run and a pristine `origin/sol-attn` parent build both
 produced MP4 md5 `26ab2980c2fe10bd6d42483e7a902c36`, confirming this change
 does not alter the default path.
 
-The aggregate `halo-regression` target did not reach its MP4 gate because the
-parent branch's unrelated fused gate+AdaLN quantization tolerance test fails
-at `tests/test_hip_bf16.c:276`. The Sol-Attn targeted test, build, functional
-smokes, manual parent/current md5 comparison, and 15 s A/B completed.
+The aggregate `halo-regression` target now passes `h3_hip_bf16_tests` after
+the short-row fused INT8 AdaLN max reduce (`c351f23`). Feature-off fox-s2
+md5 remains `26ab2980c2fe10bd6d42483e7a902c36` (script default is still the
+v0.9.0 hash; override with `H3_FOX_S2_MD5`). Log:
+[`gfx1151-2026-09-16-halo-regression.log`](gfx1151-2026-09-16-halo-regression.log).
 
 ## Decision
 

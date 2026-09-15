@@ -1,0 +1,379 @@
+./tools/halo_regression.sh
+=== h3-hip halo regression ===
+root=/home/amd/Repo/h3-hip.c arch=gfx1151 model=/home/amd/HF-MODELS/MiniMax-H3
+=== build + unit + functional ===
+make[1]: Entering directory '/home/amd/Repo/h3-hip.c'
+make[1]: 'h3' is up to date.
+hipcc -o h3_tests tests/test_h3.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_smoke tests/test_hip_smoke.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_tokenizer_tests tests/test_tokenizer.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_audio_gpu_tests tests/test_audio_gpu.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_av_mux_test tests/test_av_mux.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_encoder_roundtrip tests/test_hip_encoder_roundtrip.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_audio_smoke tests/test_hip_audio_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_vision_smoke tests/test_hip_vision_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_text_smoke tests/test_hip_text_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_multimodal_smoke tests/test_hip_multimodal_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+hipcc -o h3_hip_ref2va_smoke tests/test_hip_ref2va_smoke.o h3.o h3_host.o h3_safetensors.o h3_weights.o h3_text_encoder.o h3_dit_schedule.o h3_dit.o h3_video_vae.o h3_video_encoder.o h3_audio_vae.o h3_ffmpeg.o h3_terminal.o h3_vision_encoder.o h3_multimodal.o backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o backends/h3_hip_probe.o backends/h3_device.o backends/h3_tokenizer.o kernels/h3_kernels.o kernels/h3_kernels_extra.o -L/opt/rocm/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread -licuuc -licudata
+./h3_tests
+./h3_hip_encoder_roundtrip "/home/amd/HF-MODELS/MiniMax-H3"
+ok: 1767 checks
+./h3_hip_smoke
+h3_hip_smoke ok
+H3_DEVICE_WEIGHTS=0 ./h3_hip_smoke
+h3_hip_smoke ok
+./h3_hip_bf16_tests
+qkv rope d128 rope_half=48 max abs 0.0078125
+qkv rope d128 rope_half=64 max abs 0.0078125
+conv1d f32 L=512 C=8 k=11 d=5 max rel 0
+conv1d f32 L=300 C=8 k=11 d=1 max rel 0
+conv1d f32 L=200 C=96 k=7 d=3 max rel 0
+conv1d f32 L=64 C=128 k=3 d=1 max rel 0
+conv1d f32 L=37 C=40 k=1 d=1 max rel 0
+sdpa causal f32 d256 max abs 3.72529e-09
+sdpa d128 seq=192 max abs 1.52588e-05
+sdpa d128 seq=100 max abs 1.52588e-05
+sdpa d128 seq=17 max abs 0.00012207
+sdpa f32 d64 tiled seq=256 max abs 5.597132e-06
+sdpa f32 d64 tiled seq=300 max abs 3.582361e-06
+sdpa d128 seq=257 repeatability: 0 differing
+sdpa d64 seq=257 repeatability: 0 differing
+sdpa d128 seq=300 repeatability: 0 differing
+sdpa d64 seq=300 repeatability: 0 differing
+sdpa d128 seq=511 repeatability: 0 differing
+sdpa d64 seq=511 repeatability: 0 differing
+sdpa d128 seq=1000 repeatability: 0 differing
+sdpa d64 seq=1000 repeatability: 0 differing
+sol-attn default min-seq fallback diffs 0 / 131072
+sol-attn keep-all bitwise diffs 0 / 131072 worst 0
+sol-attn sparse-path bitwise diffs 130986 / 131072
+h3_hip_bf16_tests ok
+ok: 60 tokenizer checks against released Qwen vocabulary
+./h3_audio_gpu_tests
+audio primitive weight norm      max abs 5.960464e-08
+audio primitive Conv1d           max abs 7.264316e-08
+audio primitive ConvTranspose1d  max abs 7.450581e-09
+audio primitive SnakeBeta        max abs 1.490116e-08
+audio primitive scaled add       max abs 0
+audio primitive clip             max abs 0
+ok: native AudioVAE GPU primitives match host references
+ok: concurrent FFmpeg video/PCM pipes created /tmp/h3-av-mux-test.mp4 (51775 bytes)
+hip encoder tile: 1/1
+hip decoder block: 1/36
+hip decoder block: 36/36
+visual encoder: shape 2 x 4 x 4, mean -0.02349, var 1.974, 34 convs, 18 submissions
+visual roundtrip RGB: left R/B 0.837/0.115  right R/B 0.061/0.796  linears=145 sdpa=36
+ok: HIP visual encoder/decoder roundtrip keeps left-red/right-blue
+./h3_hip_audio_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip audio decode: 1/7
+hip audio decode: 7/7
+hip audio encode: 1/7
+hip audio encode: 7/7
+hip audio roundtrip: 1/7
+hip audio roundtrip: 7/7
+audio decode zeros: samples=3200 convs=136 submissions=16 energy=0.002736
+audio encode sine: length=4 convs=38 sdpa=1 energy=0.3879
+audio roundtrip energy=0.08215
+ok: HIP AudioVAE encode/decode stays finite and non-collapsed
+./h3_hip_vision_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip vision T=1: 1/27 layers
+hip vision T=1: 8/27 layers
+hip vision T=1: 16/27 layers
+hip vision T=1: 24/27 layers
+hip vision T=1: 27/27 layers
+hip vision T=2: 1/27 layers
+hip vision T=2: 8/27 layers
+hip vision T=2: 16/27 layers
+hip vision T=2: 24/27 layers
+hip vision T=2: 27/27 layers
+vision smoke T=1: tokens=1 mean_abs=1.073 nan=0 sdpa=27 submissions=32
+vision smoke T=2: tokens=1 mean_abs=1.06 nan=0 sdpa=27 submissions=32
+ok: HIP Qwen vision encoder produces finite tokens for image and video
+./h3_hip_text_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip text: 1/50 layers
+hip text: 10/50 layers
+hip text: 20/50 layers
+hip text: 30/50 layers
+hip text: 40/50 layers
+hip text: 50/50 layers
+text smoke: tokens=3 mean_abs=3.681 nan=0 linears=350 sdpa=50 submissions=51
+ok: HIP Qwen text encoder produces finite tokens
+./h3_hip_multimodal_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip vision: 1/27
+hip vision: 10/27
+hip vision: 20/27
+hip vision: 27/27
+hip multimodal: 1/50
+hip multimodal: 10/50
+hip multimodal: 20/50
+hip multimodal: 30/50
+hip multimodal: 40/50
+hip multimodal: 50/50
+multimodal smoke: tokens=12 vision_tags=3 text_tags=9 mean_abs=2.338 nan=0 sdpa=50 submissions=51
+ok: HIP FL2VA multimodal presentation produces mixed vision/text rows
+./h3_hip_ref2va_smoke "/home/amd/HF-MODELS/MiniMax-H3"
+hip ref2va vision: 1/27
+hip ref2va vision: 10/27
+hip ref2va vision: 20/27
+hip ref2va vision: 27/27
+hip ref2va text: 1/50
+hip ref2va text: 10/50
+hip ref2va text: 20/50
+hip ref2va text: 30/50
+hip ref2va text: 40/50
+hip ref2va text: 50/50
+hip ref2va video vision: 1/27
+hip ref2va video vision: 10/27
+hip ref2va video vision: 20/27
+hip ref2va video vision: 27/27
+hip ref2va video text: 1/50
+hip ref2va video text: 10/50
+hip ref2va video text: 20/50
+hip ref2va video text: 30/50
+hip ref2va video text: 40/50
+hip ref2va video text: 50/50
+ref2va smoke: tokens=12 vision_tags=3 text_tags=9 mean_abs=2.333 nan=0 sdpa=50 submissions=51
+ref2va video: tokens=18 nan=0 sdpa=50
+ok: HIP Ref2VA image and video presentations produce mixed rows
+make[1]: Leaving directory '/home/amd/Repo/h3-hip.c'
+=== fox-s2 E2E (md5 gate) ===
+
+tokenizer                    0/1
+tokenizer                    1/1
+
+text encoder                 0/50
+text encoder                 1/50
+text encoder                 2/50
+text encoder                 3/50
+text encoder                 4/50
+text encoder                 5/50
+text encoder                 6/50
+text encoder                 7/50
+text encoder                 8/50
+text encoder                 9/50
+text encoder                10/50
+text encoder                11/50
+text encoder                12/50
+text encoder                13/50
+text encoder                14/50
+text encoder                15/50
+text encoder                16/50
+text encoder                17/50
+text encoder                18/50
+text encoder                19/50
+text encoder                20/50
+text encoder                21/50
+text encoder                22/50
+text encoder                23/50
+text encoder                24/50
+text encoder                25/50
+text encoder                26/50
+text encoder                27/50
+text encoder                28/50
+text encoder                29/50
+text encoder                30/50
+text encoder                31/50
+text encoder                32/50
+text encoder                33/50
+text encoder                34/50
+text encoder                35/50
+text encoder                36/50
+text encoder                37/50
+text encoder                38/50
+text encoder                39/50
+text encoder                40/50
+text encoder                41/50
+text encoder                42/50
+text encoder                43/50
+text encoder                44/50
+text encoder                45/50
+text encoder                46/50
+text encoder                47/50
+text encoder                48/50
+text encoder                49/50
+text encoder                50/50
+h3 profile: Qwen text encoder        total          wall=  35.611s encode=  0.309s wait=   1.666s root-gpu=  1.666s peak=  4.542GiB alloc= 46.861GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  1.891s linear=  1.695s sdpa=  0.001s conv=  0.000s other=  0.195s
+h3 profile: Qwen text encoder        weight-load    pin= 12.997s (46.861GiB,   3.61GiB/s) read=372.351s (46.860GiB,   0.13GiB/s) upload= 21.261s (46.860GiB,   2.20GiB/s) recycled= 93.7% pinned= 0.000GiB device=46.861GiB
+
+refine text                  0/1
+refine text                  1/1
+h3 profile: H3 DiT load stage refine text          1.281s
+
+precompute AdaLN             1/50
+precompute AdaLN             2/50
+precompute AdaLN             3/50
+precompute AdaLN             4/50
+precompute AdaLN             5/50
+precompute AdaLN             6/50
+precompute AdaLN             7/50
+precompute AdaLN             8/50
+precompute AdaLN             9/50
+precompute AdaLN            10/50
+precompute AdaLN            11/50
+precompute AdaLN            12/50
+precompute AdaLN            13/50
+precompute AdaLN            14/50
+precompute AdaLN            15/50
+precompute AdaLN            16/50
+precompute AdaLN            17/50
+precompute AdaLN            18/50
+precompute AdaLN            19/50
+precompute AdaLN            20/50
+precompute AdaLN            21/50
+precompute AdaLN            22/50
+precompute AdaLN            23/50
+precompute AdaLN            24/50
+precompute AdaLN            25/50
+precompute AdaLN            26/50
+precompute AdaLN            27/50
+precompute AdaLN            28/50
+precompute AdaLN            29/50
+precompute AdaLN            30/50
+precompute AdaLN            31/50
+precompute AdaLN            32/50
+precompute AdaLN            33/50
+precompute AdaLN            34/50
+precompute AdaLN            35/50
+precompute AdaLN            36/50
+precompute AdaLN            37/50
+precompute AdaLN            38/50
+precompute AdaLN            39/50
+precompute AdaLN            40/50
+precompute AdaLN            41/50
+precompute AdaLN            42/50
+precompute AdaLN            43/50
+precompute AdaLN            44/50
+precompute AdaLN            45/50
+precompute AdaLN            46/50
+precompute AdaLN            47/50
+precompute AdaLN            48/50
+precompute AdaLN            49/50
+precompute AdaLN            50/50
+h3 profile: H3 DiT load stage AdaLN precompute    19.314s
+h3: gate-ranked DiT skips 4(0.1167) 14(0.1184) 16(0.1206) 17(0.1224) 13(0.1233) 12(0.1237) 11(0.1256) 15(0.1279) 10(0.1283) 8(0.1303) 9(0.1304) 7(0.1316) 6(0.1367) 5(0.1372) 18(0.1382)
+h3 profile: H3 DiT load stage rope and maps        0.008s
+
+load transformer core        1/50
+load transformer core        2/50
+load transformer core        3/50
+load transformer core        4/50
+load transformer core        5/50
+load transformer core        6/50
+load transformer core        7/50
+load transformer core        8/50
+load transformer core        9/50
+load transformer core       10/50
+load transformer core       11/50
+load transformer core       12/50
+load transformer core       13/50
+load transformer core       14/50
+load transformer core       15/50
+load transformer core       16/50
+load transformer core       17/50
+load transformer core       18/50
+load transformer core       19/50
+load transformer core       20/50
+load transformer core       21/50
+load transformer core       22/50
+load transformer core       23/50
+load transformer core       24/50
+load transformer core       25/50
+load transformer core       26/50
+load transformer core       27/50
+load transformer core       28/50
+load transformer core       29/50
+load transformer core       30/50
+load transformer core       31/50
+load transformer core       32/50
+load transformer core       33/50
+load transformer core       34/50
+load transformer core       35/50
+load transformer core       36/50
+load transformer core       37/50
+load transformer core       38/50
+load transformer core       39/50
+load transformer core       40/50
+load transformer core       41/50
+load transformer core       42/50
+load transformer core       43/50
+load transformer core       44/50
+load transformer core       45/50
+load transformer core       46/50
+load transformer core       47/50
+load transformer core       48/50
+load transformer core       49/50
+load transformer core       50/50
+h3 profile: H3 DiT core split   block-io= 18.669s quantize=  0.114s
+h3 profile: H3 DiT load stage transformer core    18.826s
+h3 profile: H3 DiT load stage activations          0.001s
+h3 profile: H3 DiT                   load           wall=  39.429s encode= 35.736s wait=   0.220s root-gpu=  0.220s peak= 15.101GiB alloc= 64.039GiB submissions=27 direct=226 linear=60 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  1.106s linear=  0.889s sdpa=  0.000s conv=  0.000s other=  0.217s
+
+denoise                      0/2
+denoise                      1/2
+denoise                      2/2
+h3 profile: H3 DiT                   Euler denoise  wall=   3.817s encode=  0.092s wait=   3.708s root-gpu=  3.708s peak= 15.101GiB alloc=  0.000GiB submissions=2 direct=722 linear=0 conv=0 attention=70
+h3 profile: H3 DiT                   op-classes     gpu-op=  3.797s linear=  3.124s sdpa=  0.476s conv=  0.000s other=  0.198s
+h3 profile: H3 DiT                   total          wall=  43.266s encode= 35.828s wait=   3.928s root-gpu=  3.928s peak= 15.101GiB alloc= 64.039GiB submissions=29 direct=948 linear=60 conv=0 attention=72
+h3 profile: H3 DiT                   weight-load    pin=  5.517s (64.039GiB,  11.61GiB/s) read=133.383s (50.962GiB,   0.38GiB/s) upload=  2.576s (50.962GiB,  19.78GiB/s) recycled= 95.2% pinned= 0.003GiB device=64.036GiB
+
+audio VAE                    0/7
+audio VAE                    1/7
+audio VAE                    2/7
+audio VAE                    3/7
+audio VAE                    4/7
+audio VAE                    5/7
+audio VAE                    6/7
+audio VAE                    7/7
+h3 profile: audio VAE decoder        total          wall=   0.733s encode=  0.002s wait=   0.281s root-gpu=  0.281s peak=  0.282GiB alloc=  0.543GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  0.281s linear=  0.000s sdpa=  0.000s conv=  0.215s other=  0.065s
+h3 profile: audio VAE decoder        weight-load    pin=  0.057s ( 0.543GiB,   9.44GiB/s) read=  0.336s ( 0.242GiB,   0.72GiB/s) upload=  0.029s ( 0.242GiB,   8.32GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.543GiB
+h3: video VAE tiles 2x2 at 288 pixels
+
+video VAE load               1/36
+video VAE load               2/36
+video VAE load               3/36
+video VAE load               4/36
+video VAE load               5/36
+video VAE load               6/36
+video VAE load               7/36
+video VAE load               8/36
+video VAE load               9/36
+video VAE load              10/36
+video VAE load              11/36
+video VAE load              12/36
+video VAE load              13/36
+video VAE load              14/36
+video VAE load              15/36
+video VAE load              16/36
+video VAE load              17/36
+video VAE load              18/36
+video VAE load              19/36
+video VAE load              20/36
+video VAE load              21/36
+video VAE load              22/36
+video VAE load              23/36
+video VAE load              24/36
+video VAE load              25/36
+video VAE load              26/36
+video VAE load              27/36
+video VAE load              28/36
+video VAE load              29/36
+video VAE load              30/36
+video VAE load              31/36
+video VAE load              32/36
+video VAE load              33/36
+video VAE load              34/36
+video VAE load              35/36
+video VAE load              36/36
+h3 profile: video VAE decoder        total          wall=   6.452s encode=  2.048s wait=   4.271s root-gpu=  4.271s peak=  9.454GiB alloc=  9.455GiB submissions=4 direct=1468 linear=580 conv=0 attention=144
+h3 profile: video VAE decoder        op-classes     gpu-op=  5.446s linear=  4.540s sdpa=  0.557s conv=  0.000s other=  0.349s
+h3 profile: video VAE decoder        weight-load    pin=  0.190s ( 9.455GiB,  49.86GiB/s) read=  5.596s ( 9.028GiB,   1.61GiB/s) upload=  0.409s ( 9.028GiB,  22.09GiB/s) recycled= 98.6% pinned= 0.001GiB device= 9.453GiB
+
+FFmpeg                       0/22
+FFmpeg                      22/22
+h3: wrote /tmp/h3-halo-regression-fox-s2.mp4
+E2E 124.01 s
+PASS fox-s2 md5 26ab2980c2fe10bd6d42483e7a902c36
+PASS halo regression
