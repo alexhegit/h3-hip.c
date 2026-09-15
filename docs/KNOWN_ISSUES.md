@@ -48,6 +48,15 @@ HIP correctness is gated by CPU-oracle kernel tests, `make test`,
 M5 NAX / TensorOps shaders are not the HIP path. HIP provides its own INT8
 tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 
+## KI-005: Daemon ↔ CLI fox-s2 md5 gate
+
+**Status:** not implemented
+
+[`docs/DESIGN_DHS.md`](DESIGN_DHS.md) §18.2 requires the `--serve` path to
+reproduce the CLI fox-s2 md5 (extend `halo-regression` / optional
+MI210/MI300X). `--serve` is experimental until that gate, plus crash and
+quota drills, land. CLI `./h3 -o` is unchanged.
+
 ## Related backlog
 
 | ID | Topic | Status |

@@ -3,6 +3,9 @@
 #include "h3_host.h"
 #include "h3_terminal.h"
 
+#include "h3d.h"
+#include "h3d_config.h"
+
 #include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>
@@ -16,7 +19,8 @@ static void usage(const char *program) {
     fprintf(stderr,
         "Usage: %s -d MODEL_DIR [options]              # interactive\n"
         "       %s -d MODEL_DIR -p PROMPT [-o OUTPUT] [options]\n"
-        "       %s -d MODEL_DIR --info\n\n"
+        "       %s -d MODEL_DIR --info\n"
+        "       %s -d MODEL_DIR --serve                # daemon mode\n\n"
         "Options:\n"
         "  -d, --model-dir PATH   MiniMax-H3 local directory\n"
         "  -p, --prompt TEXT      Raw H3 prompt\n"
@@ -60,8 +64,9 @@ static void usage(const char *program) {
         "      --zoom N           Terminal image zoom (default: 2 for Retina)\n"
         "      --profile          Print per-phase GPU timing and allocation data\n"
         "      --info             Inspect model/device without mapping weights\n"
+        "      --serve            Start HTTP daemon mode (experimental)\n"
         "  -h, --help             Show this help\n",
-        program, program, program);
+        program, program, program, program);
 }
 
 static int parse_int(const char *value, const char *label) {
@@ -261,7 +266,7 @@ int main(int argc, char **argv) {
            OPT_FIRST, OPT_LAST, OPT_REF_IMAGE, OPT_REF_IMAGE_SIZE,
            OPT_REF_VIDEO, OPT_REF_SILENT_VIDEO, OPT_REF_VIDEO_AUDIO,
            OPT_REF_AUDIO, OPT_FRAMES_DIR, OPT_SHOW, OPT_ZOOM,
-           OPT_PROFILE, OPT_INFO };
+           OPT_PROFILE, OPT_INFO, OPT_SERVE };
     static const struct option options[] = {
         {"model-dir", required_argument, NULL, 'd'},
         {"prompt", required_argument, NULL, 'p'},
@@ -314,6 +319,7 @@ int main(int argc, char **argv) {
         {"zoom", required_argument, NULL, OPT_ZOOM},
         {"profile", no_argument, NULL, OPT_PROFILE},
         {"info", no_argument, NULL, OPT_INFO},
+        {"serve", no_argument, NULL, OPT_SERVE},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
@@ -327,6 +333,7 @@ int main(int argc, char **argv) {
     int show = 0;
     int profile = 0;
     int info = 0;
+    int serve = 0;
     int frames_given = 0;
     int seconds_given = 0;
     int seed_given = 0;
@@ -471,6 +478,7 @@ int main(int argc, char **argv) {
                 break;
             case OPT_PROFILE: profile = 1; break;
             case OPT_INFO: info = 1; break;
+            case OPT_SERVE: serve = 1; break;
             default: usage(argv[0]); return 2;
         }
     }
@@ -497,6 +505,20 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (profile) setenv("H3_PROFILE", "1", 1);
+
+    if (serve) {
+        if (!model_dir) {
+            fprintf(stderr, "h3: --serve requires -d MODEL_DIR\n");
+            return 2;
+        }
+        h3d_ctx daemon_ctx;
+        h3d_config_init(&daemon_ctx);
+        h3d_config_load(&daemon_ctx);
+        snprintf(daemon_ctx.model_path, sizeof(daemon_ctx.model_path),
+                 "%s", model_dir);
+        return h3d_serve(&daemon_ctx);
+    }
+
     h3_ctx *ctx = h3_load_dir(model_dir);
     if (!ctx) {
         fprintf(stderr, "h3: %s\n", h3_last_error(NULL));
