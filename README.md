@@ -161,7 +161,7 @@ Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
 | Runtime INT8 DiT (hipBLAS) | ✅ default on all ISAs (`H3_INT8_MLP=0` for BF16) |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
-| `--sol-attn` | ✅ opt-in **lossy** long SDPA on **MI210** (measured); gfx942 same kernel untimed; gfx1151 dense no-op |
+| `--sol-attn` | ✅ opt-in **lossy** long SDPA on **MI210 + MI300X** (measured); gfx1151 dense no-op |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
 
 ## Daemon (experimental)
@@ -209,10 +209,10 @@ MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
 `fox-15s-fast.sh` **6 min 18 s**.
 MI300X (gfx942) no-TR **179.5 s**; `fox-15s.sh` **114.7 s**;
 `fox-15s-fast.sh` **83.1 s**.
-**`--sol-attn`** is a separate opt-in. Default stays dense (quality). On
-MI210 15 s no-TR it cut E2E **−18%** and SDPA **−29%** versus that dense
-baseline, at **18.73 dB / 0.712 SSIM** video and **6.69 dB** audio SNR.
-Do not enable it for publication or audio-sensitive output. Details:
+**`--sol-attn`** is a separate opt-in. Default stays dense (quality). 15 s no-TR
+versus dense: MI210 E2E **−18%** / SDPA **−29%** (18.73 dB / 6.69 dB SNR);
+MI300X E2E **−11%** / SDPA **−33%** (19.19 dB / 8.69 dB SNR). gfx1151 stays
+dense. Do not enable for publication or audio-sensitive output. Details:
 [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md).
 Tagged scoreboard stays without TR. Per-step schedule is on-demand only:
 `./bench/fox-15s-sched.sh` (not the default `bench/` retune). Generate prints a

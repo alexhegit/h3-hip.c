@@ -38,7 +38,7 @@ static void usage(const char *program) {
         "      --token-reduction  Pair video tokens in middle DiT blocks\n"
         "                         (faster; visible quality loss — off by default)\n"
         "      --sol-attn         Lossy sparse SDPA for long T2VA (off by\n"
-        "                         default). Measured on MI210; gfx942 untimed;\n"
+        "                         default). Measured on MI210 and MI300X;\n"
         "                         gfx1151 stays dense. See docs/SOL_ATTN.md\n"
         "      --ssd-streaming    Stream original BF16 DiT layers from SSD\n"
         "      --use-int8-row-fc2 Faster one-scale int8 FC2 (M5)\n"

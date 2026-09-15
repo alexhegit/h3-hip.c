@@ -492,9 +492,8 @@ Strix Halo fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
 ### Sol-Attn (`--sol-attn`, off by default)
 
 Quality path stays **dense**. `--sol-attn` is lossy long-sequence SDPA.
-**Only MI210 (`gfx90a`) has a 15 s A/B.** gfx942 compiles the same MFMA
-kernel but is untimed. gfx1151 is not ported (dense no-op). Do not put these
-numbers on the tagged quality-path scoreboard.
+**MI210 and MI300X have 15 s A/Bs.** gfx1151 is not ported (dense no-op).
+Do not put these numbers on the tagged quality-path scoreboard.
 Full write-up: [`SOL_ATTN.md`](SOL_ATTN.md).
 
 MI210 (`gfx90a`) 15 s cinematic, **no TR**, τ=0.5, versus the same-run dense
@@ -507,6 +506,16 @@ baseline:
 | SDPA | 456.21 s | 324.38 s | **−28.9%** |
 | video PSNR / SSIM | — | 18.73 dB / 0.712 | preview vs dense |
 | audio SNR | — | 6.69 dB | large drop |
+
+MI300X (`gfx942`) same knobs:
+
+| | dense (quality) | `--sol-attn` | vs dense |
+|--|--:|--:|--:|
+| E2E | 242.53 s | 216.53 s | **−10.7%** |
+| denoise | 182.92 s | 135.87 s | **−25.7%** |
+| SDPA | 142.59 s | 96.20 s | **−32.5%** |
+| video PSNR / SSIM | — | 19.19 dB / 0.721 | preview vs dense |
+| audio SNR | — | 8.69 dB | large drop |
 
 fox-s2 stays dense (`H3_SOL_ATTN_MIN_SEQ` default 4096). Do not combine with
 `--token-reduction` unless you accept compounded quality loss.

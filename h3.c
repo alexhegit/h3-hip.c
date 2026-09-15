@@ -906,8 +906,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         setenv("H3_SOL_ATTN", "1", 1);
         fprintf(stderr,
                 "h3: --sol-attn is on: faster long SDPA, visible quality "
-                "loss (off by default). Measured on MI210; gfx942 same "
-                "kernel untimed; gfx1151 stays dense. See docs/SOL_ATTN.md.\n");
+                "loss (off by default). Measured on MI210 and MI300X; "
+                "gfx1151 stays dense. See docs/SOL_ATTN.md.\n");
     }
     if (getenv("H3_TOKEN_REDUCTION_SCHEDULE") &&
         *getenv("H3_TOKEN_REDUCTION_SCHEDULE"))
