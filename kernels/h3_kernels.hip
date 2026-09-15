@@ -452,23 +452,26 @@ __global__ void h3_scale_add_f32_kernel(const float *residual,
     }
 }
 
-/* Fused scale_add + rms_norm: output = rms_norm(residual + branch * scale, weight, eps).
- * Saves one full read+write of the hidden tensor per block. */
+/* Fused scale_add + rms_norm. Updates the residual stream in place
+ * (residual += branch * scale) and writes rms_norm(residual, weight, eps) to
+ * output. Both results are live: residual carries the block's attention output
+ * to the next residual add, output feeds the MLP. Saves one full read+write of
+ * the hidden tensor per block. */
 __global__ void h3_scale_add_rms_norm_f32_kernel(
-    const float *residual, const float *branch, const float *scale,
+    float *residual, const float *branch, const float *scale,
     const float *norm_weight, float *output, h3_norm_args args) {
     uint32_t row = blockIdx.x;
     uint32_t tid = threadIdx.x;
     uint32_t threads = blockDim.x;
     if (row >= args.rows) return;
     __shared__ float reductions[256];
-    const float *r = residual + row * args.width;
+    float *r = residual + row * args.width;
     const float *b = branch + row * args.width;
     float local_sum = 0.0f;
     for (uint32_t k = tid; k < args.width; k += threads) {
         float temp = r[k] + b[k] * scale[k];
         local_sum = fmaf(temp, temp, local_sum);
-        output[row * args.width + k] = temp;
+        r[k] = temp;
     }
     reductions[tid] = local_sum;
     __syncthreads();
@@ -479,7 +482,7 @@ __global__ void h3_scale_add_rms_norm_f32_kernel(
     float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
     for (uint32_t column = tid; column < args.width; column += threads) {
         output[row * args.width + column] =
-            output[row * args.width + column] * inverse * norm_weight[column];
+            r[column] * inverse * norm_weight[column];
     }
 }
 
@@ -4029,7 +4032,7 @@ extern "C" int h3_launch_scale_add_f32(const float *residual,
 }
 
 extern "C" int h3_launch_scale_add_rms_norm_f32(
-    const float *residual, const float *branch, const float *scale,
+    float *residual, const float *branch, const float *scale,
     const float *norm_weight, float *output, const h3_norm_args *args,
     hipStream_t stream) {
     h3_norm_args host_args = *args;

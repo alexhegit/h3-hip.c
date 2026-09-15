@@ -975,7 +975,11 @@ static int configured_tile_pixels(int pixel_height, int pixel_width) {
     }
     int best = TILE_PIXELS;
     uint64_t best_score = UINT64_MAX;
-    for (int pixels = TILE_PIXELS; pixels <= 512;
+    /* Full-frame 512px tiles expose one latent cell as a visible 16px
+     * lattice in decoded frames. Keep automatic selection in the previously
+     * validated range; H3_VAE_TILE_PIXELS may still explicitly opt into
+     * larger tiles for benchmarking. */
+    for (int pixels = TILE_PIXELS; pixels <= 320;
          pixels += SPATIAL_RATIO) {
         uint64_t tiles = (uint64_t)tile_count_for_extent(pixel_height, pixels) *
             (uint64_t)tile_count_for_extent(pixel_width, pixels);
