@@ -98,7 +98,42 @@ SDPA kernel microbench (56 heads, d128, tau 0.5): 8,192 tokens **1.85x**,
 bit-identical at all four measured lengths, including 1,874 and 44,800
 tokens. fox-s2 stays dense under the default 4,096-token minimum.
 
-Full logs and validation notes:
+### Halo 15 s three-way: dense vs TR vs Sol-Attn
+
+Same seed **42**, prompt, checkpoint, 864×480 / 362 frames, reuse 2.
+**Do not stack** `--sol-attn` with `--token-reduction` in this A/B.
+
+| path | E2E | denoise | video vs dense | audio SNR vs dense |
+|---|---:|---:|---|---:|
+| dense (no TR, no Sol) | **2457.04 s** (40:57) | 2170.15 s | reference | reference |
+| `--token-reduction` (`fox-15s.sh`) | **1666.33 s** (27:46) | 1371.25 s | **18.23 dB / 0.667** | **3.11 dB** |
+| `--sol-attn` τ=0.5, no TR | **1786.72 s** (29:47) | 1506.12 s | **19.55 dB / 0.721** | **10.99 dB** |
+
+On Halo, **TR is faster** (~2 min E2E) and **Sol-Attn is closer to dense**
+on both picture and soundtrack. Neither lossy knob is a slight blur of
+the quality path: blocking, props, and on-screen graphics diverge. Play
+the labelled triptych (left dense, centre TR, right Sol-Attn):
+
+[![15 s three-way still, t=5 s](../assets/showcase/fox-15s-3way-compare-gfx1151.jpg)](../assets/showcase/fox-15s-3way-compare-gfx1151.mp4)
+
+[fox-15s-3way-compare-gfx1151.mp4](../assets/showcase/fox-15s-3way-compare-gfx1151.mp4)
+· stills [t=2](../assets/showcase/fox-15s-3way-t2s.jpg)
+[t=5](../assets/showcase/fox-15s-3way-t5s.jpg)
+[t=8](../assets/showcase/fox-15s-3way-t8s.jpg)
+[t=11](../assets/showcase/fox-15s-3way-t11s.jpg)
+[t=14](../assets/showcase/fox-15s-3way-t14s.jpg).
+
+What the stills show: at **t=5 s** dense keeps a tiled matrix on the
+centre monitor, TR warps it, Sol-Attn replaces it with large square
+tiles. At **t=8 s** the in-monitor fox is sharpest on dense, softer on
+TR, and intermediate on Sol-Attn. At **t=11 s** TR becomes a single
+curved display; dense and Sol-Attn stay dual-monitor with different
+lamps.
+
+`fox-15s.sh` (TR 4:30) is **lossy versus no-TR**, not PSNR=inf. Ledger:
+[`perf-runs/HALO_SOL_ATTN_2026-09-16.md`](perf-runs/HALO_SOL_ATTN_2026-09-16.md).
+
+Full kernel / 15 s no-TR A/B notes:
 [`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
 
 Full design notes follow.
@@ -400,7 +435,10 @@ Strix Halo fixed-seed 15 s no-TR A/B:
 | decoded audio SNR | reference | 10.99 dB | approximate |
 
 Absolute SDPA saving is largest on Halo (−666 s). Quality stays **REJECT for
-default on**. Details: [`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
+default on**. Kernel A/B:
+[`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
+Dense vs TR vs Sol-Attn (Halo stills + triptych):
+[`perf-runs/HALO_SOL_ATTN_2026-09-16.md`](perf-runs/HALO_SOL_ATTN_2026-09-16.md).
 
 Reject or retune if routing/summary overhead erases the gain, particularly on
 short sequences.

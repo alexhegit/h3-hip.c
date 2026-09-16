@@ -9,7 +9,7 @@ All scripts use `--profile` and print per-phase GPU timing.
 |--------|-----------|--------|-------|--------|-------|---------|----------|
 | `fox-s2.sh` | 512×512 | 22 | 2 | 35 | 1 | Lossless | Quick smoke / A/B (< 2 min) |
 | `fox-fast.sh` | 512×512 | 22 | 20 | 45 | 2 | Lossless | Standard short clip (~15s MI300X) |
-| `fox-15s.sh` | 864×480 | 362 | 20 | 45 | 2 | Lossless | Long cinematic (~180s MI300X) |
+| `fox-15s.sh` | 864×480 | 362 | 20 | 45 | 2 | **~18 dB vs no-TR** (Halo) | Long cinematic; TR 4:30, lossy |
 | `fox-15s-fast.sh` | 864×480 | 362 | 20 | 45 | 3 | **~15 dB** | Fast long cinematic (~90s MI300X) |
 
 Default scoreboard is the four scripts above (plus a hand-run 15 s **without**
@@ -44,7 +44,7 @@ A wider reuse=3 sweep lives in `tools/tr_sweep.sh` (not a scoreboard script).
 # Fast 15s (reuse=3, TR 4:45, quality trade)
 ./bench/fox-15s-fast.sh
 
-# Lossless 15s (reuse=2, TR 4:30, identical to no TR)
+# TR 4:30 15s (reuse=2; lossy vs no-TR — see docs/SOL_ATTN.md)
 ./bench/fox-15s.sh
 
 # Root-level wrappers still work

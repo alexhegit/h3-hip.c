@@ -262,7 +262,7 @@ Canonical scripts from `bench/`. 15 s **without** TR used `fox-15s.sh` minus
 | fox-s2 | `bench/fox-s2.sh` | **3.27 s** | **0.29 s** | 0.05 / 0.18 s | 1.34 s | 15.1 GiB |
 | fox-fast | `bench/fox-fast.sh` | **5.21 s** | **1.94 s** | 0.39 / 1.17 s | 1.30 s | 19.7 GiB |
 | 15 s no TR | quality knobs, no `--token-reduction` | **179.5 s** | **176.2 s** | 139.8 / 28.7 s | 26.8 s | 27.9 GiB |
-| 15 s lossless TR | `bench/fox-15s.sh` | **114.7 s** | **111.3 s** | 83.4 / 21.1 s | 26.8 s | 27.9 GiB |
+| 15 s TR 4:30 | `bench/fox-15s.sh` | **114.7 s** | **111.3 s** | 83.4 / 21.1 s | 26.8 s | 27.9 GiB |
 | 15 s-fast | `bench/fox-15s-fast.sh` | **83.1 s** | **79.9 s** | 59.8 / 15.1 s | 26.6 s | 27.9 GiB |
 
 `fox-15s.sh` is reuse=2 + `--token-reduction` (default 4:30). `fox-15s-fast.sh`
@@ -531,8 +531,18 @@ Halo's 44,800-token kernel is **2.27x** faster at tau 0.5; keep-all is
 bit-identical at every measured sequence length. Full run:
 [`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
 
+Same-seed Halo **three-way** (2026-09-16; no stack): TR E2E **1666.33 s**
+at **18.23 dB / 0.667** and **3.11 dB** audio vs dense; Sol-Attn E2E
+**1786.72 s** at **19.55 dB / 0.721** and **10.99 dB** audio. TR is
+faster; Sol-Attn is closer to dense. Blocking diverges on all three —
+see the triptych
+[`fox-15s-3way-compare-gfx1151.mp4`](../assets/showcase/fox-15s-3way-compare-gfx1151.mp4)
+and [`SOL_ATTN.md`](SOL_ATTN.md). Ledger:
+[`perf-runs/HALO_SOL_ATTN_2026-09-16.md`](perf-runs/HALO_SOL_ATTN_2026-09-16.md).
+
 fox-s2 stays dense (`H3_SOL_ATTN_MIN_SEQ` default 4096). Do not combine with
-`--token-reduction` unless you accept compounded quality loss.
+`--token-reduction` unless you accept compounded quality loss. `fox-15s.sh`
+TR 4:30 is **lossy vs no-TR** on Halo (not PSNR=inf).
 
 ## VRAM optimization summary (MI300X, 15 s cinematic)
 

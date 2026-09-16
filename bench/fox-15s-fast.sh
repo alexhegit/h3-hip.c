@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # FAST preset: reuse=3 + TR 4:45 (MI300X ~62s DiT, ~15 dB quality trade)
-# For lossless: ./bench/fox-15s.sh (reuse=2, TR 4:30, identical to no TR)
+# For the slower TR 4:30 preset: ./bench/fox-15s.sh (still lossy vs no-TR)
 set -euo pipefail
 
 MODEL="${1:-${H3_MODEL:-/mnt/doscratch/MiniMax-H3}}"

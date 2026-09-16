@@ -65,3 +65,9 @@ KEEP as opt-in lossy acceleration on gfx1151. The kernel clears the 2x
 44,800-token and 20% denoise-SDPA gates. Quality remains below the default-on
 bar, so dense stays the default and Sol-Attn should not be combined with token
 reduction by default.
+
+A same-seed Halo three-way (dense / `fox-15s.sh` TR / Sol-Attn, no stack)
+is in [`HALO_SOL_ATTN_2026-09-16.md`](HALO_SOL_ATTN_2026-09-16.md). TR is
+faster; Sol-Attn is closer to dense (19.55 dB vs TR 18.23 dB; audio SNR
+10.99 dB vs 3.11 dB). Triptych:
+[`fox-15s-3way-compare-gfx1151.mp4`](../../assets/showcase/fox-15s-3way-compare-gfx1151.mp4).

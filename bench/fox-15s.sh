@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 15s cinematic benchmark — lossless (864×480, 362 frames, 20 steps, 45 layers)
-# Lossless: reuse=2 + TR 4:30, output identical to no TR (PSNR=inf).
-# For fast lossy: ./bench/fox-15s-fast.sh (reuse=3, TR 4:45, ~15 dB trade)
+# 15s cinematic benchmark (864×480, 362 frames, 20 steps, 45 layers)
+# reuse=2 + TR 4:30. Lossy vs no-TR: Halo 2026-09-16 was 18.23 dB / 0.667
+# SSIM and 3.11 dB audio SNR vs dense (not PSNR=inf). See docs/SOL_ATTN.md.
+# Faster, more lossy: ./bench/fox-15s-fast.sh (reuse=3, TR 4:45).
 set -euo pipefail
 
 MODEL="${1:-${H3_MODEL:-/mnt/doscratch/MiniMax-H3}}"

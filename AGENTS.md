@@ -58,7 +58,9 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   long video). Same as `--token-reduction`.
 - `--sol-attn` / `H3_SOL_ATTN=1` is **lossy** long SDPA (off by default).
   Measured on gfx1151, gfx90a, and gfx942. gfx1151 uses a separate wave32
-  rocWMMA sparse kernel. See `docs/SOL_ATTN.md`.
+  rocWMMA sparse kernel. Do not stack with `--token-reduction` by default.
+  Halo 15 s three-way (dense / TR / Sol-Attn): `docs/SOL_ATTN.md` and
+  `assets/showcase/fox-15s-3way-compare-gfx1151.mp4`.
 - `H3_TOKEN_REDUCTION_SCHEDULE` is per-step TR (`STEP:BEGIN:END,...`); setting
   it enables TR. On-demand bench only: `./bench/fox-15s-sched.sh` — not part of
   the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).

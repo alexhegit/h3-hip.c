@@ -55,8 +55,8 @@ at 864×480 / 362 frames.
 ## Showcase (Strix Halo)
 
 Clips below were generated on an AMD Strix Halo iGPU (`gfx1151`) with this HIP
-port. Click a poster for the MP4. The last three are **untitled** model output
-(no ffmpeg captions).
+port. Click a poster for the MP4. Several clips are **untitled** model output
+(no ffmpeg captions). The 15 s three-way reel is labelled left-to-right.
 
 | Mode | Sample |
 |------|--------|
@@ -65,6 +65,7 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 | **T2VA** — project ident draft (untitled) | [![ident draft](assets/showcase/h3-hip-ident-draft-raw.jpg)](assets/showcase/h3-hip-ident-draft-raw.mp4) [mp4](assets/showcase/h3-hip-ident-draft-raw.mp4) |
 | **Ref2VA** — AMD developer community (untitled) | [![AMD community](assets/showcase/amd-developer-community-raw.jpg)](assets/showcase/amd-developer-community-raw.mp4) [mp4](assets/showcase/amd-developer-community-raw.mp4) |
 | **T2VA** — 15 s cinematic office (untitled) | [![15 s long](assets/showcase/long-15s-cinematic.jpg)](assets/showcase/long-15s-cinematic.mp4) [mp4](assets/showcase/long-15s-cinematic.mp4) |
+| **T2VA** — 15 s Halo three-way (dense / TR / Sol-Attn) | [![15 s 3-way](assets/showcase/fox-15s-3way-compare-gfx1151.jpg)](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) [mp4](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) |
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
@@ -72,6 +73,12 @@ without TR (`main` 2026-09-12); `./bench/fox-15s.sh` (TR 4:30) is **26 min 56 s*
 on Strix Halo (gfx1151); **15 s E2E 12 min 12 s** / `fox-15s.sh` **8 min 13 s**
 on MI210 (gfx90a); **15 s E2E 179.5 s** / `fox-15s.sh` **114.7 s**
 on MI300X (gfx942) / `fox-15s-fast.sh` **83.1 s**.
+Halo same-seed 15 s **lossy** A/B (2026-09-16): `fox-15s.sh` TR is **27 min 46 s**
+at **18.23 dB / 0.667** vs dense; `--sol-attn` is **29 min 47 s** at
+**19.55 dB / 0.721** (audio SNR 3.11 dB vs 10.99 dB). TR is faster; Sol-Attn
+is closer to dense. Triptych:
+[fox-15s-3way-compare-gfx1151.mp4](assets/showcase/fox-15s-3way-compare-gfx1151.mp4)
+· [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md).
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
 [Wiki: Long video](docs/wiki/Long-video.md) ·
