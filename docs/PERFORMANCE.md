@@ -262,7 +262,7 @@ Canonical scripts from `bench/`. 15 s **without** TR used `fox-15s.sh` minus
 | fox-s2 | `bench/fox-s2.sh` | **3.27 s** | **0.29 s** | 0.05 / 0.18 s | 1.34 s | 15.1 GiB |
 | fox-fast | `bench/fox-fast.sh` | **5.21 s** | **1.94 s** | 0.39 / 1.17 s | 1.30 s | 19.7 GiB |
 | 15 s no TR | quality knobs, no `--token-reduction` | **179.5 s** | **176.2 s** | 139.8 / 28.7 s | 26.8 s | 27.9 GiB |
-| 15 s lossless TR | `bench/fox-15s.sh` | **114.7 s** | **111.3 s** | 83.4 / 21.1 s | 26.8 s | 27.9 GiB |
+| 15 s TR 4:30 | `bench/fox-15s.sh` | **114.7 s** | **111.3 s** | 83.4 / 21.1 s | 26.8 s | 27.9 GiB |
 | 15 s-fast | `bench/fox-15s-fast.sh` | **83.1 s** | **79.9 s** | 59.8 / 15.1 s | 26.6 s | 27.9 GiB |
 
 `fox-15s.sh` is reuse=2 + `--token-reduction` (default 4:30). `fox-15s-fast.sh`
@@ -488,6 +488,61 @@ TR schedule auto-enables TR without `--token-reduction`. `STEP:0:0` disables
 TR from that step onward for quality recovery in later denoising steps.
 
 Strix Halo fox-fast denoise 34.6 s → 25.8 s was already measured at v0.9.0.
+
+### Sol-Attn (`--sol-attn`, off by default)
+
+Quality path stays **dense**. `--sol-attn` is lossy long-sequence SDPA.
+**MI210, MI300X, and Strix Halo have fixed-seed 15 s no-TR A/Bs.**
+Do not put these numbers on the tagged quality-path scoreboard.
+Full write-up: [`SOL_ATTN.md`](SOL_ATTN.md).
+
+MI210 (`gfx90a`) 15 s cinematic, **no TR**, τ=0.5, versus the same-run dense
+baseline:
+
+| | dense (quality) | `--sol-attn` | vs dense |
+|--|--:|--:|--:|
+| E2E | 725.31 s | 593.04 s | **−18.2%** |
+| denoise | 634.95 s | 502.89 s | **−20.8%** |
+| SDPA | 456.21 s | 324.38 s | **−28.9%** |
+| video PSNR / SSIM | — | 18.73 dB / 0.712 | preview vs dense |
+| audio SNR | — | 6.69 dB | large drop |
+
+MI300X (`gfx942`) same knobs:
+
+| | dense (quality) | `--sol-attn` | vs dense |
+|--|--:|--:|--:|
+| E2E | 242.53 s | 216.53 s | **−10.7%** |
+| denoise | 182.92 s | 135.87 s | **−25.7%** |
+| SDPA | 142.59 s | 96.20 s | **−32.5%** |
+| video PSNR / SSIM | — | 19.19 dB / 0.721 | preview vs dense |
+| audio SNR | — | 8.69 dB | large drop |
+
+Strix Halo (`gfx1151`) uses its separate wave32 rocWMMA path:
+
+| | dense (quality) | `--sol-attn` | vs dense |
+|--|--:|--:|--:|
+| E2E | 2457.04 s | 1786.72 s | **−27.3%** |
+| denoise | 2170.15 s | 1506.12 s | **−30.6%** |
+| SDPA | 1583.50 s | 917.19 s | **−42.1%** |
+| video PSNR / SSIM | — | 19.55 dB / 0.721 | preview vs dense |
+| audio SNR | — | 10.99 dB | approximate |
+
+Halo's 44,800-token kernel is **2.27x** faster at tau 0.5; keep-all is
+bit-identical at every measured sequence length. Full run:
+[`perf-runs/HALO_SOL_ATTN_2026-09-15.md`](perf-runs/HALO_SOL_ATTN_2026-09-15.md).
+
+Same-seed Halo **three-way** (2026-09-16; no stack): TR E2E **1666.33 s**
+at **18.23 dB / 0.667** and **3.11 dB** audio vs dense; Sol-Attn E2E
+**1786.72 s** at **19.55 dB / 0.721** and **10.99 dB** audio. TR is
+faster; Sol-Attn is closer to dense. Blocking diverges on all three —
+see the triptych
+[`fox-15s-3way-compare-gfx1151.mp4`](../assets/showcase/fox-15s-3way-compare-gfx1151.mp4)
+and [`SOL_ATTN.md`](SOL_ATTN.md). Ledger:
+[`perf-runs/HALO_SOL_ATTN_2026-09-16.md`](perf-runs/HALO_SOL_ATTN_2026-09-16.md).
+
+fox-s2 stays dense (`H3_SOL_ATTN_MIN_SEQ` default 4096). Do not combine with
+`--token-reduction` unless you accept compounded quality loss. `fox-15s.sh`
+TR 4:30 is **lossy vs no-TR** on Halo (not PSNR=inf).
 
 ## VRAM optimization summary (MI300X, 15 s cinematic)
 

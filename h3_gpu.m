@@ -1616,6 +1616,14 @@ int h3_gpu_sdpa_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
                        0);
 }
 
+void h3_gpu_sol_attn_configure(h3_gpu *gpu, int layer_on, int prefix_blocks,
+                               int sparse_q0) {
+    (void)gpu;
+    (void)layer_on;
+    (void)prefix_blocks;
+    (void)sparse_q0;
+}
+
 int h3_gpu_sdpa_bf16_head_major_output(
                      h3_gpu *opaque, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,

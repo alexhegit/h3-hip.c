@@ -56,6 +56,11 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   win on MI300X; **not** a gfx1151 short-clip win in the 2026-09-03 retune).
 - `H3_TOKEN_REDUCTION=1` halves spatial width in middle DiT blocks (~37% faster
   long video). Same as `--token-reduction`.
+- `--sol-attn` / `H3_SOL_ATTN=1` is **lossy** long SDPA (off by default).
+  Measured on gfx1151, gfx90a, and gfx942. gfx1151 uses a separate wave32
+  rocWMMA sparse kernel. Do not stack with `--token-reduction` by default.
+  Halo 15 s three-way (dense / TR / Sol-Attn): `docs/SOL_ATTN.md` and
+  `assets/showcase/fox-15s-3way-compare-gfx1151.mp4`.
 - `H3_TOKEN_REDUCTION_SCHEDULE` is per-step TR (`STEP:BEGIN:END,...`); setting
   it enables TR. On-demand bench only: `./bench/fox-15s-sched.sh` — not part of
   the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).
@@ -73,6 +78,7 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 
 - `docs/BEST_PRACTICE.md` — quick reference for optimal settings
 - `docs/PERFORMANCE.md` — scoreboard numbers for all ISAs
+- `docs/SOL_ATTN.md` — opt-in lossy Sol-Attn (speed vs quality vs dense)
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/DESIGN_DHS.md` — `--serve` daemon protocol v1alpha and DSH plugin phases

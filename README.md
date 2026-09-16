@@ -55,8 +55,8 @@ at 864×480 / 362 frames.
 ## Showcase (Strix Halo)
 
 Clips below were generated on an AMD Strix Halo iGPU (`gfx1151`) with this HIP
-port. Click a poster for the MP4. The last three are **untitled** model output
-(no ffmpeg captions).
+port. Click a poster for the MP4. Several clips are **untitled** model output
+(no ffmpeg captions). The 15 s three-way reel is labelled left-to-right.
 
 | Mode | Sample |
 |------|--------|
@@ -65,6 +65,7 @@ port. Click a poster for the MP4. The last three are **untitled** model output
 | **T2VA** — project ident draft (untitled) | [![ident draft](assets/showcase/h3-hip-ident-draft-raw.jpg)](assets/showcase/h3-hip-ident-draft-raw.mp4) [mp4](assets/showcase/h3-hip-ident-draft-raw.mp4) |
 | **Ref2VA** — AMD developer community (untitled) | [![AMD community](assets/showcase/amd-developer-community-raw.jpg)](assets/showcase/amd-developer-community-raw.mp4) [mp4](assets/showcase/amd-developer-community-raw.mp4) |
 | **T2VA** — 15 s cinematic office (untitled) | [![15 s long](assets/showcase/long-15s-cinematic.jpg)](assets/showcase/long-15s-cinematic.mp4) [mp4](assets/showcase/long-15s-cinematic.mp4) |
+| **T2VA** — 15 s Halo three-way (dense / TR / Sol-Attn) | [![15 s 3-way](assets/showcase/fox-15s-3way-compare-gfx1151.jpg)](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) [mp4](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) |
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
@@ -72,6 +73,12 @@ without TR (`main` 2026-09-12); `./bench/fox-15s.sh` (TR 4:30) is **26 min 56 s*
 on Strix Halo (gfx1151); **15 s E2E 12 min 12 s** / `fox-15s.sh` **8 min 13 s**
 on MI210 (gfx90a); **15 s E2E 179.5 s** / `fox-15s.sh` **114.7 s**
 on MI300X (gfx942) / `fox-15s-fast.sh` **83.1 s**.
+Halo same-seed 15 s **lossy** A/B (2026-09-16): `fox-15s.sh` TR is **27 min 46 s**
+at **18.23 dB / 0.667** vs dense; `--sol-attn` is **29 min 47 s** at
+**19.55 dB / 0.721** (audio SNR 3.11 dB vs 10.99 dB). TR is faster; Sol-Attn
+is closer to dense. Triptych:
+[fox-15s-3way-compare-gfx1151.mp4](assets/showcase/fox-15s-3way-compare-gfx1151.mp4)
+· [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md).
 Timings and reproduce commands:
 [`docs/perf-runs/LONG_VIDEO.md`](docs/perf-runs/LONG_VIDEO.md) ·
 [Wiki: Long video](docs/wiki/Long-video.md) ·
@@ -161,6 +168,7 @@ Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
 | Runtime INT8 DiT (hipBLAS) | ✅ default on all ISAs (`H3_INT8_MLP=0` for BF16) |
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
+| `--sol-attn` | ✅ opt-in **lossy** long SDPA on **Strix Halo + MI210 + MI300X** (measured) |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
 
 ## Daemon (experimental)
@@ -191,6 +199,7 @@ Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
   [Long video](docs/wiki/Long-video.md)
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
+- **`--sol-attn`** (lossy long SDPA; off by default): [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 - **`--serve` daemon / DSH plugin:** [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md)
 
@@ -207,6 +216,12 @@ MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
 `fox-15s-fast.sh` **6 min 18 s**.
 MI300X (gfx942) no-TR **179.5 s**; `fox-15s.sh` **114.7 s**;
 `fox-15s-fast.sh` **83.1 s**.
+**`--sol-attn`** is a separate opt-in. Default stays dense (quality). 15 s no-TR
+versus dense: MI210 E2E **−18%** / SDPA **−29%** (18.73 dB / 6.69 dB SNR);
+MI300X E2E **−11%** / SDPA **−33%** (19.19 dB / 8.69 dB SNR); Strix Halo
+E2E **−27%** / SDPA **−42%** (19.55 dB / 10.99 dB SNR). Do not enable for
+publication or audio-sensitive output. Details:
+[`docs/SOL_ATTN.md`](docs/SOL_ATTN.md).
 Tagged scoreboard stays without TR. Per-step schedule is on-demand only:
 `./bench/fox-15s-sched.sh` (not the default `bench/` retune). Generate prints a
 stderr warning when `--token-reduction` or `H3_TOKEN_REDUCTION_SCHEDULE` is on.

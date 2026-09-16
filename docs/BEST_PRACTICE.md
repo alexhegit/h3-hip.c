@@ -26,6 +26,7 @@ H3_INT8_VAE=1 H3_TOKEN_REDUCTION=1 H3_GPU_SAMPLER=1 ./h3 ...
 | `H3_INT8_VAE` | `0` | INT8 Video VAE weights (−61% VAE VRAM) |
 | `H3_TOKEN_REDUCTION` | `0` | Halve spatial width in middle layers (−33% denoise) |
 | `H3_TOKEN_REDUCTION_SCHEDULE` | (none) | Per-step TR range schedule (see below) |
+| `H3_SOL_ATTN` | `0` | Lossy sparse SDPA (`--sol-attn`); **off** = quality path |
 | `H3_GPU_SAMPLER` | `0` | GPU Euler sampler (reduces latency) |
 | `H3_VAE_TILE_PIXELS` | `480` | VAE tile size (256–512) |
 
@@ -98,6 +99,18 @@ Or use the preset script: `./bench/fox-15s-fast.sh`
 
 > ~15 dB: noticeable softness across the frame, some temporal drift in fine
 > details. Still recognisable; suitable for previews and rapid iteration.
+
+Optional **`--sol-attn`** is a different lossy knob (sparse SDPA, not token
+pairing). Default remains dense. Do not stack with `--token-reduction`
+unless you accept compounded error. Fixed-seed 15 s **no TR** E2E/SDPA
+reductions are Halo **−27.3%/−42.1%**, MI210 **−18.2%/−28.9%**, and MI300X
+**−10.7%/−32.5%**. On Halo, a same-seed three-way vs dense is: TR
+**18.23 dB / 0.667** (audio SNR **3.11 dB**, E2E 27:46) versus Sol-Attn
+**19.55 dB / 0.721** (audio SNR **10.99 dB**, E2E 29:47). TR is faster;
+Sol-Attn is closer to dense; neither is a mild blur of the quality path.
+Triptych:
+[`fox-15s-3way-compare-gfx1151.mp4`](../assets/showcase/fox-15s-3way-compare-gfx1151.mp4).
+Details: [`SOL_ATTN.md`](SOL_ATTN.md).
 
 ### 4. Maximum Quality
 

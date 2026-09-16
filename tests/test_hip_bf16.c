@@ -2140,6 +2140,95 @@ static int test_sdpa_tiled_repeatable(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_sol_attn_keep_all(h3_gpu *gpu) {
+    const uint32_t sequence = 512;
+    const uint32_t heads = 2;
+    const uint32_t head_dim = 128;
+    const size_t count = (size_t)sequence * heads * head_dim;
+    const float scale = 1.0f / sqrtf((float)head_dim);
+    uint16_t *query = calloc(count, sizeof(*query));
+    uint16_t *key = calloc(count, sizeof(*key));
+    uint16_t *value = calloc(count, sizeof(*value));
+    uint16_t *dense = calloc(count, sizeof(*dense));
+    uint16_t *sparse = calloc(count, sizeof(*sparse));
+    CHECK(query && key && value && dense && sparse);
+    for (size_t i = 0; i < count; i++) {
+        query[i] = f32_to_bf16(sinf((float)i * 0.017f));
+        key[i] = f32_to_bf16(cosf((float)i * 0.013f));
+        value[i] = f32_to_bf16(sinf((float)i * 0.009f) * 0.5f);
+    }
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, count);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, count);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, count);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, count);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    unsetenv("H3_SOL_ATTN");
+    unsetenv("H3_SOL_ATTN_TAU");
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn dense"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "sol-attn dense"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol-attn dense"));
+    CHECK(h3_gpu_tensor_read_bf16(output, dense, count));
+    setenv("H3_SOL_ATTN", "1", 1);
+    /* No synthetic prefix: tau=0.5 below must actually route tiles, which
+     * prevents an unsupported dense fallback from masquerading as Sol-Attn. */
+    h3_gpu_sol_attn_configure(gpu, 1, 0, 0);
+    setenv("H3_SOL_ATTN_TAU", "0.5", 1);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn short"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "sol-attn short"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol-attn short"));
+    CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
+    CHECK(memcmp(dense, sparse, count * sizeof(*dense)) == 0);
+    printf("sol-attn default min-seq fallback diffs 0 / %zu\n", count);
+    setenv("H3_SOL_ATTN_TAU", "-100", 1);
+    setenv("H3_SOL_ATTN_MIN_SEQ", "512", 1);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn keep-all"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "sol-attn keep-all"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol-attn keep-all"));
+    CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
+    size_t ndiff = 0;
+    double worst = 0.0;
+    for (size_t i = 0; i < count; i++) {
+        if (dense[i] != sparse[i]) ndiff++;
+        double delta = fabs(bf16_to_f32(dense[i]) - bf16_to_f32(sparse[i]));
+        if (delta > worst) worst = delta;
+    }
+    printf("sol-attn keep-all bitwise diffs %zu / %zu worst %g\n", ndiff, count,
+           worst);
+    CHECK(ndiff == 0);
+    setenv("H3_SOL_ATTN_TAU", "0.5", 1);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn sparse"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "sol-attn sparse"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol-attn sparse"));
+    CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
+    ndiff = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (dense[i] != sparse[i]) ndiff++;
+    }
+    printf("sol-attn sparse-path bitwise diffs %zu / %zu\n", ndiff, count);
+    CHECK(ndiff > 0);
+    unsetenv("H3_SOL_ATTN");
+    unsetenv("H3_SOL_ATTN_TAU");
+    unsetenv("H3_SOL_ATTN_MIN_SEQ");
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    free(query);
+    free(key);
+    free(value);
+    free(dense);
+    free(sparse);
+    return 0;
+}
+
 static int test_sdpa(h3_gpu *gpu) {
     enum { SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
@@ -5579,6 +5668,49 @@ static int bench_sdpa(h3_gpu *gpu) {
     printf("sdpa bf16 seq=%d heads=%d dim=%d: %.1f ms%s%s\n", sequence, heads,
            HEAD_DIM, ms, getenv("H3_SDPA_LEGACY") ? " (legacy)" : "",
            kv_hm ? " (kv-hm)" : "");
+    if (getenv("H3_BENCH_SDPA_SOL")) {
+        uint16_t *dense = calloc(count, sizeof(*dense));
+        CHECK(dense && h3_gpu_tensor_read_bf16(output, dense, count));
+        setenv("H3_SOL_ATTN", "1", 1);
+        setenv("H3_SOL_ATTN_MIN_SEQ", "512", 1);
+        h3_gpu_sol_attn_configure(gpu, 1, -1, 0);
+        const char *modes[] = {"-100", "0.5"};
+        for (int mode = 0; mode < 2; mode++) {
+            setenv("H3_SOL_ATTN_TAU", modes[mode], 1);
+            CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol warmup"));
+            CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(
+                gpu, output, gpu_q, gpu_k, gpu_v, (uint32_t)sequence,
+                (uint32_t)heads, HEAD_DIM, scale), "sol warmup"));
+            CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol warmup"));
+            start = h3_monotonic_seconds();
+            CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol bench"));
+            for (int iter = 0; iter < iterations; iter++) {
+                CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(
+                    gpu, output, gpu_q, gpu_k, gpu_v, (uint32_t)sequence,
+                    (uint32_t)heads, HEAD_DIM, scale), "sol bench"));
+            }
+            CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit sol bench"));
+            double sol_ms =
+                (h3_monotonic_seconds() - start) * 1000.0 / (double)iterations;
+            uint16_t *got = calloc(count, sizeof(*got));
+            CHECK(got && h3_gpu_tensor_read_bf16(output, got, count));
+            size_t ndiff = 0;
+            double worst = 0.0;
+            for (size_t i = 0; i < count; i++) {
+                if (dense[i] != got[i]) ndiff++;
+                double delta = fabs(bf16_to_f32(dense[i]) - bf16_to_f32(got[i]));
+                if (delta > worst) worst = delta;
+            }
+            printf("sdpa sol-attn tau=%s seq=%d: %.1f ms (%.2fx vs dense) "
+                   "diffs %zu worst %g\n",
+                   modes[mode], sequence, sol_ms, ms / sol_ms, ndiff, worst);
+            free(got);
+        }
+        unsetenv("H3_SOL_ATTN");
+        unsetenv("H3_SOL_ATTN_TAU");
+        unsetenv("H3_SOL_ATTN_MIN_SEQ");
+        free(dense);
+    }
     h3_gpu_tensor_free(gpu_q);
     h3_gpu_tensor_free(gpu_k);
     h3_gpu_tensor_free(gpu_v);
@@ -5972,6 +6104,11 @@ int main(void) {
         h3_gpu_free(gpu);
         return ok;
     }
+    if (getenv("H3_CHECK_SOL_ATTN")) {
+        int ok = test_sol_attn_keep_all(gpu);
+        h3_gpu_free(gpu);
+        return ok;
+    }
     if (getenv("H3_CHECK_SDPA_F32_REPEAT")) {
         int ok = check_sdpa_f32_d64_repeatable(gpu);
         h3_gpu_free(gpu);
@@ -6031,6 +6168,7 @@ int main(void) {
     if (test_sdpa_f32_d64(gpu) != 0) return 1;
     if (test_sdpa_f32_d64_tiled(gpu) != 0) return 1;
     if (test_sdpa_tiled_repeatable(gpu) != 0) return 1;
+    if (test_sol_attn_keep_all(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;
     if (test_mlp(gpu) != 0) return 1;
     if (test_mlp_nax(gpu) != 0) return 1;

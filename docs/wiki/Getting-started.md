@@ -89,6 +89,12 @@ Optional **`--token-reduction`** (off by default, same flag as h3-spark.c):
 pairs video tokens in middle DiT blocks. Faster long T2VA; **visible quality
 loss**; fox-s2 md5 gate does not apply. Generate prints a warning when on.
 
+Optional **`--sol-attn`** (off by default): lossy sparse SDPA for long
+sequences on gfx1151, gfx90a, and gfx942. Quality path stays dense. Fixed-seed
+15 s no-TR E2E/SDPA reductions: Halo −27%/−42%, MI210 −18%/−29%, MI300X
+−11%/−33%. See
+[`docs/SOL_ATTN.md`](../SOL_ATTN.md).
+
 On a multi-GPU box bind one card: `H3_HIP_DEVICE=N` (default 0). Do not run two
 weight-streaming T2VA jobs against the same NVMe at once.
 
@@ -112,6 +118,7 @@ H3_INT8_MLP=0          # disable INT8, use BF16 DiT weights
 H3_GPU_SAMPLER=1       # GPU Euler sampler (opt-in on HIP)
 H3_TOKEN_REDUCTION=1   # same as --token-reduction
 H3_TOKEN_REDUCTION_SCHEDULE=0:4:50,10:4:45,20:4:30  # per-step TR; or ./bench/fox-15s-sched.sh
+H3_SOL_ATTN=1          # same as --sol-attn; lossy long SDPA (off = quality)
 H3_INT8_VAE=1          # INT8 Video VAE weights (VRAM; fox VAE wall may not fall)
 H3_VAE_TILE_PIXELS=272 # restore v0.9.0-sized VAE tiles
 H3_SDPA_CDNA_FLASH=0   # gfx90a: hipBLAS score-matrix SDPA fallback

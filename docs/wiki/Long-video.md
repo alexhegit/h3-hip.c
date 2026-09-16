@@ -18,6 +18,7 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 | **15 s all-opts** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **27 min 3 s** | **23 min 10 s** | sampler+TR+INT8 VAE; v0.11.0 |
 | **15 s `fox-15s.sh`** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **26 min 56 s** | **22 min 53 s** | reuse=2+TR; [`gfx1151-2026-09-12-fox-15s.log`](../perf-runs/gfx1151-2026-09-12-fox-15s.log) |
 | **15 s-fast** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **20 min 44 s** | **16 min 28 s** | reuse=3+TR; [`gfx1151-2026-09-12-fox-15s-fast.log`](../perf-runs/gfx1151-2026-09-12-fox-15s-fast.log) |
+| **15 s three-way** | Strix Halo (gfx1151) | **15.1 s (362 f)** | dense 40:57 / TR 27:46 / Sol 29:47 | — | labelled triptych; [`fox-15s-3way-compare-gfx1151.mp4`](../../assets/showcase/fox-15s-3way-compare-gfx1151.mp4) |
 | **15 s cinematic office** | MI210 (gfx90a) | **15.1 s (362 f)** | **12 min 12 s** | **10 min 47 s** | no TR, 2026-09-12; [`gfx90a-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx90a-2026-09-12-fox-15s-notr.log) |
 | **15 s `fox-15s.sh`** | MI210 (gfx90a) | **15.1 s (362 f)** | **8 min 13 s** | **6 min 48 s** | reuse=2+TR; [`gfx90a-2026-09-12-fox-15s.log`](../perf-runs/gfx90a-2026-09-12-fox-15s.log) |
 | **15 s-fast** | MI210 (gfx90a) | **15.1 s (362 f)** | **6 min 18 s** | **4 min 54 s** | reuse=3+TR; [`gfx90a-2026-09-12-fox-15s-fast.log`](../perf-runs/gfx90a-2026-09-12-fox-15s-fast.log) |
@@ -58,6 +59,16 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 Add `--token-reduction` and `H3_INT8_VAE=1` when wall clock matters more than
 the quality path. GPU sampler is not required on Strix Halo (gfx1151).
+
+`--sol-attn` is a further **lossy** long-SDPA option (off by default; dense
+is the quality path). Strix Halo 15 s no-TR vs dense: E2E **−27%**, SDPA
+**−42%**, video **19.55 dB / 0.721**, audio SNR **10.99 dB**. MI210:
+E2E **−18%**, SDPA **−29%**; MI300X: E2E **−11%**, SDPA **−33%**. Same-seed
+Halo three-way (dense / TR / Sol-Attn, not stacked): TR is faster
+(**1666 s**, 18.23 dB / 0.667, audio **3.11 dB**); Sol-Attn is closer to
+dense (**1787 s**, 19.55 dB / 0.721, audio **10.99 dB**). Play
+[fox-15s-3way-compare-gfx1151.mp4](../../assets/showcase/fox-15s-3way-compare-gfx1151.mp4).
+See [`docs/SOL_ATTN.md`](../SOL_ATTN.md).
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|

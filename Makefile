@@ -324,7 +324,7 @@ backends/h3_hip_probe.o: backends/h3_hip_probe.c
 backends/%.o: backends/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-kernels/h3_kernels.o: kernels/h3_kernels.hip kernels/h3_kernels.h
+kernels/h3_kernels.o: kernels/h3_kernels.hip kernels/h3_kernels_sol.hip kernels/h3_kernels.h
 	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
 
 kernels/h3_kernels_extra.o: kernels/h3_kernels_extra.hip kernels/h3_kernels.h

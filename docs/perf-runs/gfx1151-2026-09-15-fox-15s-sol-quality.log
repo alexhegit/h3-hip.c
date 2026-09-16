@@ -1,0 +1,56 @@
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'outputs/fox-15s-sol-attn-dense-gfx1151.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf60.16.100
+  Duration: 00:00:15.08, start: 0.000000, bitrate: 1871 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 864x480, 1662 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+      encoder         : Lavc60.31.102 libx264
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 201 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Input #1, mov,mp4,m4a,3gp,3g2,mj2, from 'outputs/fox-15s-sol-attn-tau05-gfx1151.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf60.16.100
+  Duration: 00:00:15.08, start: 0.000000, bitrate: 1511 kb/s
+  Stream #1:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 864x480, 1299 kb/s, 24 fps, 24 tbr, 12288 tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+      encoder         : Lavc60.31.102 libx264
+  Stream #1:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 32000 Hz, stereo, fltp, 205 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+Stream mapping:
+  Stream #0:0 (h264) -> split:default
+  Stream #1:0 (h264) -> split:default
+  psnr:default -> Stream #0:0 (wrapped_avframe)
+  ssim:default -> Stream #0:1 (wrapped_avframe)
+Press [q] to stop, [?] for help
+Output #0, null, to 'pipe:':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf60.16.100
+  Stream #0:0: Video: wrapped_avframe, yuv420p(progressive), 864x480, q=2-31, 200 kb/s, 24 fps, 24 tbn (default)
+    Metadata:
+      encoder         : Lavc60.31.102 wrapped_avframe
+  Stream #0:1: Video: wrapped_avframe, yuv420p(progressive), 864x480, q=2-31, 200 kb/s, 24 fps, 24 tbn
+    Metadata:
+      encoder         : Lavc60.31.102 wrapped_avframe
+frame=    0 fps=0.0 q=-0.0 q=-0.0 size=       0kB time=00:00:00.00 bitrate=N/A speed=   0x
+[out#0/null @ 0x5c166aef52c0] video:339kB audio:0kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: unknown
+frame=  362 fps=0.0 q=-0.0 Lq=-0.0 size=N/A time=00:00:15.04 bitrate=N/A speed= 123x
+[Parsed_ssim_3 @ 0x5c166939f6c0] SSIM Y:0.658734 (4.669071) U:0.861414 (8.582793) V:0.827458 (7.631051) All:0.720635 (5.538275)
+[Parsed_psnr_2 @ 0x5c16693ff3c0] PSNR y:18.156540 u:26.400476 v:25.082795 average:19.550390 min:16.322274 max:23.677106
+audio samples=966656 SNR=10.9927 dB ref_rms=0.16319428 err_rms=0.04603293
