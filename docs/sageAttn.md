@@ -1,14 +1,23 @@
 # SageAttention in h3-hip.c
 
-Working plan for an **opt-in HIP** port of the SageAttention **algorithm**.
+> **Status (2026-09-16): MI300X experiment complete — REJECT for merge to `main`.**  
+> Branch `sageattn` / PR [#2](https://github.com/alexhegit/h3-hip.c/pull/2) holds
+> an **opt-in** HIP implementation (`H3_SAGE_SDPA=1`) plus measured results.  
+> **Performance:** no meaningful SDPA win (+1% INT8 QK, +41% full INT8 PV).  
+> **Quality:** can reach high PSNR on short diagnostics after bugfixes, but the
+> fast paths lose fidelity and production 20-step error compounding was never
+> cleared for KEEP.  
+> **Ledger:** [`SAGEATTN_MI300X_RESULTS.md`](SAGEATTN_MI300X_RESULTS.md).  
+> **Do not merge** expecting Sage to replace dense flash, `--token-reduction`, or
+> `--sol-attn` on `main`.
+
+Working plan and notes for an **opt-in HIP** port of the SageAttention **algorithm**.
 This is not a vendor of [thu-ml/sageattention](https://github.com/thu-ml/sageattention).
 
-**Practice order:** MI300X (`gfx942`) first, then MI210 (`gfx90a`), Strix Halo
-(`gfx1151`) last.
+**Practice order (historical):** MI300X (`gfx942`) first — **stopped here (REJECT)**.
+MI210 / Strix Halo ports were **not** started after MI300X failed KEEP gates.
 
-Branch: `sageattn` (forked from `main` at the time this file landed). Do not
-retarget tagged quality scoreboards until KEEP on 15 s `--profile` + a fixed-seed
-MP4.
+Branch: `sageattn`. Default on `main` remains **dense INT8 DiT + BF16 flash SDPA**.
 
 ## Why not the official repo
 
@@ -237,57 +246,65 @@ quality gate. Use it only to prove the default (Sage off) path is untouched.
 Do not mix this work into the dirty local checkout that also holds unrelated
 trees. Land on `sageattn` only.
 
-## Results (MI300X gfx942, 2-step diagnostic)
+## MI300X experiment outcome (2026-09-04 — 2026-09-05)
 
-### Performance
+The branch **did implement** kernels and run MI300X A/B — not plan-only. Full
+tables, commit timeline, and bugfix notes:
+[`SAGEATTN_MI300X_RESULTS.md`](SAGEATTN_MI300X_RESULTS.md).
 
-| Kernel | sdpa time (70 calls) | vs BF16 MFMA |
-|--------|---------------------:|--------------|
-| BF16 MFMA (baseline) | 2.290s | — |
-| INT8 Sage per-tile | 2.290s | **0% (identical)** |
-| INT8 Sage per-row | 2.853s | **+24% slower** |
-| INT8 MFMA scalar v1 | ~2.30s | ~0% |
+### Decision: REJECT
 
-Per-tile INT8 quantization adds **zero overhead** — the absmax scale is free.
-Per-row quantization adds per-row barriers (+24%) for marginal accuracy gain.
+| KEEP gate (plan) | Measured |
+|------------------|----------|
+| sdpa −≥20% vs BF16 | **+1%** (INT8 QK) to **+41%** (INT8 QK+PV) |
+| PSNR > 30 dB, SSIM > 0.95 | **32.9 dB / 0.939** (QK only, no speed) or **38.8 dB / 0.962** (QK+PV, slower) |
+| No E2E regression from quant overhead | INT8 PV path **regresses** sdpa heavily |
+| Visual / temporal OK | Short diagnostics OK after fixes; **not** a production replacement |
 
-### Accuracy (PSNR vs BF16 MFMA, 2 steps)
+### What we learned (still useful)
 
-| Quantization | PSNR avg | PSNR y | Notes |
-|-------------|---------:|-------:|-------|
-| Per-tile absmax | 21.0 dB | 19.6 dB | 1 scale per 16×128 tile |
-| Per-row absmax | ~23 dB | — | +2.5 dB over per-tile |
+1. **AMD INT8 MFMA lane map** for `v_mfma_i32_16x16x32_i8` / CDNA2 `…16x16x16_i8`
+   was validated (`8ac757d`, ISA calculator cross-check).
+2. **K pre-quant**, register Q, K-smoothing, and per-row scales (`v7`/`v8`) are
+   documented in commit messages — accuracy can be pushed, but **not for free**.
+3. **Three PV kernel bugs** (`71f4f4b`) explained bogus 18 dB PSNR; always fix
+   correctness before tuning quant.
+4. **Bottleneck is softmax scalar work**, not MFMA — same class of reason Sol-Attn
+   (skip tiles) helps more than Sage (lower precision) on long clips.
 
-### Error compounding across steps
+### Relation to other opt-ins on `main`
 
-| Steps | PSNR (per-tile) | Notes |
-|------:|----------------:|-------|
-| 2 | 21.0 dB | Acceptable for preview |
-| 20 | ~11 dB | Unacceptable for production |
+| Knob | Mechanism | MI300X long-video status |
+|------|-----------|--------------------------|
+| Dense flash (default) | BF16 QK + FP16 PV | Quality path |
+| `--token-reduction` | Halve spatial tokens in middle blocks | **−37% … −43%** denoise/sdpa (lossy) |
+| `--sol-attn` | Skip exact KV tiles (sparse SDPA) | **−11% E2E**, **−33% SDPA** on 15 s no-TR (lossy) |
+| `H3_SAGE_SDPA=1` (this branch) | INT8 QK (+ optional INT8 PV) | **No sdpa win**; do not merge |
 
-INT8 quantization error compounds multiplicatively through 35 DiT layers × N steps.
-Even with per-row quantization, 20-step PSNR stays ~11 dB.
+### Opt-in dispatch on this branch
 
-### AMD ISA mapping (v_mfma_i32_16x16x32_i8)
+```bash
+H3_SAGE_SDPA=1          # enable experimental INT8 QK path (gfx90a+)
+H3_SAGE_MAX_STEPS=N     # optional cap on steps using Sage (default preview-only logic in backend)
+```
 
-The AMD ISA calculator confirmed the correct lane mapping:
+Default remains Sage **off**. fox-s2 md5 on the default path is unchanged when
+`H3_SAGE_SDPA` is unset.
 
-- **A matrix:** `row = lane % 16`, `col = 8 * (lane / 16)`
-- **B matrix:** `row = lane % 16`, `col = 8 * (lane / 16)`
-- **C matrix:** `row = 4 * (lane / 16) + gpr_idx`, `col = lane % 16`
+### Stale note on adaptive “preview vs production” dispatch
 
-This was verified by building the AMD ISA calculator from source and testing
-all 64 lane indices. The previous v1 kernel had incorrect mapping.
+Early commits suggested `steps <= 2` INT8 Sage with BF16 fallback for production.
+Final measurement (`10c61bf`) showed **even the 2-step “zero overhead” path does
+not beat BF16 sdpa** once the full kernel + softmax profile is accounted for, and
+20-step quality without heavy loss was never KEEP. Treat adaptive dispatch as
+**historical experiment**, not a shipping recommendation.
 
-### Conclusion
+### AMD ISA mapping reference
 
-INT8 Sage is viable **only for preview mode** (2 steps, 21 dB). For production
-quality (20 steps), BF16 MFMA is already optimal with PSNR=inf (deterministic).
+Verified lane layout for `v_mfma_i32_16x16x32_i8`:
 
-**Recommended dispatch:**
-- `steps <= 2`: use INT8 Sage (zero overhead, 21 dB acceptable)
-- `steps > 2`: use BF16 MFMA (deterministic, higher quality)
+- **A / B:** `row = lane % 16`, `col = 8 * (lane / 16)`
+- **C:** `row = 4 * (lane / 16) + gpr_idx`, `col = lane % 16`
 
-**Key contribution:** Fixed AMD ISA `v_mfma_i32_16x16x32_i8` lane mapping
-for both QK^T INT8 and BF16 PV via rocWMMA. This is the foundation for any
-future INT8 MFMA work on gfx90a/gfx942.
+See commit `8ac757d` and the ISA calculator notes in
+[`SAGEATTN_MI300X_RESULTS.md`](SAGEATTN_MI300X_RESULTS.md).

@@ -1,104 +1,137 @@
-# SageAttention INT8 on MI300X (gfx942) — 结论
+# SageAttention INT8 on MI300X (gfx942) — experiment record
 
-## 结论：SageAttention INT8 在 MI300X 上无法获得性能提升
+**Branch:** `sageattn` (PR [#2](https://github.com/alexhegit/h3-hip.c/pull/2)).  
+**Decision:** **REJECT for merge to `main`.** Opt-in code stays on this branch for
+reference only.
 
-SDPA（Scaled Dot-Product Attention）在 MI300X 上是**内存带宽瓶颈**，不是计算瓶颈。
-INT8 量化可以降低计算量，但无法降低 V 矩阵的 HBM 读取带宽，因此 MFMA 加速被完全掩盖。
+**One-line summary:** We implemented Sage1-style INT8 \(QK^\top\) (+ optional
+INT8 \(PV\)) on MI300X, fixed several correctness bugs, and measured end-to-end.
+**SDPA did not get faster** (+1% best case, +41% with full INT8 PV). **Quality
+can be tuned** (up to ~38.8 dB PSNR on a 2-step diagnostic after bugfixes), but
+that path is **slower**, and production 20-step runs still lose badly to dense
+flash unless you accept large error. The bottleneck is **online softmax / scalar
+work**, not MFMA throughput.
 
----
-
-## 测试环境
-
-- **GPU**: AMD MI300X (gfx942), CDNA3, 192 GB HBM3, ~6 TB/s
-- **模型**: MiniMax-H3, head_dim=128, 24 heads
-- **测试**: 100 frames, 2 denoise steps, seed=42, prompt="A red fox walking through a snowy forest"
-- **基线**: BF16 SDPA（标准 MFMA D=128 内核）
-
----
-
-## 性能数据
-
-### 100f 2步 sdpa 时间
-
-| 路径 | sdpa 时间 | 相对基线 | PSNR | SSIM |
-|------|----------|---------|------|------|
-| BF16 基线 | **2.837s** | — | — | — |
-| INT8 QK + BF16 PV | **2.866s** | +1.0% | 32.9 dB | 0.939 |
-| INT8 QK + INT8 PV | **4.007s** | +41.3% | 38.8 dB | 0.962 |
-| INT8 QK + INT8 PV (pvs hoist) | **4.007s** | +41.3% | 38.8 dB | 0.962 |
-
-### Token Reduction 效果（唯一有效的优化）
-
-| 配置 | sdpa 时间 | 相对无 token reduction |
-|------|----------|---------------------|
-| 100f 2步 baseline | 2.837s | — |
-| 100f 20步 baseline | 28.77s | — |
-| 100f 20步 + token reduction | **16.31s** | **-43%** |
+See also the design notes in [`sageAttn.md`](sageAttn.md).
 
 ---
 
-## 根本原因分析
+## Test environment
 
-### 带宽分析
-
-SDPA 内核每步需要加载的数据：
-- **Q**: 128 × 2 bytes = 256 bytes（寄存器，不占 HBM）
-- **K**: 32 × 128 × 1 byte = 4 KB（INT8）/ 8 KB（BF16）
-- **V**: 32 × 128 × 1 byte = 4 KB（INT8）/ 8 KB（BF16）
-- **P**: 32 × 16 × 1 byte = 512 bytes（INT8，寄存器）
-
-V 矩阵在 BK=32 时每次加载 4 KB（INT8）或 8 KB（BF16）。
-但在 100f 2步中，序列长度 ~2500，BK=32 需要 ~79 次迭代。
-总 V 数据: 2500 × 128 × 2 bytes = **640 KB/head** × 24 heads = **15.4 MB**
-
-HBM 带宽 6 TB/s → V 加载时间 ~2.6 μs/head/step。
-但实际 sdpa 时间 2.837s / (35 layers × 2 steps × 24 heads) = **1.69 ms/head/step**。
-
-**V 加载仅占 sdpa 时间的 0.15%**。瓶颈在于 online softmax 的标量计算（exp、shuffle reduction、P 量化）。
-
-### 为什么 INT8 PV 没有帮助
-
-1. **MFMA 计算只占 sdpa 的 ~20%**：8 次 PV MFMA × ~8 cycles = 64 cycles/tile，但 softmax + P 量化需要 ~320 cycles/tile
-2. **INT8 MFMA 2x 加速被掩盖**：PV MFMA 从 64 cycles 降到 32 cycles，但 softmax 仍需 320 cycles
-3. **V 量化额外开销**：`h3_sage_quant_v_int8_kernel` 每层每步需要额外的 kernel launch + HBM 读写
-
-### 为什么 INT8 QK 没有帮助
-
-INT8 QK 节省 K 矩阵加载带宽（BF16 → INT8），但：
-- K 加载仅占 sdpa 的 ~5%
-- 节省的 ~4 KB/step × 2500/32 = 312 KB → 0.05 μs
-- P 量化的额外标量计算抵消了这点节省
-
-### 为什么 FP8 PV 不可行
-
-gfx942 的 FP8 使用 FNuz 格式（bias=8, max=224, NaN=0x80），不是 OCP E4M3（max=448）。
-- FP8 max representable = 224，低于 INT8 的 127 × 2 = 254
-- 3-mantissa-bit e4m3 FNUZ 有 12% 相对误差
-- 35 layers × N steps 的误差累积导致 e2e PSNR 仅 16.7 dB
+| Item | Value |
+|------|--------|
+| GPU | AMD MI300X (`gfx942`), CDNA3, 192 GiB HBM3 |
+| Model | MiniMax-H3, `head_dim=128`, 56 heads (DiT), 24 heads in some early benches |
+| Primary diagnostic | 100 frames, **2 denoise steps**, seed 42, fox prompt |
+| Baseline | BF16 flash SDPA (`h3_launch_sdpa_bf16`, MFMA D=128) |
+| Opt-in | `H3_SAGE_SDPA=1` (default **off**); optional `H3_SAGE_MAX_STEPS=N` |
 
 ---
 
-## 修复的 Bug（提交 71f4f4b）
+## Final numbers (after v7–v8 + QK+PV bugfixes)
 
-`h3_sdpa_int8qk_mfma_d128_kernel` 有 3 个正确性 bug，导致 PSNR 仅 18 dB：
+### SDPA wall (`sdpa=` from `--profile`, 100f · 2 steps)
 
-1. **PV 循环次数**: `D_TILES=4`（K-dim tiling）应为 `PV_TILES=8`（D/16，N-dim tiling）
-2. **输出 d 索引**: `j*MFMA_K(32)` 应为 `j*16`
-3. **V 加载缺少 head 偏移**: `load_kv` 所有 head 都在读 head 0 的 V 数据
+| Path | sdpa | vs BF16 | Video PSNR / SSIM vs BF16 | Notes |
+|------|-----:|--------:|---------------------------|--------|
+| **BF16 baseline** | **2.837 s** | — | reference (deterministic) | Production default on `main` |
+| INT8 QK + BF16 PV | **2.866 s** | **+1.0%** | **32.9 dB / 0.939** | No speed win; mild quality loss |
+| INT8 QK + INT8 PV | **4.007 s** | **+41.3%** | **38.8 dB / 0.962** | Slower; extra V-quant + traffic |
 
-修复后 PSNR 从 18 dB 恢复到 38.8 dB。
+**Takeaway:** There is **no performance benefit**. The “high quality” INT8 PV
+path is **much slower**. INT8 QK alone is a wash on speed with **~7 dB** PSNR
+drop on this diagnostic.
+
+### Long-sequence reference (what actually moves wall clock)
+
+| Config | sdpa (100f · 20 steps) | vs no TR |
+|--------|------------------------:|---------|
+| BF16 baseline | 28.77 s | — |
+| `--token-reduction` | **16.31 s** | **−43%** |
+
+Token reduction (on `main`) remains the validated MI300X lever for long SDPA.
+Sol-Attn (merged on `main` after this branch) is a **separate** opt-in sparse
+path; Sage INT8 QK is **orthogonal** and did not beat dense flash here.
 
 ---
 
-## 关键结论
+## Experiment timeline (branch commits)
 
-1. **SageAttention INT8 在 MI300X 上不可行**：SDPA 是带宽瓶颈，不是计算瓶颈
-2. **Token reduction 是唯一有效的优化**：43% sdpa 减少
-3. **INT8 QK 单独也不可行**：节省的 K 带宽微不足道
-4. **FP8 PV 不可行**：FNUZ 格式误差太大
+| Phase | Commit | What we tried | Outcome |
+|-------|--------|---------------|---------|
+| Plan | `f433bf1` | HIP port plan, no CUDA/Triton vendor | — |
+| v1 | `d2a4bf5` | Scalar INT8 QK | PSNR **8.69 dB** — broken |
+| v5–v6 | `8ac757d` | MFMA INT8 QK + rocWMMA PV; AMD lane map fix | ~21 dB @ 2 steps; ISA map validated |
+| v7 | `9b1f977` | Pre-quant K, register Q, LDS bank padding | **9% faster** sdpa @ 2 steps, PSNR 28.5 dB — superseded by later analysis |
+| v8 | `de4aa46` | K-smoothing + per-row scales | PSNR **36.6 dB** @ 2 steps, **27.7 dB** @ 20 steps — still no stable E2E win vs BF16 at production steps |
+| QK+PV | `71f4f4b` | Full INT8 QK+PV; **3 correctness bugs fixed** | PSNR **18 → 38.8 dB**; sdpa **+41%** vs BF16 |
+| Close-out | `10c61bf` | Root-cause write-up | **REJECT** — bandwidth / softmax bound |
 
-## 推荐后续方向
+### Correctness bugs fixed in INT8 QK+PV kernel (`71f4f4b`)
 
-- Token reduction（已验证有效）
-- 长视频优化（15s cinematic，H3_SAGE_MAX_STEPS=100）
-- 其他带宽优化（double buffering、prefetching）
+1. **PV tile count:** used `D_TILES=4` (K tiling) instead of `PV_TILES=8` (D/16).
+2. **Output indexing:** wrote with `j*32` instead of `j*16` for PV MFMA N=16.
+3. **V load:** missing per-head offset in transposed V layout.
+
+Until these were fixed, measured “quality” was meaningless (PSNR ~18 dB).
+
+---
+
+## Root cause (why INT8 MFMA did not help)
+
+1. **Online softmax dominates.** Per KV tile, softmax + P quant ≈ **320 cycles**;
+   PV MFMA ≈ **64 cycles** (~20% of tile time). Halving MFMA saves ~32 cycles
+   that are invisible next to softmax.
+2. **K bandwidth is tiny.** INT8 QK halves K bytes, but K is ~**5%** of SDPA
+   traffic; savings are microsecond-scale and lost in scalar work.
+3. **INT8 PV adds overhead.** Extra `h3_sage_quant_v_int8_kernel` launch +
+   HBM read/write **increases** wall time despite higher PSNR.
+4. **FP8 PV rejected.** gfx942 FP8 FNUZ (max 224) accumulated error → ~**16.7 dB**
+   E2E PSNR in early trials; not pursued.
+
+---
+
+## Quality vs performance (plain language)
+
+| Question | Answer |
+|----------|--------|
+| Did Sage make MI300X **faster**? | **No** (+1% … +41% sdpa on measured paths). |
+| Did Sage **always** reduce quality? | **No** — after fixes, INT8 QK+PV reached **38.8 dB** on the 2-step diagnostic, but **slower** than BF16. |
+| Best “free” quality path on `main`? | **Dense INT8 DiT + BF16 flash SDPA** (default). |
+| Best **fast** long-video knobs on `main`? | **`--token-reduction`** and/or **`--sol-attn`** (each lossy; documented separately). |
+
+**Do not merge this branch** expecting Sage to replace those knobs on MI300X.
+
+---
+
+## How to reproduce on this branch
+
+```bash
+git checkout sageattn
+make HIP_ARCH=gfx942 clean h3
+
+# Default (Sage off) — same as main dense path for SDPA
+H3_MODEL=/path/to/MiniMax-H3 ./bench/fox-fast.sh
+
+# Opt-in Sage (exploration only)
+H3_SAGE_SDPA=1 H3_MODEL=/path/to/MiniMax-H3 ./h3 --profile ...
+```
+
+---
+
+## 中文摘要
+
+**结论：SageAttention INT8 在 MI300X 上无法获得可用的性能提升，不建议合入 main。**
+
+- **性能：** INT8 QK + BF16 PV 的 sdpa **+1%**（无收益）；INT8 QK + INT8 PV **+41%**（更慢）。
+- **质量：** 修 bug 后 2 步诊断可达 **38.8 dB**，但路径更慢；INT8 QK + BF16 PV 约 **32.9 dB** 且无加速。
+- **根因：** SDPA 瓶颈在 online softmax 标量计算，不在 MFMA；INT8 省下的 K/V 带宽和 MFMA 周期被掩盖。
+- **对比：** 同平台上 **token reduction**（−43% sdpa）和 **Sol-Attn**（main 上已测）才是长视频加速方向；Sage 本分支保留作实验记录。
+
+---
+
+## Recommended follow-ups (not on this branch)
+
+- Use **`--token-reduction`** or **`--sol-attn`** on `main` when wall clock beats fidelity.
+- Keep **`H3_SAGE_SDPA=0`** on any production / scoreboard path.
+- Re-open Sage only if a new hypothesis changes the softmax-bound profile (unlikely on gfx942 flash as implemented today).
