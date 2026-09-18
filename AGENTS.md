@@ -77,7 +77,8 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 ## Documentation
 
 - `docs/BEST_PRACTICE.md` — quick reference for optimal settings
-- `docs/PERFORMANCE.md` — scoreboard numbers for all ISAs
+- `docs/PERFORMANCE.md` — scoreboard; MI300X process E2E vs DiT total
+- `docs/perf-runs/MI300X_2026-09-18_full.md` — 2026-09-18 MI300X retake
 - `docs/SOL_ATTN.md` — opt-in lossy Sol-Attn (speed vs quality vs dense)
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options

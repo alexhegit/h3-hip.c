@@ -3,6 +3,8 @@
 Machine: AMD Ryzen AI MAX+ 395 / Radeon 8060S (`gfx1151`).  
 Purpose: dated E2E + phase timings for ongoing optimization and A/B comparison.
 
+**Current (v0.12.0 MI300X process E2E):** [`MI300X_2026-09-18_full.md`](MI300X_2026-09-18_full.md) (warm **10.6 s**, denoise **0.29 s**). Halo ledger below.
+
 ## Canonical preset (fox short)
 
 ```bash

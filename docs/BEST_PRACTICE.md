@@ -56,10 +56,11 @@ H3_INT8_VAE=1 H3_GPU_SAMPLER=1 ./h3 \
 ```
 
 Default **fox-fast** (`./bench/fox-fast.sh`, no extra flags) on MI300X:
-warm **process E2E 9.8 s** (n=10), DiT total **5.0 s**, denoise **1.94 s**.
-Cold first run ~20 s. Do not quote DiT total as time-to-MP4.
+warm **process E2E 9.8 s**, DiT total **5.0 s**, denoise **1.94 s**.
+Default **fox-s2** process E2E **10.6 s**, denoise **0.29 s**. Cold first
+run ~20 s. Do not quote DiT total as time-to-MP4.
 [`PERFORMANCE.md`](PERFORMANCE.md),
-[`perf-runs/MI300X_2026-09-18_fox-fast.md`](perf-runs/MI300X_2026-09-18_fox-fast.md).
+[`perf-runs/MI300X_2026-09-18_full.md`](perf-runs/MI300X_2026-09-18_full.md).
 
 fox-s2 with the flags above (not the fox-fast scoreboard):
 
@@ -80,8 +81,8 @@ H3_INT8_VAE=1 H3_TOKEN_REDUCTION=1 H3_GPU_SAMPLER=1 ./h3 \
 
 | Setting | DiT | E2E | VRAM | PSNR | vs gold |
 |---------|----:|----:|-----:|-----:|--------:|
-| no TR (baseline) | 176 s | ~210 s | ~28 GiB | 29.5 dB | −4 dB |
-| TR 4:30 (`--token-reduction`) | 112 s | ~145 s | ~32 GiB | 20.4 dB | −13 dB |
+| no TR (baseline) | 176 s | **213 s** | ~28 GiB | 29.5 dB | −4 dB |
+| TR 4:30 (`--token-reduction`) | 111 s | **149 s** | ~28 GiB | 20.4 dB | −13 dB |
 | TR schedule `50→45→30` | 79 s | ~111 s | ~32 GiB | 19.3 dB | −14 dB |
 
 > TR 4:30 trades 13 dB for −37% denoise. Spatial detail (fur, textures) softens
@@ -102,7 +103,7 @@ Or use the preset script: `./bench/fox-15s-fast.sh`
 
 | Setting | DiT | E2E | VRAM | PSNR | vs gold |
 |---------|----:|----:|-----:|-----:|--------:|
-| reuse=3 + TR 4:45 | 62 s | ~90 s | ~32 GiB | ~15 dB | −18 dB |
+| reuse=3 + TR 4:45 | 80 s | **118 s** | ~28 GiB | ~15 dB | −18 dB |
 | reuse=3 + TR schedule | 57 s | ~85 s | ~32 GiB | ~13 dB | −20 dB |
 
 > ~15 dB: noticeable softness across the frame, some temporal drift in fine
@@ -214,13 +215,14 @@ H3_TOKEN_REDUCTION_SCHEDULE="0:4:50,10:4:45,20:4:30" \
 | Schedule `4:50` full | 14.3 s | lower | — | draft |
 | Schedule `4:50→disable` | 23.2 s | 19.0 dB | −14 dB | preview |
 
-**15 s cinematic** (864×480, 20 steps, 45 layers, reuse=2):
+**15 s cinematic** (864×480, 20 steps, 45 layers, reuse=2), MI300X
+2026-09-18 process E2E:
 
-| Config | DiT | PSNR | vs gold | Label |
-|--------|----:|-----:|--------:|-------|
-| no TR | 176.2 s | 29.5 dB | −4 dB | high |
-| TR 4:30 | 111.5 s | ~20 dB | −13 dB | good |
-| Schedule `50→45→30` | 79.3 s | ~19 dB | −14 dB | preview |
+| Config | Denoise | Process E2E | PSNR | vs gold | Label |
+|--------|--------:|------------:|-----:|--------:|-------|
+| no TR | 175.5 s | **213 s** | 29.5 dB | −4 dB | high |
+| TR 4:30 | 111.0 s | **149 s** | ~20 dB | −13 dB | good |
+| reuse=3 + TR (`fox-15s-fast.sh`) | 80.1 s | **118 s** | ~15 dB | −18 dB | preview |
 
 ## Trade-off Summary
 

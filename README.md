@@ -35,23 +35,22 @@ Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.m
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 | ~85–90 s (I/O) | **11.2 s** | DiT **3.3 s** |
+| fox-s2 | ~85–90 s (I/O) | **11.2 s** | **10.6 s** |
 | fox-fast | ~2 min (I/O) | **19.5 s** | **9.8 s** |
-| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **179.5 s** (no TR) / **114.7 s** (`fox-15s.sh`) |
+| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **213 s** (no TR) / **149 s** (`fox-15s.sh`) |
 
 These are **complete muxed MP4s** (video + audio), not stubs. Headline
 cells are **process E2E** (`/usr/bin/time` until the MP4 is written)
-except Halo short clips (I/O-bound) and MI300X fox-s2 (**DiT** =
-`--profile` `H3 DiT total`; process E2E not re-timed). MI300X fox-fast
-**9.8 s** is a 2026-09-18 warm-cache mean of 10 runs of
-`./bench/fox-fast.sh` at v0.12.0 (9.71–9.89 s, σ=0.05). On that preset
-DiT total is **5.0 s** and denoise **1.94 s**; a cold first run is ~20 s
-(weight I/O). Do not quote 5.0 s as time-to-MP4. fox-s2 and fox-fast are
-both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only in DiT
-knobs. The README fox **showcase** clip is a third preset (`--layers 50
---reuse 1`). The 15 s cinematic reuses fox-fast quality knobs at 864×480 /
-362 frames. Ledger:
-[`docs/perf-runs/MI300X_2026-09-18_fox-fast.md`](docs/perf-runs/MI300X_2026-09-18_fox-fast.md).
+except Halo short clips (I/O-bound). MI300X numbers are a 2026-09-18
+retake of tag v0.12.0 (`b0ff702`): fox-s2 warm n=5 mean **10.6 s**
+(denoise **0.29 s**); fox-fast warm n=5 mean **9.8 s** (denoise **1.94 s**,
+DiT total **5.0 s**); 15 s no-TR **213 s** (denoise **176 s**).
+`fox-15s-fast.sh` process E2E is **118 s**. Do not quote DiT total as
+time-to-MP4 (fox-fast DiT **5.0 s**, 15 s no-TR DiT **179 s**). Cold
+fox-fast is ~20 s. fox-s2 and fox-fast are both **512² · 22 frames
+(~0.9 s at 24 fps)**. The README fox **showcase** clip is a third preset
+(`--layers 50 --reuse 1`). Ledger:
+[`docs/perf-runs/MI300X_2026-09-18_full.md`](docs/perf-runs/MI300X_2026-09-18_full.md).
 
 | Name | Size | Knobs | Role |
 |------|------|-------|------|
@@ -79,8 +78,8 @@ port. Click a poster for the MP4. Several clips are **untitled** model output
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
 without TR (`main` 2026-09-12); `./bench/fox-15s.sh` (TR 4:30) is **26 min 56 s**
 on Strix Halo (gfx1151); **15 s E2E 12 min 12 s** / `fox-15s.sh` **8 min 13 s**
-on MI210 (gfx90a); **15 s E2E 179.5 s** / `fox-15s.sh` **114.7 s**
-on MI300X (gfx942) / `fox-15s-fast.sh` **83.1 s**.
+on MI210 (gfx90a); **15 s process E2E 213 s** / `fox-15s.sh` **149 s**
+on MI300X (gfx942) / `fox-15s-fast.sh` **118 s**.
 Halo same-seed 15 s **lossy** A/B (2026-09-16): `fox-15s.sh` TR is **27 min 46 s**
 at **18.23 dB / 0.667** vs dense; `--sol-attn` is **29 min 47 s** at
 **19.55 dB / 0.721** (audio SNR 3.11 dB vs 10.99 dB). TR is faster; Sol-Attn
@@ -222,8 +221,8 @@ Same 15 s cinematic: Strix Halo (gfx1151) no-TR **40 min 4 s**;
 `./bench/fox-15s.sh` **26 min 56 s**; `./bench/fox-15s-fast.sh` **20 min 44 s**.
 MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
 `fox-15s-fast.sh` **6 min 18 s**.
-MI300X (gfx942) no-TR **179.5 s**; `fox-15s.sh` **114.7 s**;
-`fox-15s-fast.sh` **83.1 s**.
+MI300X (gfx942) no-TR **213 s**; `fox-15s.sh` **149 s**;
+`fox-15s-fast.sh` **118 s**.
 **`--sol-attn`** is a separate opt-in. Default stays dense (quality). 15 s no-TR
 versus dense: MI210 E2E **−18%** / SDPA **−29%** (18.73 dB / 6.69 dB SNR);
 MI300X E2E **−11%** / SDPA **−33%** (19.19 dB / 8.69 dB SNR); Strix Halo
@@ -238,7 +237,7 @@ Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
 Known issues) live only on GitHub wiki. In-tree copies of Getting started,
 T2VA pipeline, and Long video are under `docs/wiki/`. After this retake,
 republish the GitHub wiki **Performance** / Home pages so they do not still
-say MI300X fox-fast “5.2 s E2E”.
+say MI300X fox-fast “5.2 s E2E” or 15 s “179.5 s E2E” (those were DiT total).
 
 ## Requirements
 

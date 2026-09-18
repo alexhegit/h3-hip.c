@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # 15s cinematic benchmark (864×480, 362 frames, 20 steps, 45 layers)
-# reuse=2 + TR 4:30. Lossy vs no-TR: Halo 2026-09-16 was 18.23 dB / 0.667
-# SSIM and 3.11 dB audio SNR vs dense (not PSNR=inf). See docs/SOL_ATTN.md.
+# reuse=2 + TR 4:30. MI300X process E2E ~149 s (DiT ~114 s). See docs/SOL_ATTN.md.
 # Faster, more lossy: ./bench/fox-15s-fast.sh (reuse=3, TR 4:45).
 set -euo pipefail
 

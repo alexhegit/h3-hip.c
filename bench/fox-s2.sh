@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fox-s2 benchmark (512², 22 frames, 2 steps, 35 layers, reuse 1)
-# Short smoke test for HIP A/B. ~15s on MI300X, ~85-90s on Strix Halo.
+# Short smoke test for HIP A/B. MI300X warm process E2E ~10.6 s; denoise 0.29 s.
 # Usage: ./bench/fox-s2.sh [/path/to/MiniMax-H3] [--profile]
 set -euo pipefail
 

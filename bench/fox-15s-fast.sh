@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FAST preset: reuse=3 + TR 4:45 (MI300X ~62s DiT, ~15 dB quality trade)
+# FAST preset: reuse=3 + TR 4:45 (MI300X process E2E ~118 s, DiT ~83 s, ~15 dB)
 # For the slower TR 4:30 preset: ./bench/fox-15s.sh (still lossy vs no-TR)
 set -euo pipefail
 

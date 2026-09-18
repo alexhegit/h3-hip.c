@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fox-fast benchmark (512², 22 frames, 20 steps, 45 layers, reuse 2)
 # Upstream tutorial "first fast video" knobs.
-# MI300X warm process E2E ~9.8 s (n=10); DiT total ~5.0 s; denoise ~1.94 s.
+# MI300X warm process E2E ~9.8 s; DiT total ~5.0 s; denoise ~1.94 s.
 # Usage: ./bench/fox-fast.sh [/path/to/MiniMax-H3] [--profile]
 set -euo pipefail
 

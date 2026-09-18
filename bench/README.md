@@ -7,10 +7,10 @@ All scripts use `--profile` and print per-phase GPU timing.
 
 | Script | Resolution | Frames | Steps | Layers | Reuse | Quality | Use case |
 |--------|-----------|--------|-------|--------|-------|---------|----------|
-| `fox-s2.sh` | 512×512 | 22 | 2 | 35 | 1 | Lossless | Quick smoke / A/B (< 2 min) |
+| `fox-s2.sh` | 512×512 | 22 | 2 | 35 | 1 | Lossless | HIP A/B (MI300X warm process E2E **10.6 s**) |
 | `fox-fast.sh` | 512×512 | 22 | 20 | 45 | 2 | Lossless | Standard short clip (MI300X warm process E2E **9.8 s**; DiT total 5.0 s) |
-| `fox-15s.sh` | 864×480 | 362 | 20 | 45 | 2 | **~18 dB vs no-TR** (Halo) | Long cinematic; TR 4:30, lossy |
-| `fox-15s-fast.sh` | 864×480 | 362 | 20 | 45 | 3 | **~15 dB** | Fast long cinematic (~90s MI300X) |
+| `fox-15s.sh` | 864×480 | 362 | 20 | 45 | 2 | **~18 dB vs no-TR** (Halo) | Long cinematic; TR 4:30; MI300X process E2E **149 s** |
+| `fox-15s-fast.sh` | 864×480 | 362 | 20 | 45 | 3 | **~15 dB** | Fast long cinematic; MI300X process E2E **118 s** |
 
 Default scoreboard is the four scripts above (plus a hand-run 15 s **without**
 TR). Do **not** include schedule in automated / default retunes.
@@ -102,17 +102,16 @@ MI300X VF, 192 GiB. Logs under
 [`docs/perf-runs/MI300X_2026-09-12.md`](../docs/perf-runs/MI300X_2026-09-12.md).
 Default DiT is INT8.
 
-Short-clip **DiT total** here is 2026-09-12 `--profile`. Warm **process
-E2E** for fox-fast at v0.12.0 is **9.8 s** (n=10; ~20 s cold):
-[`docs/perf-runs/MI300X_2026-09-18_fox-fast.md`](../docs/perf-runs/MI300X_2026-09-18_fox-fast.md).
-15 s rows are process-class walls.
+2026-09-12 columns below are **DiT total**. 2026-09-18 **process E2E**
+(tag v0.12.0 `b0ff702`):
+[`docs/perf-runs/MI300X_2026-09-18_full.md`](../docs/perf-runs/MI300X_2026-09-18_full.md).
 
-| Script | DiT denoise | DiT total | sdpa / linear | vs no-TR denoise |
-|--------|----------:|----:|---------------|-----------------:|
-| `fox-s2.sh` | **0.29 s** | **3.27 s** | 0.05 / 0.18 s | — |
-| `fox-fast.sh` | **1.94 s** | **5.21 s** | 0.39 / 1.17 s | — |
-| no TR 15 s | **176.2 s** | **179.5 s** | 139.8 / 28.7 s | — |
-| `fox-15s.sh` | **111.3 s** | **114.7 s** | 83.4 / 21.1 s | **−37%** |
-| `fox-15s-fast.sh` | **79.9 s** | **83.1 s** | 59.8 / 15.1 s | **−55%** |
+| Script | Denoise | DiT total (2026-09-12) | Process E2E (2026-09-18) |
+|--------|----------:|-----------------------:|-------------------------:|
+| `fox-s2.sh` | **0.29 s** | **3.27 s** | **10.6 s** |
+| `fox-fast.sh` | **1.94 s** | **5.21 s** | **9.8 s** |
+| no TR 15 s | **176 s** | **179.5 s** | **213 s** |
+| `fox-15s.sh` | **111 s** | **114.7 s** | **149 s** |
+| `fox-15s-fast.sh` | **80 s** | **83.1 s** | **118 s** |
 
 Do not use `--token-reduction` on fox-s2 / fox-fast.

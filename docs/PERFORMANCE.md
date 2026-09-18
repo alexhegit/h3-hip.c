@@ -21,20 +21,22 @@ Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 process E2E | ~85–90 s (I/O) | **11.2 s** | — (DiT total **3.3 s**) |
+| fox-s2 process E2E | ~85–90 s (I/O) | **11.2 s** | **10.6 s** (DiT total **3.2 s**) |
 | fox-fast process E2E | ~2 min (I/O) | **19.5 s** | **9.8 s** (DiT total **5.0 s**) |
-| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **179.5 s** (no TR, 2026-09-12) |
-| 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | **8 min 13 s** (2026-09-12) | **114.7 s** (2026-09-12) |
+| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **213 s** (no TR, 2026-09-18) |
+| 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | **8 min 13 s** (2026-09-12) | **149 s** (2026-09-18) |
 
-MI210 short-clip cells and all 15 s rows are `/usr/bin/time` to the muxed
-MP4 (`TIME_E2E` in the gfx90a logs). MI300X fox-fast **9.8 s** is the
-2026-09-18 warm-cache **mean of 10** `bench/fox-fast.sh` runs at tag
-v0.12.0 (9.71–9.89 s, σ=0.05; denoise **1.94 s**). Full table:
-[`perf-runs/MI300X_2026-09-18_fox-fast.md`](perf-runs/MI300X_2026-09-18_fox-fast.md).
-The 2026-09-12 scoreboard **5.21 s** is `--profile` **H3 DiT total**, not
-process wall. Cold process E2E on the retake was **~20 s**. Do not compare
-DiT total to v0.11.0 fox-fast **~12 s** (that cell was process E2E;
-denoise was already **1.86 s**).
+MI210 short-clip cells and Halo / MI210 15 s rows are `/usr/bin/time` to
+the muxed MP4 (`TIME_E2E` in the gfx90a logs). MI300X process E2E is the
+2026-09-18 retake of tag v0.12.0 (`b0ff702`): fox-s2 warm n=5 mean
+**10.6 s**; fox-fast warm n=5 mean **9.76 s** (same as the earlier n=10
+**9.82 s**); 15 s no-TR **213 s**, `fox-15s.sh` **149 s**,
+`fox-15s-fast.sh` **118 s**. Denoise matches 2026-09-12. The 2026-09-12
+MI300X cells (3.27 / 5.21 / 179.5 / 114.7 / 83.1 s) are **DiT total**,
+not process wall. Ledger:
+[`perf-runs/MI300X_2026-09-18_full.md`](perf-runs/MI300X_2026-09-18_full.md).
+Do not compare DiT total to v0.11.0 fox-fast **~12 s** (that cell was
+process E2E; denoise was already **1.86 s**).
 
 Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
@@ -270,10 +272,11 @@ Model: `/mnt/doscratch/MiniMax-H3`.
 Canonical scripts from `bench/`. 15 s **without** TR used `fox-15s.sh` minus
 `--token-reduction`. Neither 15 s run used `H3_INT8_VAE` or `H3_GPU_SAMPLER`.
 
-The 2026-09-12 short-clip cells below are `--profile` **H3 DiT total**,
-not process E2E. 15 s cells are process-class walls (denoise dominates).
-Warm fox-fast **process E2E** at v0.12.0 is **9.8 s** (n=10):
-[`perf-runs/MI300X_2026-09-18_fox-fast.md`](perf-runs/MI300X_2026-09-18_fox-fast.md).
+The 2026-09-12 cells below are `--profile` **H3 DiT total**, not process
+E2E (including the 15 s rows). Process E2E on tag v0.12.0 (`b0ff702`,
+2026-09-18): fox-s2 **10.6 s**, fox-fast **9.8 s**, 15 s no-TR **213 s**,
+`fox-15s.sh` **149 s**, `fox-15s-fast.sh` **118 s**.
+[`perf-runs/MI300X_2026-09-18_full.md`](perf-runs/MI300X_2026-09-18_full.md).
 
 | Preset | Script | DiT total | Denoise wall | sdpa / linear | Video VAE | Peak |
 |--------|--------|-----------------:|-------------:|---------------|----------:|-----:|
@@ -296,6 +299,23 @@ Logs:
 - [`gfx942-2026-09-12-fox-15s-notr.log`](perf-runs/gfx942-2026-09-12-fox-15s-notr.log)
 - [`gfx942-2026-09-12-fox-15s.log`](perf-runs/gfx942-2026-09-12-fox-15s.log)
 - [`gfx942-2026-09-12-fox-15s-fast.log`](perf-runs/gfx942-2026-09-12-fox-15s-fast.log)
+
+## MI300X (gfx942) — 2026-09-18 process E2E
+
+Same SKU, tag **v0.12.0** @ `b0ff702`. `hip-test` and `hip-functional`
+passed. Default knobs. Full n-tables:
+[`perf-runs/MI300X_2026-09-18_full.md`](perf-runs/MI300X_2026-09-18_full.md).
+
+| Preset | Process E2E | DiT total | Denoise | Video VAE |
+|--------|------------:|----------:|--------:|----------:|
+| fox-s2 (warm n=5) | **10.6 s** | 3.19 s | **0.291 s** | 1.14 s |
+| fox-fast (warm n=5) | **9.8 s** | 5.03 s | **1.94 s** | 1.14 s |
+| 15 s no TR | **213 s** | 178.6 s | **175.5 s** | 28.6 s |
+| `fox-15s.sh` | **149 s** | 114.2 s | **111.0 s** | 28.7 s |
+| `fox-15s-fast.sh` | **118 s** | 83.1 s | **80.1 s** | 28.6 s |
+
+Denoise is unchanged vs 2026-09-12. Process E2E on 15 s is DiT plus
+~2.9 s text encoder plus ~28.6 s video VAE.
 
 ## MI300X (gfx942) — v0.11.0 (2026-09-02)
 
