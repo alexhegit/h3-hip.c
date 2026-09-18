@@ -9,7 +9,8 @@ no-TR process E2E is **199 s** on v0.13.0 (v0.12.0 was **213 s**; denoise
 (11 DiT evaluations), 864×480, T2VA, no references.
 
 Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
-([Getting started](Getting-started.md)).
+([Getting started](Getting-started.md)). Why 15 s is SDPA-bound, and what
+TR / Sol-Attn / INT8 actually change: [Optimizations](Optimizations.md).
 
 ## Showcase clips
 

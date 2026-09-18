@@ -206,7 +206,8 @@ Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
 - **Wiki sources** (also published to the GitHub wiki):
   [Getting started](docs/wiki/Getting-started.md),
   [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
-  [Long video](docs/wiki/Long-video.md)
+  [Long video](docs/wiki/Long-video.md),
+  [Optimizations](docs/wiki/Optimizations.md)
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
 - **`--sol-attn`** (lossy long SDPA; off by default): [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md)
@@ -240,9 +241,10 @@ stderr warning when `--token-reduction` or `H3_TOKEN_REDUCTION_SCHEDULE` is on.
 
 Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
 Known issues) live only on GitHub wiki. In-tree copies of Getting started,
-T2VA pipeline, and Long video are under `docs/wiki/`. After this retake,
-republish the GitHub wiki **Performance** / Home pages so they do not still
-say MI300X fox-fast “5.2 s E2E” or 15 s “179.5 s E2E” (those were DiT total).
+T2VA pipeline, Long video, and Optimizations are under `docs/wiki/`. After this
+retake, republish the GitHub wiki **Performance** / Home pages so they do not
+still say MI300X fox-fast “5.2 s E2E” or 15 s “179.5 s E2E” (those were DiT
+total).
 
 ## Requirements
 
