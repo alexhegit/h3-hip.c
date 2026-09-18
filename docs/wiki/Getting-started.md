@@ -79,11 +79,15 @@ Three fox presets (all complete MP4s, not stubs):
 | Name | Knobs | What you get |
 |------|-------|----------------|
 | **fox-s2** | `--steps 2 --layers 35 --reuse 1` | HIP A/B; gfx1151 md5 gate |
-| **fox-fast** | `--steps 20 --layers 45 --reuse 2` | ~0.9 s complete clip; 11 DiT evals |
+| **fox-fast** | `--steps 20 --layers 45 --reuse 2` | ~0.9 s complete clip; 11 DiT evals; MI300X warm process E2E **9.8 s** |
 | **fox showcase** | `--steps 20 --layers 50 --reuse 1` | README / wiki gallery fox |
 
 For a ~15 s clip, keep fox-fast knobs and raise `--seconds 15` at 864×480
 ([Long video](Long-video.md)). Timings: [`docs/PERFORMANCE.md`](../PERFORMANCE.md).
+On MI300X, `./bench/fox-fast.sh` warm **process E2E** (time-to-MP4) is
+**9.8 s**; `--profile` DiT total is **5.0 s**. Those are not the same
+number. Ledger:
+[`docs/perf-runs/MI300X_2026-09-18_fox-fast.md`](../perf-runs/MI300X_2026-09-18_fox-fast.md).
 
 Optional **`--token-reduction`** (off by default, same flag as h3-spark.c):
 pairs video tokens in middle DiT blocks. Faster long T2VA; **visible quality

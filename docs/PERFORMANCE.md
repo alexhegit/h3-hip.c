@@ -3,8 +3,11 @@
 Headline numbers. Timed SKUs: **Strix Halo (gfx1151)**, **MI210 (gfx90a)**,
 **MI300X (gfx942)**. Build with an explicit `HIP_ARCH`
 ([Getting started](wiki/Getting-started.md)). MI250 / MI250X share `gfx90a`
-with MI210 but are not these numbers. Wall time moves with page-cache state;
-treat E2E as a band, denoise GPU time as the stable GPU figure. Peak VRAM is
+with MI210 but are not these numbers. Wall time moves with page-cache state. **Process E2E** is
+`/usr/bin/time` until `h3: wrote` the muxed MP4. **DiT total** is
+`--profile` `H3 DiT total` (load + Euler). **Denoise** is
+`H3 DiT Euler denoise`. On short MI300X clips those three are different
+numbers: text encoder, VAEs, and mux sit outside DiT total. Peak VRAM is
 the high-water mark across the entire pipeline.
 
 Engineering logs (phase tables, rejected experiments) live under
@@ -18,10 +21,20 @@ Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 E2E | ~85–90 s (I/O) | **11.2 s** | **3.3 s** |
-| fox-fast E2E | ~2 min (I/O) | **19.5 s** | **5.2 s** |
+| fox-s2 process E2E | ~85–90 s (I/O) | **11.2 s** | — (DiT total **3.3 s**) |
+| fox-fast process E2E | ~2 min (I/O) | **19.5 s** | **9.8 s** (DiT total **5.0 s**) |
 | 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **179.5 s** (no TR, 2026-09-12) |
 | 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | **8 min 13 s** (2026-09-12) | **114.7 s** (2026-09-12) |
+
+MI210 short-clip cells and all 15 s rows are `/usr/bin/time` to the muxed
+MP4 (`TIME_E2E` in the gfx90a logs). MI300X fox-fast **9.8 s** is the
+2026-09-18 warm-cache **mean of 10** `bench/fox-fast.sh` runs at tag
+v0.12.0 (9.71–9.89 s, σ=0.05; denoise **1.94 s**). Full table:
+[`perf-runs/MI300X_2026-09-18_fox-fast.md`](perf-runs/MI300X_2026-09-18_fox-fast.md).
+The 2026-09-12 scoreboard **5.21 s** is `--profile` **H3 DiT total**, not
+process wall. Cold process E2E on the retake was **~20 s**. Do not compare
+DiT total to v0.11.0 fox-fast **~12 s** (that cell was process E2E;
+denoise was already **1.86 s**).
 
 Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:
@@ -257,7 +270,12 @@ Model: `/mnt/doscratch/MiniMax-H3`.
 Canonical scripts from `bench/`. 15 s **without** TR used `fox-15s.sh` minus
 `--token-reduction`. Neither 15 s run used `H3_INT8_VAE` or `H3_GPU_SAMPLER`.
 
-| Preset | Script | E2E (total wall) | Denoise wall | sdpa / linear | Video VAE | Peak |
+The 2026-09-12 short-clip cells below are `--profile` **H3 DiT total**,
+not process E2E. 15 s cells are process-class walls (denoise dominates).
+Warm fox-fast **process E2E** at v0.12.0 is **9.8 s** (n=10):
+[`perf-runs/MI300X_2026-09-18_fox-fast.md`](perf-runs/MI300X_2026-09-18_fox-fast.md).
+
+| Preset | Script | DiT total | Denoise wall | sdpa / linear | Video VAE | Peak |
 |--------|--------|-----------------:|-------------:|---------------|----------:|-----:|
 | fox-s2 | `bench/fox-s2.sh` | **3.27 s** | **0.29 s** | 0.05 / 0.18 s | 1.34 s | 15.1 GiB |
 | fox-fast | `bench/fox-fast.sh` | **5.21 s** | **1.94 s** | 0.39 / 1.17 s | 1.30 s | 19.7 GiB |
@@ -282,7 +300,8 @@ Logs:
 ## MI300X (gfx942) — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
-**INT8** (all ISAs). 192 GiB VRAM; weight I/O dominates E2E on short presets.
+**192 GiB** VRAM; weight I/O dominates **process E2E** on short presets
+(the **E2E** column below is time-to-MP4, not DiT total).
 
 ### Default (INT8, no opt-in flags)
 

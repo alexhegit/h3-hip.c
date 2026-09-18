@@ -23,6 +23,7 @@ spreadsheets on the GitHub release.
 | [`../PERFORMANCE.md`](../PERFORMANCE.md) | User-facing release scoreboard |
 | [`../perf-runs/FOX_S2.md`](../perf-runs/FOX_S2.md) | fox-s2 ledger (A/B/C; v0.9.0 is a pointer) |
 | [`../perf-runs/FOX_FAST.md`](../perf-runs/FOX_FAST.md) | fox-fast ledger (day-5 run; v0.9.0 is a pointer) |
+| [`../perf-runs/MI300X_2026-09-18_fox-fast.md`](../perf-runs/MI300X_2026-09-18_fox-fast.md) | gfx942 fox-fast process E2E n=10 at v0.12.0 |
 | [`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md) | Full v0.9.0 timed tables |
 | [`../perf-runs/TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) | gfx1151 15 s + `--token-reduction` (2026-09-02, 28.2 min) |
 | [`../perf-runs/long-15s-default-2026-09-03.log`](../perf-runs/long-15s-default-2026-09-03.log) | gfx1151 15 s quality path on `main` |
@@ -37,8 +38,10 @@ spreadsheets on the GitHub release.
 
 ## When tagging a release
 
-1. Time fox-s2 and fox-fast with `/usr/bin/time` and `--profile` (two fox-s2
-   repeats). Save grepped `h3 profile:` lines under `docs/perf-runs/`.
+1. Time fox-s2 and fox-fast with `/usr/bin/time` **and** `--profile` (two fox-s2
+   repeats). **Process E2E** is `time` real to the MP4. Do not put
+   `--profile` `H3 DiT total` in an E2E cell on short clips. Save grepped
+   `h3 profile:` lines under `docs/perf-runs/`.
 2. Write `docs/perf-runs/vX.Y.Z.md` with phase tables and md5.
 3. Update **only** the headline table in [`../PERFORMANCE.md`](../PERFORMANCE.md)
    and the journey row. Leave STATUS.md out of that file.

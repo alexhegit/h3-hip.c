@@ -55,6 +55,14 @@ H3_INT8_VAE=1 H3_GPU_SAMPLER=1 ./h3 \
   --steps 2 --layers 35 --reuse 1 -o output.mp4
 ```
 
+Default **fox-fast** (`./bench/fox-fast.sh`, no extra flags) on MI300X:
+warm **process E2E 9.8 s** (n=10), DiT total **5.0 s**, denoise **1.94 s**.
+Cold first run ~20 s. Do not quote DiT total as time-to-MP4.
+[`PERFORMANCE.md`](PERFORMANCE.md),
+[`perf-runs/MI300X_2026-09-18_fox-fast.md`](perf-runs/MI300X_2026-09-18_fox-fast.md).
+
+fox-s2 with the flags above (not the fox-fast scoreboard):
+
 | Setting | DiT | E2E | VRAM | PSNR |
 |---------|----:|----:|-----:|-----:|
 | INT8 default | 3.1 s | ~8 s | ~15 GiB | 29.5 dB |

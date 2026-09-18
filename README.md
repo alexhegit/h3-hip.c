@@ -35,15 +35,23 @@ Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.m
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
-| fox-s2 | ~85–90 s (I/O) | **11.2 s** | **3.3 s** |
-| fox-fast | ~2 min (I/O) | **19.5 s** | **5.2 s** |
+| fox-s2 | ~85–90 s (I/O) | **11.2 s** | DiT **3.3 s** |
+| fox-fast | ~2 min (I/O) | **19.5 s** | **9.8 s** |
 | 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **179.5 s** (no TR) / **114.7 s** (`fox-15s.sh`) |
 
-These are **complete muxed MP4s** (video + audio), not stubs. fox-s2 and
-fox-fast are both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only
-in DiT knobs. The README fox **showcase** clip is a third preset
-(`--layers 50 --reuse 1`). The 15 s cinematic reuses fox-fast quality knobs
-at 864×480 / 362 frames.
+These are **complete muxed MP4s** (video + audio), not stubs. Headline
+cells are **process E2E** (`/usr/bin/time` until the MP4 is written)
+except Halo short clips (I/O-bound) and MI300X fox-s2 (**DiT** =
+`--profile` `H3 DiT total`; process E2E not re-timed). MI300X fox-fast
+**9.8 s** is a 2026-09-18 warm-cache mean of 10 runs of
+`./bench/fox-fast.sh` at v0.12.0 (9.71–9.89 s, σ=0.05). On that preset
+DiT total is **5.0 s** and denoise **1.94 s**; a cold first run is ~20 s
+(weight I/O). Do not quote 5.0 s as time-to-MP4. fox-s2 and fox-fast are
+both **512² · 22 frames (~0.9 s at 24 fps)**; they differ only in DiT
+knobs. The README fox **showcase** clip is a third preset (`--layers 50
+--reuse 1`). The 15 s cinematic reuses fox-fast quality knobs at 864×480 /
+362 frames. Ledger:
+[`docs/perf-runs/MI300X_2026-09-18_fox-fast.md`](docs/perf-runs/MI300X_2026-09-18_fox-fast.md).
 
 | Name | Size | Knobs | Role |
 |------|------|-------|------|
@@ -228,7 +236,9 @@ stderr warning when `--token-reduction` or `H3_TOKEN_REDUCTION_SCHEDULE` is on.
 
 Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
 Known issues) live only on GitHub wiki. In-tree copies of Getting started,
-T2VA pipeline, and Long video are under `docs/wiki/`.
+T2VA pipeline, and Long video are under `docs/wiki/`. After this retake,
+republish the GitHub wiki **Performance** / Home pages so they do not still
+say MI300X fox-fast “5.2 s E2E”.
 
 ## Requirements
 

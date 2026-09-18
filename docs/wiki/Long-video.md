@@ -2,7 +2,9 @@
 
 MiniMax-H3 on h3-hip.c supports up to **362 aligned frames** (~15 s at 24 fps).
 Long clips are dominated by **DiT denoise wall time**, not the short fox
-presets. Same knobs on Strix Halo (gfx1151), MI210 (gfx90a), and MI300X
+presets. Short fox-fast on MI300X is a different story: warm **process
+E2E ~10 s**, while 15 s no-TR is **179.5 s** because denoise fills the
+wall. Same knobs on Strix Halo (gfx1151), MI210 (gfx90a), and MI300X
 (gfx942): `--steps 20 --layers 45 --reuse 2`
 (11 DiT evaluations), 864×480, T2VA, no references.
 
@@ -22,10 +24,14 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 | **15 s cinematic office** | MI210 (gfx90a) | **15.1 s (362 f)** | **12 min 12 s** | **10 min 47 s** | no TR, 2026-09-12; [`gfx90a-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx90a-2026-09-12-fox-15s-notr.log) |
 | **15 s `fox-15s.sh`** | MI210 (gfx90a) | **15.1 s (362 f)** | **8 min 13 s** | **6 min 48 s** | reuse=2+TR; [`gfx90a-2026-09-12-fox-15s.log`](../perf-runs/gfx90a-2026-09-12-fox-15s.log) |
 | **15 s-fast** | MI210 (gfx90a) | **15.1 s (362 f)** | **6 min 18 s** | **4 min 54 s** | reuse=3+TR; [`gfx90a-2026-09-12-fox-15s-fast.log`](../perf-runs/gfx90a-2026-09-12-fox-15s-fast.log) |
+| **15 s cinematic office** | MI300X (gfx942) | **15.1 s (362 f)** | **179.5 s** | **176.2 s** | no TR, 2026-09-12; [`gfx942-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx942-2026-09-12-fox-15s-notr.log) |
+| **15 s `fox-15s.sh`** | MI300X (gfx942) | **15.1 s (362 f)** | **114.7 s** | **111.3 s** | reuse=2+TR; [`gfx942-2026-09-12-fox-15s.log`](../perf-runs/gfx942-2026-09-12-fox-15s.log) |
 
 Posters: `assets/showcase/long-*-cinematic.jpg`  
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
 MI210 2026-09-12: [`docs/perf-runs/MI210_2026-09-12.md`](../perf-runs/MI210_2026-09-12.md)
+MI300X 2026-09-12: [`docs/perf-runs/MI300X_2026-09-12.md`](../perf-runs/MI300X_2026-09-12.md)
+Short fox-fast process E2E (not this page): [`MI300X_2026-09-18_fox-fast.md`](../perf-runs/MI300X_2026-09-18_fox-fast.md)
 
 10 s was not re-timed on MI210. The gallery MP4 is the **quality path** (no
 TR). Strix Halo (gfx1151) quality path on **`main` 2026-09-12**: E2E
@@ -74,7 +80,7 @@ See [`docs/SOL_ATTN.md`](../SOL_ATTN.md).
 |--|--:|--:|
 | Strix Halo (gfx1151) 15 s E2E | **40 min 4 s** (no TR, 2026-09-12) | **26 min 56 s** (`fox-15s.sh`) |
 | MI210 (gfx90a) 15 s E2E | **12 min 12 s** (no TR, 2026-09-12) | **8 min 13 s** (`fox-15s.sh`) |
-| MI300X (gfx942) 15 s E2E | **3 min 46 s** | **~2.4 min** (all-opts) |
+| MI300X (gfx942) 15 s E2E | **179.5 s** (no TR, 2026-09-12) | **114.7 s** (`fox-15s.sh`) |
 
 ## Reproduce the 10 s clip
 
