@@ -124,3 +124,6 @@ H3_VAE_TILE_PIXELS=272 # restore v0.9.0-sized VAE tiles
 H3_SDPA_CDNA_FLASH=0   # gfx90a: hipBLAS score-matrix SDPA fallback
 H3_SDPA_CDNA_FP16_PV=0 # gfx90a flash: BF16 PV instead of FP16
 ```
+
+What those knobs do, and how the three-SKU scoreboard was built:
+[Optimizations](Optimizations.md). Long clips: [Long video](Long-video.md).

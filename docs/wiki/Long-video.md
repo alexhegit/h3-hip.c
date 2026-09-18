@@ -7,7 +7,8 @@ presets. Same knobs on Strix Halo (gfx1151), MI210 (gfx90a), and MI300X
 (11 DiT evaluations), 864×480, T2VA, no references.
 
 Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
-([Getting started](Getting-started.md)).
+([Getting started](Getting-started.md)). Why 15 s is SDPA-bound, and what
+TR / Sol-Attn / INT8 actually change: [Optimizations](Optimizations.md).
 
 ## Showcase clips
 

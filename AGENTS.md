@@ -82,4 +82,4 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/DESIGN_DHS.md` — `--serve` daemon protocol v1alpha and DSH plugin phases
-- `docs/wiki/` — Getting started, T2VA pipeline, Long video
+- `docs/wiki/` — Getting started, T2VA pipeline, Long video, Optimizations
