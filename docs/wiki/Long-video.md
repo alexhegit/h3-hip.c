@@ -75,7 +75,7 @@ See [`docs/SOL_ATTN.md`](../SOL_ATTN.md).
 |--|--:|--:|
 | Strix Halo (gfx1151) 15 s E2E | **40 min 4 s** (no TR, 2026-09-12) | **26 min 56 s** (`fox-15s.sh`) |
 | MI210 (gfx90a) 15 s E2E | **12 min 12 s** (no TR, 2026-09-12) | **8 min 13 s** (`fox-15s.sh`) |
-| MI300X (gfx942) 15 s E2E | **3 min 46 s** | **~2.4 min** (all-opts) |
+| MI300X (gfx942) 15 s E2E | **179.5 s** (no TR, 2026-09-12) | **114.7 s** (`fox-15s.sh`) |
 
 ## Reproduce the 10 s clip
 

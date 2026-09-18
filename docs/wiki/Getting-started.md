@@ -59,8 +59,8 @@ Set `H3_MODEL` if weights are not at the Makefile default
 
 Official [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). T2VA uses
 `text_encoder/`, `transformer/`, `vae/`, and the audio decoder. See
-[T2VA pipeline](T2VA-pipeline.md) for dtypes (checkpoint BF16/F32; INT8 is
-runtime-only on gfx1151).
+[T2VA pipeline](T2VA-pipeline.md) for dtypes (checkpoint BF16/F32; INT8 DiT
+is runtime-only, default on all ISAs).
 
 ## First T2VA
 
