@@ -2402,9 +2402,19 @@ h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
     typedef rocwmma::bfloat16_t bf16;
     typedef typename std::conditional<FP16_PV, _Float16, bf16>::type pv16;
 
-    constexpr uint32_t STAGES = 1u;
-    __shared__ __align__(16) uint16_t sk[STAGES][BK * LD];
-    __shared__ __align__(16) uint16_t sv[STAGES][BK * LD];
+    /* Register-prefetch pipeline: issue the next K/V tile's global loads into
+     * per-thread registers at the start of each iteration, then run QK /
+     * softmax / PV MFMA on the current LDS tile. Those MMA ops are independent
+     * of the prefetch registers, so HBM latency overlaps compute. After PV,
+     * drain the registers into LDS for the following iteration. Single LDS
+     * buffer; no cp.async required. */
+    constexpr uint32_t VEC = 4u; /* bf16 lanes per uint2 */
+    constexpr uint32_t CHUNKS = BK * D / VEC;
+    static_assert(CHUNKS % THREADS == 0, "tile must split evenly across threads");
+    constexpr uint32_t RPT = CHUNKS / THREADS;
+
+    __shared__ __align__(16) uint16_t sk[BK * LD];
+    __shared__ __align__(16) uint16_t sv[BK * LD];
     __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
 
     const uint32_t tid = threadIdx.x;
@@ -2445,39 +2455,54 @@ h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
     const uint16_t *kp = key + kv_base;
     const uint16_t *vp = value + kv_base;
 
-    auto load_kv = [&](uint32_t k0, uint32_t st) {
-        uint16_t *sks = sk[st];
-        uint16_t *svs = sv[st];
-        for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
-            uint32_t r = idx >> 7;
-            uint32_t d = idx & 127u;
-            uint32_t g = k0 + r;
-            uint2 kk = uint2{0u, 0u};
+    uint2 kreg[RPT], vreg[RPT];
+    auto load_glob = [&](uint32_t k0) {
+#pragma unroll
+        for (uint32_t u = 0; u < RPT; u++) {
+            uint32_t c = tid + u * THREADS;
+            uint32_t g = k0 + ((c * VEC) >> 7);
+            kreg[u] = uint2{0u, 0u};
+            vreg[u] = uint2{0u, 0u};
             if (g < sequence) {
-                size_t off = (size_t)g * kv_stride + d;
-                kk = *reinterpret_cast<const uint2 *>(kp + off);
-                if constexpr (FP16_PV) {
-                    uint32_t *dst =
-                        reinterpret_cast<uint32_t *>(svs + r * LD + d);
-                    dst[0] = h3_pack_f16x2(h3_bf16_to_f32(vp[off]),
-                                           h3_bf16_to_f32(vp[off + 1u]));
-                    dst[1] = h3_pack_f16x2(h3_bf16_to_f32(vp[off + 2u]),
-                                           h3_bf16_to_f32(vp[off + 3u]));
-                } else {
-                    *reinterpret_cast<uint2 *>(svs + r * LD + d) =
-                        *reinterpret_cast<const uint2 *>(vp + off);
-                }
-            } else {
-                *reinterpret_cast<uint2 *>(svs + r * LD + d) = uint2{0u, 0u};
+                size_t off = (size_t)g * kv_stride + ((c * VEC) & 127u);
+                kreg[u] = *reinterpret_cast<const uint2 *>(kp + off);
+                vreg[u] = *reinterpret_cast<const uint2 *>(vp + off);
             }
-            *reinterpret_cast<uint2 *>(sks + r * LD + d) = kk;
+        }
+    };
+    auto store_lds = [&](void) {
+#pragma unroll
+        for (uint32_t u = 0; u < RPT; u++) {
+            uint32_t c = tid + u * THREADS;
+            uint32_t r = (c * VEC) >> 7;
+            uint32_t d = (c * VEC) & 127u;
+            if constexpr (FP16_PV) {
+                uint32_t *dst = reinterpret_cast<uint32_t *>(sv + r * LD + d);
+                dst[0] = h3_pack_f16x2(
+                    h3_bf16_to_f32((uint16_t)(vreg[u].x & 0xffffu)),
+                    h3_bf16_to_f32((uint16_t)(vreg[u].x >> 16)));
+                dst[1] = h3_pack_f16x2(
+                    h3_bf16_to_f32((uint16_t)(vreg[u].y & 0xffffu)),
+                    h3_bf16_to_f32((uint16_t)(vreg[u].y >> 16)));
+            } else {
+                *reinterpret_cast<uint2 *>(sv + r * LD + d) = vreg[u];
+            }
+            *reinterpret_cast<uint2 *>(sk + r * LD + d) = kreg[u];
         }
     };
 
-    uint32_t stage = 0;
-    load_kv(0, 0);
+    /* Prologue: tile 0 into LDS. */
+    load_glob(0u);
+    store_lds();
     __syncthreads();
+
     for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
+        const uint32_t k_next = k0 + BK;
+        const bool has_next = k_next < sequence;
+
+        /* Issue next-tile HBM loads before touching LDS-dependent MMA so the
+         * miss latency rides under QK + softmax + PV. */
+        if (has_next) load_glob(k_next);
 
         rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fs[NT];
 #pragma unroll
@@ -2489,7 +2514,7 @@ h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
                                   rocwmma::col_major> fk;
                 rocwmma::load_matrix_sync(
                     fk, reinterpret_cast<const bf16 *>(
-                            sk[stage] + t * 16u * LD + (uint32_t)i * 16u),
+                            sk + t * 16u * LD + (uint32_t)i * 16u),
                     LD);
                 rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
             }
@@ -2548,22 +2573,18 @@ h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
                                   rocwmma::row_major> fv;
                 rocwmma::load_matrix_sync(
                     fv, reinterpret_cast<const pv16 *>(
-                            sv[stage] + t * 16u * LD + (uint32_t)j * 16u),
+                            sv + t * 16u * LD + (uint32_t)j * 16u),
                     LD);
                 rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
             }
         }
-        uint32_t k_next = k0 + BK;
-        if (k_next < sequence) {
-            if constexpr (STAGES == 2u) {
-                load_kv(k_next, stage ^ 1u);
-            } else {
-                __syncthreads();
-                load_kv(k_next, 0);
-            }
+
+        /* All waves finished reading sk/sv: commit the prefetched tile. */
+        if (has_next) {
+            __syncthreads();
+            store_lds();
+            __syncthreads();
         }
-        __syncthreads();
-        if constexpr (STAGES == 2u) stage ^= 1u;
     }
 
 #pragma unroll
