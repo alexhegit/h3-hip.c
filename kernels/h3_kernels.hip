@@ -2412,10 +2412,13 @@ h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
     constexpr uint32_t CHUNKS = BK * D / VEC;
     static_assert(CHUNKS % THREADS == 0, "tile must split evenly across threads");
     constexpr uint32_t RPT = CHUNKS / THREADS;
+    /* Pad P rows like K/V (LD=136 vs D=128). Tight BK uint16 rows make
+     * rocWMMA P loads hit the same LDS banks; +8 shifts the 32-bank map. */
+    constexpr uint32_t SP_LD = BK + 8u;
 
     __shared__ __align__(16) uint16_t sk[BK * LD];
     __shared__ __align__(16) uint16_t sv[BK * LD];
-    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
+    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * SP_LD];
 
     const uint32_t tid = threadIdx.x;
     const uint32_t wave = tid >> 6;
@@ -2543,7 +2546,7 @@ h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
             for (uint32_t t = 0; t < NT; t++) {
                 float p = h3_fast_exp(s[t] - new_max);
                 ps += p;
-                uint16_t *pdst = sp[wave] + prow * BK + t * 16u + col;
+                uint16_t *pdst = sp[wave] + prow * SP_LD + t * 16u + col;
                 if constexpr (FP16_PV)
                     *reinterpret_cast<_Float16 *>(pdst) = (_Float16)p;
                 else
@@ -2566,7 +2569,7 @@ h3_sdpa_bf16_mfma_d128_kernel(const uint16_t *query, const uint16_t *key,
             rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, pv16,
                               rocwmma::row_major> fp;
             rocwmma::load_matrix_sync(
-                fp, reinterpret_cast<const pv16 *>(sp[wave] + t * 16u), BK);
+                fp, reinterpret_cast<const pv16 *>(sp[wave] + t * 16u), SP_LD);
 #pragma unroll
             for (int j = 0; j < 8; j++) {
                 rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, pv16,
