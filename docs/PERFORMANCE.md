@@ -317,6 +317,20 @@ passed. Default knobs. Full n-tables:
 Denoise is unchanged vs 2026-09-12. Process E2E on 15 s is DiT plus
 ~2.9 s text encoder plus ~28.6 s video VAE.
 
+## MI300X (gfx942) — 2026-09-21 1344×768 · 15 s dense SDPA A/B
+
+Quality-path CDNA flash (`858288f` K/V prefetch + `9f3899f` P-tile LDS
+pad) vs the pre-prefetch kernel. Same `fox-15s.sh` prompt and knobs, **no
+TR**, `--width 1344 --height 768 --seconds 15` (362 frames, released max
+canvas). n=1 each. Ledger:
+[`perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md`](perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md).
+
+| | Process E2E | Denoise | sdpa | Video VAE | Peak | MP4 |
+|--|-----------:|--------:|-----:|----------:|-----:|-----|
+| before | **1027 s** | 912 s | 824 s | 102 s | 44.3 GiB | same md5 |
+| after | **947 s** | 833 s | 744 s | 103 s | 44.3 GiB | same md5 |
+| Δ | **−7.8% (−80 s)** | −8.7% | **−9.7%** | 0 | 0 | bit-identical |
+
 ## MI300X (gfx942) — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is

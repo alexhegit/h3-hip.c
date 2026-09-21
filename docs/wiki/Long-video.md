@@ -27,12 +27,14 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 | **15 s cinematic office** | MI300X (gfx942) | **15.1 s (362 f)** | **213 s** | **175.5 s** | no TR, process E2E 2026-09-18; DiT total was 179.5 s on 2026-09-12 |
 | **15 s `fox-15s.sh`** | MI300X (gfx942) | **15.1 s (362 f)** | **149 s** | **111.0 s** | reuse=2+TR; process E2E 2026-09-18 |
 | **15 s-fast** | MI300X (gfx942) | **15.1 s (362 f)** | **118 s** | **80.1 s** | reuse=3+TR; process E2E 2026-09-18 |
+| **15 s 1344×768 dense A/B** | MI300X (gfx942) | **15.1 s (362 f)** | **1027 → 947 s (−7.8%)** | **912 → 833 s** | max canvas, no TR; [`MI300X_2026-09-21_1344x768-15s-sdpa.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md) |
 
 Posters: `assets/showcase/long-*-cinematic.jpg`  
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
 MI210 2026-09-12: [`docs/perf-runs/MI210_2026-09-12.md`](../perf-runs/MI210_2026-09-12.md)
 MI300X 2026-09-12: [`docs/perf-runs/MI300X_2026-09-12.md`](../perf-runs/MI300X_2026-09-12.md)
 MI300X 2026-09-18 process E2E: [`docs/perf-runs/MI300X_2026-09-18_full.md`](../perf-runs/MI300X_2026-09-18_full.md)
+MI300X 2026-09-21 1344×768 15 s SDPA A/B: [`docs/perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md)
 
 10 s was not re-timed on MI210. The gallery MP4 is the **quality path** (no
 TR). Strix Halo (gfx1151) quality path on **`main` 2026-09-12**: E2E

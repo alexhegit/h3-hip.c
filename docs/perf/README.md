@@ -25,6 +25,7 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/FOX_FAST.md`](../perf-runs/FOX_FAST.md) | fox-fast ledger (day-5 run; v0.9.0 is a pointer) |
 | [`../perf-runs/MI300X_2026-09-18_fox-fast.md`](../perf-runs/MI300X_2026-09-18_fox-fast.md) | gfx942 fox-fast process E2E n=10 (morning) |
 | [`../perf-runs/MI300X_2026-09-18_full.md`](../perf-runs/MI300X_2026-09-18_full.md) | gfx942 full scoreboard process E2E at v0.12.0 `b0ff702` |
+| [`../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md) | gfx942 1344×768 · 15 s dense SDPA A/B (prefetch + P-pad) |
 | [`../perf-runs/V0.9.0.md`](../perf-runs/V0.9.0.md) | Full v0.9.0 timed tables |
 | [`../perf-runs/TOKEN_REDUCTION.md`](../perf-runs/TOKEN_REDUCTION.md) | gfx1151 15 s + `--token-reduction` (2026-09-02, 28.2 min) |
 | [`../perf-runs/long-15s-default-2026-09-03.log`](../perf-runs/long-15s-default-2026-09-03.log) | gfx1151 15 s quality path on `main` |
