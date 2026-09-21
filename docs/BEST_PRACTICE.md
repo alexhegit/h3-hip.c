@@ -120,6 +120,10 @@ Sol-Attn is closer to dense; neither is a mild blur of the quality path.
 Triptych:
 [`fox-15s-3way-compare-gfx1151.mp4`](../assets/showcase/fox-15s-3way-compare-gfx1151.mp4).
 Details: [`SOL_ATTN.md`](SOL_ATTN.md).
+MI300X **1344×768 · 15 s** (not stacked): dense **947 s**, TR **612 s**
+(16.9 dB), Sol-Attn **719 s** (17.7 dB). Sol-Attn on this canvas needs
+the >64k-token overflow path.
+[`perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md`](perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md).
 
 ### 4. Maximum Quality
 

@@ -15,7 +15,12 @@ This PR has measured implementations for all three timed SKUs.
 are pooled into the online softmax instead of computed exactly. Keep-all
 (`H3_SOL_ATTN_TAU=-100`) matches dense bit-for-bit; the default τ=0.5 path
 does not. Sequences shorter than `H3_SOL_ATTN_MIN_SEQ` (default 4096) stay
-dense on every ISA.
+dense on every ISA. Sequences up to **65536** tokens (1024 × 64-token
+KV tiles) use the original static LDS route tables so 480p occupancy is
+unchanged. Longer sequences (released max canvas **1344×768 · 15 s** is
+**109334** tokens / **1709** tiles) use a separate 8/32 kernel with
+dynamic-shared routing. Hard cap is 4096 tiles / 262144 tokens
+([issue #10](https://github.com/alexhegit/h3-hip.c/issues/10)).
 
 ```bash
 ./h3 -d MODEL --sol-attn -p '...' --seconds 15
@@ -72,10 +77,28 @@ SDPA kernel microbench (56 heads, d128, τ=0.5): 8,192 tokens **2.05×**,
 44,800 tokens **2.56×**. fox-s2 (~1.9k tokens) stays on dense by default.
 
 Same MFMA kernel as MI210; keep-all (`τ=-100`) is bit-identical to dense
-(diffs 0 at all measured sequence lengths). E2E speedup is smaller than MI210
+(diffs 0 at all measured sequence lengths, including the 65664-token
+overflow path). E2E speedup is smaller than MI210
 (−10.7% vs −18.2%) because MI300X has faster baseline SDPA and other phases
 (linear, VAE) form a larger fraction of E2E. SDPA speedup is higher (−32.5%
 vs −28.9%) reflecting MI300X's higher MFMA throughput.
+
+### MI300X 1344×768 · 15 s three-way (2026-09-21)
+
+Same seed **42**, prompt, and dense-after kernel as the quality-path
+1.0MP A/B. **Do not stack** `--sol-attn` with `--token-reduction`.
+Ledger:
+[`perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md`](perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md).
+
+| path | E2E | denoise | sdpa | video PSNR vs dense |
+|---|---:|---:|---:|---:|
+| dense (no TR, no Sol) | **947.0 s** | 832.6 s | 744.2 s | reference |
+| `--token-reduction` | **611.7 s** (−35%) | 497.2 s | 430.5 s | **16.9 dB** |
+| `--sol-attn` τ=0.5, no TR | **719.2 s** (−24%) | 604.6 s | 516.1 s | **17.7 dB** |
+
+Sol-Attn E2E gain is larger than at 864×480 (−24% vs −11%) because sdpa
+is ~80% of process E2E at this canvas. TR remains the faster product
+path; Sol-Attn remains closer to dense.
 
 ## Measured vs dense baseline (Strix Halo, gfx1151)
 

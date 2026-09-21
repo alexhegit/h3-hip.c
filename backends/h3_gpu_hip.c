@@ -2863,9 +2863,19 @@ static int h3_hip_sdpa_bf16_run(struct h3_gpu *ctx, uint16_t *output,
                                 const uint16_t *value, h3_sdpa_args args) {
     if (h3_hip_sol_attn_wanted(ctx, args.sequence, args.head_dim)) {
         uint32_t n_blocks = (args.sequence + 63u) / 64u;
-        if (n_blocks > 1024u) {
-            h3_hip_set_error(ctx, "Sol-Attn sequence exceeds 65536 tokens");
+        if (n_blocks > H3_SOL_MAX_KV_BLOCKS_EXT) {
+            h3_hip_set_error(ctx, "Sol-Attn sequence exceeds 262144 tokens");
             return 0;
+        }
+        if (n_blocks > H3_SOL_MAX_KV_BLOCKS) {
+            static int overflow_noted;
+            if (!overflow_noted) {
+                overflow_noted = 1;
+                fprintf(stderr,
+                        "h3: Sol-Attn sequence %u uses dynamic-shared routing "
+                        "(%u KV tiles > %u)\n",
+                        args.sequence, n_blocks, H3_SOL_MAX_KV_BLOCKS);
+            }
         }
         if (!h3_hip_sol_scratch(ctx, n_blocks, args.heads)) return 0;
         h3_sdpa_sol_cfg cfg = {

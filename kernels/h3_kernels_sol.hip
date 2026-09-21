@@ -2,9 +2,6 @@
  * kept tiles, pooled K/V in the online softmax for skipped tiles.
  * Included from h3_kernels.hip so it shares the CDNA flash helpers. */
 
-#define H3_SOL_KV_TILE 64u
-#define H3_SOL_MAX_KV_BLOCKS 1024u
-
 static int h3_hip_gfx1151_sol(void) {
     static int cached = -1;
     if (cached >= 0) return cached;
@@ -47,7 +44,7 @@ __global__ void h3_sdpa_kv_block_summary_kernel(
  * h3_sdpa_bf16_wmma_d128_kernel: accumulator element i is query row
  * 2*i+(lane>>4), and lane&15 is the score/output column. In keep-all mode the
  * exact-tile loop below is intentionally the dense kernel's loop verbatim. */
-template <uint32_t WAVES, uint32_t BK>
+template <uint32_t WAVES, uint32_t BK, bool LDS_ROUTE = true>
 __global__ void __launch_bounds__(WAVES * 32u)
 h3_sdpa_bf16_wmma_d128_sol_kernel(
     const uint16_t *query, const uint16_t *key, const uint16_t *value,
@@ -65,9 +62,10 @@ h3_sdpa_bf16_wmma_d128_sol_kernel(
     __shared__ __align__(16) uint16_t sv[BK * LD];
     __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
     __shared__ float q_bar[D];
-    __shared__ float proxy[H3_SOL_MAX_KV_BLOCKS];
-    __shared__ uint16_t skipped[H3_SOL_MAX_KV_BLOCKS];
+    __shared__ float proxy_lds[LDS_ROUTE ? H3_SOL_MAX_KV_BLOCKS : 1u];
+    __shared__ uint16_t skipped_lds[LDS_ROUTE ? H3_SOL_MAX_KV_BLOCKS : 1u];
     __shared__ uint32_t skipped_count;
+    extern __shared__ char h3_sol_dyn_wmma[];
 
     const uint32_t tid = threadIdx.x;
     const uint32_t wave = tid >> 5;
@@ -77,6 +75,16 @@ h3_sdpa_bf16_wmma_d128_sol_kernel(
     const uint32_t head = blockIdx.y;
     const uint32_t sequence = args.sequence;
     const uint32_t n_blocks = cfg.n_blocks;
+    float *proxy;
+    uint16_t *skipped;
+    if constexpr (LDS_ROUTE) {
+        proxy = proxy_lds;
+        skipped = skipped_lds;
+    } else {
+        proxy = reinterpret_cast<float *>(h3_sol_dyn_wmma);
+        skipped = reinterpret_cast<uint16_t *>(h3_sol_dyn_wmma +
+                                               n_blocks * sizeof(float));
+    }
     const uint32_t q0 = blockIdx.x * BQ;
     uint32_t q_row0 = q0 + wave * QROWS;
     uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
@@ -384,7 +392,8 @@ h3_sdpa_bf16_wmma_d128_sol_kernel(
     }
 }
 
-template <uint32_t WAVES, uint32_t BK, bool FP16_PV = false>
+template <uint32_t WAVES, uint32_t BK, bool FP16_PV = false,
+          bool LDS_ROUTE = true>
 __global__ void __launch_bounds__(WAVES * 64u)
 h3_sdpa_bf16_mfma_d128_sol_kernel(
     const uint16_t *query, const uint16_t *key, const uint16_t *value,
@@ -403,9 +412,10 @@ h3_sdpa_bf16_mfma_d128_sol_kernel(
     __shared__ __align__(16) uint16_t sv[BK * LD];
     __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
     __shared__ float q_bar[128];
-    __shared__ float proxy[H3_SOL_MAX_KV_BLOCKS];
-    __shared__ uint16_t skipped[H3_SOL_MAX_KV_BLOCKS];
+    __shared__ float proxy_lds[LDS_ROUTE ? H3_SOL_MAX_KV_BLOCKS : 1u];
+    __shared__ uint16_t skipped_lds[LDS_ROUTE ? H3_SOL_MAX_KV_BLOCKS : 1u];
     __shared__ uint32_t skipped_count;
+    extern __shared__ char h3_sol_dyn_mfma[];
 
     const uint32_t tid = threadIdx.x;
     const uint32_t wave = tid >> 6;
@@ -415,6 +425,16 @@ h3_sdpa_bf16_mfma_d128_sol_kernel(
     const uint32_t head = blockIdx.y;
     const uint32_t sequence = args.sequence;
     const uint32_t n_blocks = cfg.n_blocks;
+    float *proxy;
+    uint16_t *skipped;
+    if constexpr (LDS_ROUTE) {
+        proxy = proxy_lds;
+        skipped = skipped_lds;
+    } else {
+        proxy = reinterpret_cast<float *>(h3_sol_dyn_mfma);
+        skipped = reinterpret_cast<uint16_t *>(h3_sol_dyn_mfma +
+                                               n_blocks * sizeof(float));
+    }
     uint32_t q_row0 = blockIdx.x * BQ + wave * QROWS;
     uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
     const uint32_t q_block = (blockIdx.x * BQ) / H3_SOL_KV_TILE;
@@ -765,7 +785,7 @@ extern "C" int h3_launch_sdpa_bf16_sol(const uint16_t *query,
                                        hipStream_t stream) {
     if (!args || !cfg || !args->sequence || !args->heads ||
         args->head_dim != 128 || !cfg->n_blocks ||
-        cfg->n_blocks > H3_SOL_MAX_KV_BLOCKS) {
+        cfg->n_blocks > H3_SOL_MAX_KV_BLOCKS_EXT) {
         return 0;
     }
     const int cdna = h3_hip_gfx90a();
@@ -785,6 +805,36 @@ extern "C" int h3_launch_sdpa_bf16_sol(const uint16_t *query,
                         dim3(n_blocks, heads, 1), dim3(128u), summary_args, 0,
                         stream) != hipSuccess) {
         return 0;
+    }
+    /* Sequences past 64k tokens: keep the 1024-tile LDS kernels unchanged
+     * and route on dynamic shared with the default 8/32 tile (issue #10). */
+    if (n_blocks > H3_SOL_MAX_KV_BLOCKS) {
+        size_t dyn = (size_t)n_blocks * sizeof(float) +
+                     (size_t)n_blocks * sizeof(uint16_t);
+        const uint32_t waves = 8u;
+        const void *kernel = NULL;
+        uint32_t threads = 0;
+        if (rdna) {
+            kernel = reinterpret_cast<const void *>(
+                h3_sdpa_bf16_wmma_d128_sol_kernel<8u, 32u, false>);
+            threads = waves * 32u;
+        } else {
+            const char *fp16_pv_env = getenv("H3_SDPA_CDNA_FP16_PV");
+            int fp16_pv = !fp16_pv_env || strcmp(fp16_pv_env, "0") != 0;
+            kernel = fp16_pv
+                ? reinterpret_cast<const void *>(
+                      h3_sdpa_bf16_mfma_d128_sol_kernel<8u, 32u, true, false>)
+                : reinterpret_cast<const void *>(
+                      h3_sdpa_bf16_mfma_d128_sol_kernel<8u, 32u, false,
+                                                        false>);
+            threads = waves * 64u;
+        }
+        uint32_t bq = waves * H3_SDPA_WMMA_QROWS;
+        dim3 grid((host_args.sequence + bq - 1u) / bq, host_args.heads, 1);
+        void *kernel_args[] = {&query, &key, &value, &output, &host_args,
+                               &k_mean, &v_sum, &host_cfg};
+        return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, dyn,
+                               stream) == hipSuccess;
     }
     if (rdna) {
         uint32_t waves = h3_env_u32("H3_SDPA_WMMA_WAVES", 8u);

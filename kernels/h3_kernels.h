@@ -190,7 +190,13 @@ typedef struct {
     uint32_t kv_head_major;
 } h3_sdpa_args;
 
-/* Opt-in Sol-Attn routing. KV tiles are 64 tokens. */
+/* Opt-in Sol-Attn routing. KV tiles are 64 tokens.
+ * n_blocks <= H3_SOL_MAX_KV_BLOCKS uses the static LDS route tables
+ * (existing 480p / fox-s2 occupancy). Larger sequences use dynamic
+ * shared on a separate 8/32 instantiation (see issue #10). */
+#define H3_SOL_KV_TILE 64u
+#define H3_SOL_MAX_KV_BLOCKS 1024u
+#define H3_SOL_MAX_KV_BLOCKS_EXT 4096u
 typedef struct {
     uint32_t n_blocks;
     float tau;

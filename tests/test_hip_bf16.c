@@ -2229,6 +2229,83 @@ static int test_sol_attn_keep_all(h3_gpu *gpu) {
     return 0;
 }
 
+static int test_sol_attn_overflow_route(h3_gpu *gpu) {
+    /* 1026 KV tiles (65664 tokens) is just past the 1024-tile LDS path. */
+    const uint32_t sequence = 65664;
+    const uint32_t heads = 1;
+    const uint32_t head_dim = 128;
+    const size_t count = (size_t)sequence * heads * head_dim;
+    const float scale = 1.0f / sqrtf((float)head_dim);
+    uint16_t *query = calloc(count, sizeof(*query));
+    uint16_t *key = calloc(count, sizeof(*key));
+    uint16_t *value = calloc(count, sizeof(*value));
+    uint16_t *dense = calloc(count, sizeof(*dense));
+    uint16_t *sparse = calloc(count, sizeof(*sparse));
+    CHECK(query && key && value && dense && sparse);
+    for (size_t i = 0; i < count; i++) {
+        query[i] = f32_to_bf16(sinf((float)i * 0.017f));
+        key[i] = f32_to_bf16(cosf((float)i * 0.013f));
+        value[i] = f32_to_bf16(sinf((float)i * 0.009f) * 0.5f);
+    }
+    h3_gpu_tensor *gpu_q = h3_gpu_tensor_from_bf16(gpu, query, count);
+    h3_gpu_tensor *gpu_k = h3_gpu_tensor_from_bf16(gpu, key, count);
+    h3_gpu_tensor *gpu_v = h3_gpu_tensor_from_bf16(gpu, value, count);
+    h3_gpu_tensor *output = h3_gpu_tensor_new_bf16(gpu, count);
+    CHECK(gpu_q && gpu_k && gpu_v && output);
+    unsetenv("H3_SOL_ATTN");
+    unsetenv("H3_SOL_ATTN_TAU");
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin overflow dense"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "overflow dense"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit overflow dense"));
+    CHECK(h3_gpu_tensor_read_bf16(output, dense, count));
+    setenv("H3_SOL_ATTN", "1", 1);
+    setenv("H3_SOL_ATTN_MIN_SEQ", "512", 1);
+    setenv("H3_SOL_ATTN_TAU", "-100", 1);
+    h3_gpu_sol_attn_configure(gpu, 1, 0, 0);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin overflow keep-all"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "overflow keep-all"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit overflow keep-all"));
+    CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
+    size_t ndiff = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (dense[i] != sparse[i]) ndiff++;
+    }
+    printf("sol-attn overflow keep-all bitwise diffs %zu / %zu\n", ndiff,
+           count);
+    CHECK(ndiff == 0);
+    setenv("H3_SOL_ATTN_TAU", "0.5", 1);
+    CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin overflow sparse"));
+    CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
+                                             sequence, heads, head_dim, scale),
+                       "overflow sparse"));
+    CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit overflow sparse"));
+    CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
+    ndiff = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (dense[i] != sparse[i]) ndiff++;
+    }
+    printf("sol-attn overflow sparse-path bitwise diffs %zu / %zu\n", ndiff,
+           count);
+    CHECK(ndiff > 0);
+    unsetenv("H3_SOL_ATTN");
+    unsetenv("H3_SOL_ATTN_TAU");
+    unsetenv("H3_SOL_ATTN_MIN_SEQ");
+    h3_gpu_tensor_free(gpu_q);
+    h3_gpu_tensor_free(gpu_k);
+    h3_gpu_tensor_free(gpu_v);
+    h3_gpu_tensor_free(output);
+    free(query);
+    free(key);
+    free(value);
+    free(dense);
+    free(sparse);
+    return 0;
+}
+
 static int test_sdpa(h3_gpu *gpu) {
     enum { SEQUENCE = 3, HEADS = 1, HEAD_DIM = 4 };
     enum { COUNT = SEQUENCE * HEADS * HEAD_DIM };
@@ -6106,6 +6183,7 @@ int main(void) {
     }
     if (getenv("H3_CHECK_SOL_ATTN")) {
         int ok = test_sol_attn_keep_all(gpu);
+        if (ok == 0) ok = test_sol_attn_overflow_route(gpu);
         h3_gpu_free(gpu);
         return ok;
     }
@@ -6169,6 +6247,7 @@ int main(void) {
     if (test_sdpa_f32_d64_tiled(gpu) != 0) return 1;
     if (test_sdpa_tiled_repeatable(gpu) != 0) return 1;
     if (test_sol_attn_keep_all(gpu) != 0) return 1;
+    if (test_sol_attn_overflow_route(gpu) != 0) return 1;
     if (test_cast(gpu) != 0) return 1;
     if (test_mlp(gpu) != 0) return 1;
     if (test_mlp_nax(gpu) != 0) return 1;

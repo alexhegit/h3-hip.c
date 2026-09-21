@@ -226,7 +226,9 @@ MI300X (gfx942) no-TR **213 s**; `fox-15s.sh` **149 s**;
 **`--sol-attn`** is a separate opt-in. Default stays dense (quality). 15 s no-TR
 versus dense: MI210 E2E **−18%** / SDPA **−29%** (18.73 dB / 6.69 dB SNR);
 MI300X E2E **−11%** / SDPA **−33%** (19.19 dB / 8.69 dB SNR); Strix Halo
-E2E **−27%** / SDPA **−42%** (19.55 dB / 10.99 dB SNR). Do not enable for
+E2E **−27%** / SDPA **−42%** (19.55 dB / 10.99 dB SNR). MI300X
+**1344×768 · 15 s**: Sol-Attn E2E **719 s** vs dense **947 s** (−24%).
+Do not enable for
 publication or audio-sensitive output. Details:
 [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md).
 Tagged scoreboard stays without TR. Per-step schedule is on-demand only:

@@ -28,6 +28,7 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 | **15 s `fox-15s.sh`** | MI300X (gfx942) | **15.1 s (362 f)** | **149 s** | **111.0 s** | reuse=2+TR; process E2E 2026-09-18 |
 | **15 s-fast** | MI300X (gfx942) | **15.1 s (362 f)** | **118 s** | **80.1 s** | reuse=3+TR; process E2E 2026-09-18 |
 | **15 s 1344×768 dense A/B** | MI300X (gfx942) | **15.1 s (362 f)** | **1027 → 947 s (−7.8%)** | **912 → 833 s** | max canvas, no TR; [`MI300X_2026-09-21_1344x768-15s-sdpa.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md) |
+| **15 s 1344×768 TR / Sol-Attn** | MI300X (gfx942) | **15.1 s (362 f)** | dense **947 s** / TR **612 s** / Sol **719 s** | 833 / 497 / 605 s | not stacked; [`MI300X_2026-09-21_1344x768-15s-tr-sol.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md) |
 
 Posters: `assets/showcase/long-*-cinematic.jpg`  
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
@@ -35,6 +36,7 @@ MI210 2026-09-12: [`docs/perf-runs/MI210_2026-09-12.md`](../perf-runs/MI210_2026
 MI300X 2026-09-12: [`docs/perf-runs/MI300X_2026-09-12.md`](../perf-runs/MI300X_2026-09-12.md)
 MI300X 2026-09-18 process E2E: [`docs/perf-runs/MI300X_2026-09-18_full.md`](../perf-runs/MI300X_2026-09-18_full.md)
 MI300X 2026-09-21 1344×768 15 s SDPA A/B: [`docs/perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md)
+MI300X 2026-09-21 1344×768 15 s TR / Sol-Attn: [`docs/perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md)
 
 10 s was not re-timed on MI210. The gallery MP4 is the **quality path** (no
 TR). Strix Halo (gfx1151) quality path on **`main` 2026-09-12**: E2E
@@ -78,6 +80,8 @@ Halo three-way (dense / TR / Sol-Attn, not stacked): TR is faster
 dense (**1787 s**, 19.55 dB / 0.721, audio **10.99 dB**). Play
 [fox-15s-3way-compare-gfx1151.mp4](../../assets/showcase/fox-15s-3way-compare-gfx1151.mp4).
 See [`docs/SOL_ATTN.md`](../SOL_ATTN.md).
+MI300X **1344×768 · 15 s**: dense **947 s**, TR **612 s** (16.9 dB),
+Sol-Attn **719 s** (17.7 dB); Sol-Attn needs the >64k-token path.
 
 | | quality path | **`--token-reduction`** |
 |--|--:|--:|

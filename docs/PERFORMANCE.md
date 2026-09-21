@@ -331,6 +331,17 @@ canvas). n=1 each. Ledger:
 | after | **947 s** | 833 s | 744 s | 103 s | 44.3 GiB | same md5 |
 | Δ | **−7.8% (−80 s)** | −8.7% | **−9.7%** | 0 | 0 | bit-identical |
 
+Same-day product path (**not stacked**), vs that dense **after** clip.
+Sol-Attn previously aborted at 65536 tokens ([issue #10](https://github.com/alexhegit/h3-hip.c/issues/10));
+this canvas is **109334** tokens. Ledger:
+[`perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md`](perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md).
+
+| | Process E2E | Denoise | sdpa | vs dense PSNR |
+|--|-----------:|--------:|-----:|--------------:|
+| dense | **947 s** | 833 s | 744 s | — |
+| `--token-reduction` | **612 s** (−35%) | 497 s | 430 s | 16.9 dB |
+| `--sol-attn` | **719 s** (−24%) | 605 s | 516 s | 17.7 dB |
+
 ## MI300X (gfx942) — v0.11.0 (2026-09-02)
 
 Same MiniMax-H3 checkpoint. Build: `make HIP_ARCH=gfx942`. Default DiT is
@@ -596,6 +607,12 @@ and [`SOL_ATTN.md`](SOL_ATTN.md). Ledger:
 fox-s2 stays dense (`H3_SOL_ATTN_MIN_SEQ` default 4096). Do not combine with
 `--token-reduction` unless you accept compounded quality loss. `fox-15s.sh`
 TR 4:30 is **lossy vs no-TR** on Halo (not PSNR=inf).
+
+Sequences **>65536** tokens (1344×768 · 15 s is **109334**) use
+dynamic-shared Sol-Attn routing; 480p still uses the original LDS tables.
+MI300X 1.0MP three-way vs dense-after: TR E2E **612 s / 16.9 dB**, Sol-Attn
+**719 s / 17.7 dB** (dense **947 s**).
+[`perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md`](perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md).
 
 ## VRAM optimization summary (MI300X, 15 s cinematic)
 
