@@ -100,6 +100,23 @@ Sol-Attn E2E gain is larger than at 864×480 (−24% vs −11%) because sdpa
 is ~80% of process E2E at this canvas. TR remains the faster product
 path; Sol-Attn remains closer to dense.
 
+Play the labelled 1.0MP triptych (left dense, centre TR, right Sol-Attn):
+
+[![1344×768 15 s three-way still, t=5 s](../assets/showcase/fox-15s-3way-compare-gfx942.jpg)](../assets/showcase/fox-15s-3way-compare-gfx942.mp4)
+
+[fox-15s-3way-compare-gfx942.mp4](../assets/showcase/fox-15s-3way-compare-gfx942.mp4)
+· stills [t=2](../assets/showcase/fox-15s-3way-gfx942-t2s.jpg)
+[t=5](../assets/showcase/fox-15s-3way-gfx942-t5s.jpg)
+[t=8](../assets/showcase/fox-15s-3way-gfx942-t8s.jpg)
+[t=11](../assets/showcase/fox-15s-3way-gfx942-t11s.jpg)
+[t=14](../assets/showcase/fox-15s-3way-gfx942-t14s.jpg).
+
+What the stills show at **t=5 s**: dense keeps a tiled matrix of glowing
+cubes on a magenta wavefront; TR replaces that with a volumetric
+lattice/cube; Sol-Attn keeps a connected grid of tiles but a different
+layout and a second monitor. Same ranking as Halo: TR is faster, Sol-Attn
+is closer to dense, neither is a mild blur of the quality path.
+
 ## Measured vs dense baseline (Strix Halo, gfx1151)
 
 Fixed seed, 15 s cinematic, **no token reduction**, same prompt/checkpoint as
