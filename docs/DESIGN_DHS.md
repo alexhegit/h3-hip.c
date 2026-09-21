@@ -327,7 +327,7 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 ```json
 {
   "protocol": "v1alpha",
-  "h3_version": "0.12.0-exp",
+  "h3_version": "0.13.0-exp",
   "ready": true,
   "unready_reason": null,
   "model_path": "/models/MiniMax-H3",

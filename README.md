@@ -12,10 +12,11 @@ were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.12.0** adds per-step TR schedule, fused gate+AdaLN kernel,
-and 3-GPU retune. INT8 DiT is now default on all ISAs (`H3_INT8_MLP=0`
-for BF16). v0.11.x had opt-in INT8; v0.10.x is the dual-ISA history;
-v0.9.x is Strix Halo only. The original project is a native MiniMax-H3
+Tagged **v0.13.0** adds quality-path CDNA flash SDPA (K/V prefetch +
+P-tile LDS pad) and Sol-Attn past 64k tokens (released **1344×768 · 15 s**
+canvas). INT8 DiT is default on all ISAs (`H3_INT8_MLP=0` for BF16).
+v0.12.0 was TR schedule + fused AdaLN + 3-GPU retune; v0.11.x had opt-in
+INT8; v0.10.x is the dual-ISA history; v0.9.x is Strix Halo only. The original project is a native MiniMax-H3
 inference engine (Apple Metal / macOS); this repository reimplements the
 GPU backend in pure HIP so the same CLI and model stack run on ROCm.
 
@@ -37,20 +38,22 @@ Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.m
 |--------|---------------------:|---------------:|----------------:|
 | fox-s2 | ~85–90 s (I/O) | **11.2 s** | **10.6 s** |
 | fox-fast | ~2 min (I/O) | **19.5 s** | **9.8 s** |
-| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **213 s** (no TR) / **149 s** (`fox-15s.sh`) |
+| 15 s cinematic (864×480, 362 f) | **40 min 4 s** (no TR) / **26 min 56 s** (`fox-15s.sh`) | **12 min 12 s** (no TR) / **8 min 13 s** (`fox-15s.sh`) | **199 s** (no TR) / **149 s** (`fox-15s.sh`) |
 
 These are **complete muxed MP4s** (video + audio), not stubs. Headline
 cells are **process E2E** (`/usr/bin/time` until the MP4 is written)
-except Halo short clips (I/O-bound). MI300X numbers are a 2026-09-18
-retake of tag v0.12.0 (`b0ff702`): fox-s2 warm n=5 mean **10.6 s**
+except Halo short clips (I/O-bound). MI300X short clips are the 2026-09-18
+v0.12.0 retake (`b0ff702`): fox-s2 warm n=5 mean **10.6 s**
 (denoise **0.29 s**); fox-fast warm n=5 mean **9.8 s** (denoise **1.94 s**,
-DiT total **5.0 s**); 15 s no-TR **213 s** (denoise **176 s**).
+DiT total **5.0 s**). **v0.13.0** 15 s no-TR is **199 s** (quality-path
+SDPA A/B 215 → 199 s; v0.12.0 was **213 s**).
 `fox-15s-fast.sh` process E2E is **118 s**. Do not quote DiT total as
-time-to-MP4 (fox-fast DiT **5.0 s**, 15 s no-TR DiT **179 s**). Cold
+time-to-MP4 (fox-fast DiT **5.0 s**). Cold
 fox-fast is ~20 s. fox-s2 and fox-fast are both **512² · 22 frames
 (~0.9 s at 24 fps)**. The README fox **showcase** clip is a third preset
 (`--layers 50 --reuse 1`). Ledger:
-[`docs/perf-runs/MI300X_2026-09-18_full.md`](docs/perf-runs/MI300X_2026-09-18_full.md).
+[`docs/perf-runs/MI300X_2026-09-18_full.md`](docs/perf-runs/MI300X_2026-09-18_full.md)
+and [`docs/perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md`](docs/perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md).
 
 | Name | Size | Knobs | Role |
 |------|------|-------|------|
@@ -78,7 +81,7 @@ port. Click a poster for the MP4. Several clips are **untitled** model output
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
 without TR (`main` 2026-09-12); `./bench/fox-15s.sh` (TR 4:30) is **26 min 56 s**
 on Strix Halo (gfx1151); **15 s E2E 12 min 12 s** / `fox-15s.sh` **8 min 13 s**
-on MI210 (gfx90a); **15 s process E2E 213 s** / `fox-15s.sh` **149 s**
+on MI210 (gfx90a); **15 s process E2E 199 s** / `fox-15s.sh` **149 s**
 on MI300X (gfx942) / `fox-15s-fast.sh` **118 s**.
 Halo same-seed 15 s **lossy** A/B (2026-09-16): `fox-15s.sh` TR is **27 min 46 s**
 at **18.23 dB / 0.667** vs dense; `--sol-attn` is **29 min 47 s** at
@@ -164,7 +167,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.12.0**. `h3 --info` prints `h3-hip 0.12.0`.
+Current tagged line is **v0.13.0**. `h3 --info` prints `h3-hip 0.13.0`.
 
 | Capability | Status |
 |------------|--------|
@@ -221,7 +224,7 @@ Same 15 s cinematic: Strix Halo (gfx1151) no-TR **40 min 4 s**;
 `./bench/fox-15s.sh` **26 min 56 s**; `./bench/fox-15s-fast.sh` **20 min 44 s**.
 MI210 (gfx90a) no-TR **12 min 12 s**; `fox-15s.sh` **8 min 13 s**;
 `fox-15s-fast.sh` **6 min 18 s**.
-MI300X (gfx942) no-TR **213 s**; `fox-15s.sh` **149 s**;
+MI300X (gfx942) no-TR **199 s**; `fox-15s.sh` **149 s**;
 `fox-15s-fast.sh` **118 s**.
 **`--sol-attn`** is a separate opt-in. Default stays dense (quality). 15 s no-TR
 versus dense: MI210 E2E **−18%** / SDPA **−29%** (18.73 dB / 6.69 dB SNR);
@@ -261,7 +264,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.12.0
+git checkout v0.13.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

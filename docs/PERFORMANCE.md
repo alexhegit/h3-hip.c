@@ -14,29 +14,30 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.12.0 (2026-09-12)
+## Current release — v0.13.0 (2026-09-21)
 
-One tree, three timed products. `h3 --info` prints `h3-hip 0.12.0`.
+One tree, three timed products. `h3 --info` prints `h3-hip 0.13.0`.
 Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
+
+v0.13.0 vs v0.12.0: quality-path CDNA flash SDPA (K/V prefetch + P-tile
+LDS pad; 864×480 · 15 s dense **215 → 199 s** on MI300X) and Sol-Attn
+past 64k tokens (1344×768 · 15 s). Short-clip process E2E is unchanged
+at the noise floor. Halo / MI210 15 s rows were not re-timed.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
 | fox-s2 process E2E | ~85–90 s (I/O) | **11.2 s** | **10.6 s** (DiT total **3.2 s**) |
 | fox-fast process E2E | ~2 min (I/O) | **19.5 s** | **9.8 s** (DiT total **5.0 s**) |
-| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **213 s** (no TR, 2026-09-18) |
+| 15 s cinematic E2E | **40 min 4 s** (no TR, 2026-09-12) | **12 min 12 s** (no TR, 2026-09-12) | **199 s** (no TR, v0.13) |
 | 15 s `./bench/fox-15s.sh` | **26 min 56 s** (2026-09-12) | **8 min 13 s** (2026-09-12) | **149 s** (2026-09-18) |
+| 15 s 1344×768 | — | — | dense **947 s** / TR **612 s** / Sol **719 s** |
 
 MI210 short-clip cells and Halo / MI210 15 s rows are `/usr/bin/time` to
-the muxed MP4 (`TIME_E2E` in the gfx90a logs). MI300X process E2E is the
-2026-09-18 retake of tag v0.12.0 (`b0ff702`): fox-s2 warm n=5 mean
-**10.6 s**; fox-fast warm n=5 mean **9.76 s** (same as the earlier n=10
-**9.82 s**); 15 s no-TR **213 s**, `fox-15s.sh` **149 s**,
-`fox-15s-fast.sh` **118 s**. Denoise matches 2026-09-12. The 2026-09-12
-MI300X cells (3.27 / 5.21 / 179.5 / 114.7 / 83.1 s) are **DiT total**,
-not process wall. Ledger:
-[`perf-runs/MI300X_2026-09-18_full.md`](perf-runs/MI300X_2026-09-18_full.md).
-Do not compare DiT total to v0.11.0 fox-fast **~12 s** (that cell was
-process E2E; denoise was already **1.86 s**).
+the muxed MP4. MI300X short clips and 864×480 TR remain the 2026-09-18
+v0.12.0 retake (`b0ff702`). 15 s no-TR **199 s** is the 2026-09-21 quality
+SDPA A/B (was **213 s** on v0.12.0). 1.0MP ledger:
+[`perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md`](perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md).
+Do not compare DiT total to v0.11.0 fox-fast **~12 s**.
 
 Strix Halo (gfx1151) fox-s2 on **v0.9.0** was md5 `1731f95c4aa582597cf83d57f46b8f9e`. On
 this tree the default VAE tile is 512 px (1×1), so fox-s2 bytes changed:

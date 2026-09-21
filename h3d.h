@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#define H3D_VERSION "0.12.0-exp"
+#define H3D_VERSION "0.13.0-exp"
 #define H3D_PROTOCOL "v1alpha"
 #define H3D_DEFAULT_PORT 8571
 #define H3D_MAX_JOB_ID 32

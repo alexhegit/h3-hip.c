@@ -3,8 +3,8 @@
 MiniMax-H3 on h3-hip.c supports up to **362 aligned frames** (~15 s at 24 fps).
 Long clips are dominated by **DiT denoise wall time**, not the short fox
 presets. Short fox-fast on MI300X is warm **process E2E 9.8 s**. 15 s
-no-TR process E2E is **213 s** (denoise **176 s**; the old 179.5 s cell
-was DiT total). Same knobs on Strix Halo (gfx1151), MI210 (gfx90a), and MI300X
+no-TR process E2E is **199 s** on v0.13.0 (v0.12.0 was **213 s**; denoise
+**176 s**). Same knobs on Strix Halo (gfx1151), MI210 (gfx90a), and MI300X
 (gfx942): `--steps 20 --layers 45 --reuse 2`
 (11 DiT evaluations), 864×480, T2VA, no references.
 
@@ -24,7 +24,7 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 | **15 s cinematic office** | MI210 (gfx90a) | **15.1 s (362 f)** | **12 min 12 s** | **10 min 47 s** | no TR, 2026-09-12; [`gfx90a-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx90a-2026-09-12-fox-15s-notr.log) |
 | **15 s `fox-15s.sh`** | MI210 (gfx90a) | **15.1 s (362 f)** | **8 min 13 s** | **6 min 48 s** | reuse=2+TR; [`gfx90a-2026-09-12-fox-15s.log`](../perf-runs/gfx90a-2026-09-12-fox-15s.log) |
 | **15 s-fast** | MI210 (gfx90a) | **15.1 s (362 f)** | **6 min 18 s** | **4 min 54 s** | reuse=3+TR; [`gfx90a-2026-09-12-fox-15s-fast.log`](../perf-runs/gfx90a-2026-09-12-fox-15s-fast.log) |
-| **15 s cinematic office** | MI300X (gfx942) | **15.1 s (362 f)** | **213 s** | **175.5 s** | no TR, process E2E 2026-09-18; DiT total was 179.5 s on 2026-09-12 |
+| **15 s cinematic office** | MI300X (gfx942) | **15.1 s (362 f)** | **199 s** | **176 s** | no TR, v0.13 quality SDPA; v0.12.0 process E2E was 213 s |
 | **15 s `fox-15s.sh`** | MI300X (gfx942) | **15.1 s (362 f)** | **149 s** | **111.0 s** | reuse=2+TR; process E2E 2026-09-18 |
 | **15 s-fast** | MI300X (gfx942) | **15.1 s (362 f)** | **118 s** | **80.1 s** | reuse=3+TR; process E2E 2026-09-18 |
 | **15 s 1344×768 dense A/B** | MI300X (gfx942) | **15.1 s (362 f)** | **1027 → 947 s (−7.8%)** | **912 → 833 s** | max canvas, no TR; [`MI300X_2026-09-21_1344x768-15s-sdpa.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md) |
@@ -87,7 +87,7 @@ Sol-Attn **719 s** (17.7 dB); Sol-Attn needs the >64k-token path.
 |--|--:|--:|
 | Strix Halo (gfx1151) 15 s E2E | **40 min 4 s** (no TR, 2026-09-12) | **26 min 56 s** (`fox-15s.sh`) |
 | MI210 (gfx90a) 15 s E2E | **12 min 12 s** (no TR, 2026-09-12) | **8 min 13 s** (`fox-15s.sh`) |
-| MI300X (gfx942) 15 s E2E | **213 s** (no TR, process, 2026-09-18) | **149 s** (`fox-15s.sh`) |
+| MI300X (gfx942) 15 s E2E | **199 s** (no TR, v0.13) | **149 s** (`fox-15s.sh`) |
 
 ## Reproduce the 10 s clip
 

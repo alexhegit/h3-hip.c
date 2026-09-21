@@ -9,7 +9,7 @@ Canonical knobs: upstream tutorial §2, **without** `--show`.
   -o outputs/fox-fast.mp4
 ```
 
-**Current (v0.12.0 MI300X process E2E):** [`MI300X_2026-09-18_full.md`](MI300X_2026-09-18_full.md) (fox-fast **9.8 s**, fox-s2 **10.6 s**, 15 s no-TR **213 s**). Halo v0.9.0 tables: [`V0.9.0.md`](V0.9.0.md) and vs M5 Max [`VS_UPSTREAM.md`](VS_UPSTREAM.md).
+**Current (v0.13.0):** short clips still [`MI300X_2026-09-18_full.md`](MI300X_2026-09-18_full.md) (fox-fast **9.8 s**, fox-s2 **10.6 s**). 15 s no-TR **199 s** (v0.12.0 was **213 s**). Halo v0.9.0 tables: [`V0.9.0.md`](V0.9.0.md) and vs M5 Max [`VS_UPSTREAM.md`](VS_UPSTREAM.md).
 
 ---
 
