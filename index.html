@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MiniMax-H3 on AMD HIP — h3-hip.c</title>
-<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. v0.11.0 on Strix Halo, MI210, and MI300X. Pass HIP_ARCH yourself.">
+<meta name="description" content="HIP port of antirez/h3.c for MiniMax-H3 T2VA. v0.13.0 on Strix Halo, MI210, and MI300X. Pass HIP_ARCH yourself.">
 <style>
   :root {
     --bg: #0b0c0e;
@@ -145,20 +145,20 @@
 
 <header>
   <div class="wrap">
-    <div class="eyebrow">v0.11.0 · Strix Halo · MI210 · MI300X</div>
+    <div class="eyebrow">v0.13.0 · Strix Halo · MI210 · MI300X</div>
     <h1>MiniMax-H3 on AMD HIP
-      <span class="sub">v0.11.0: Halo vs v0.9.0, plus MI210 and MI300X — quality path and opt-in speed path.</span>
+      <span class="sub">v0.13.0: quality-path CDNA flash SDPA, Sol-Attn past 64k tokens, 1.0MP 15 s on MI300X.</span>
     </h1>
     <p class="lede">
       <a href="https://github.com/alexhegit/h3-hip.c">h3-hip.c</a> reimplements the GPU backend of
       <a href="https://github.com/antirez/h3.c">antirez/h3.c</a> in HIP. Pass
       <span class="mono">HIP_ARCH=gfx1151</span>, <span class="mono">gfx90a</span>, or
       <span class="mono">gfx942</span> — the Makefile does not probe the GPU. Tagged
-      <span class="mono">v0.11.0</span>.
+      <span class="mono">v0.13.0</span>. INT8 DiT is the default on all three SKUs.
     </p>
     <div class="hero-links">
       <a class="btn primary" href="https://github.com/alexhegit/h3-hip.c">Repository</a>
-      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.11.0">v0.11.0</a>
+      <a class="btn" href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.13.0">v0.13.0</a>
       <a class="btn" href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a class="btn" href="#targets">GPUs</a>
       <a class="btn" href="#results">Results</a>
@@ -240,7 +240,7 @@
       Scoreboard columns are <strong>product SKUs we timed</strong>, not ISA names.
       <span class="mono">gfx90a</span> also builds for MI250 / MI250X; those numbers are not on this page.
       Build with <span class="mono">make HIP_ARCH=gfx1151</span>, <span class="mono">gfx90a</span>, or
-      <span class="mono">gfx942</span>. CDNA INT8 DiT is opt-in (<span class="mono">H3_INT8_MLP=1</span>).
+      <span class="mono">gfx942</span>. INT8 DiT is the default (<span class="mono">H3_INT8_MLP=0</span> restores BF16).
     </p>
   </div>
 </section>
@@ -256,6 +256,51 @@
       <strong>MI210</strong> and <strong>MI300X</strong> with a quality path and an opt-in speed path.
       Wall time moves with page-cache state; <strong>denoise GPU time</strong> (HIP events) is the
       figure to trust. Do not put MI210 / MI300X into the August multipliers.
+    </p>
+
+    <h3>v0.13.0 — current (21 Sep 2026)</h3>
+    <p>
+      Quality-path CDNA flash SDPA (K/V prefetch + P-tile LDS pad) and Sol-Attn
+      sequences past 64k tokens. Short-clip process E2E is unchanged at the noise
+      floor. Halo / MI210 15 s rows were not re-timed. Cells are
+      <strong>process E2E</strong> (time to muxed MP4), not DiT total.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Preset</th>
+          <th class="num">Strix Halo<br><span class="mono">(gfx1151)</span></th>
+          <th class="num">MI210<br><span class="mono">(gfx90a)</span></th>
+          <th class="num">MI300X<br><span class="mono">(gfx942)</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="hi">
+          <td><strong>fox-s2</strong> process E2E</td>
+          <td class="num">~85–90 s (I/O)</td><td class="num">11.2 s</td><td class="num">10.6 s</td>
+        </tr>
+        <tr class="hi">
+          <td><strong>fox-fast</strong> process E2E</td>
+          <td class="num">~2 min (I/O)</td><td class="num">19.5 s</td><td class="num">9.8 s</td>
+        </tr>
+        <tr class="hi">
+          <td><strong>15 s cinematic</strong> (864×480, no TR)</td>
+          <td class="num">40 min 4 s</td><td class="num">12 min 12 s</td><td class="num">199 s</td>
+        </tr>
+        <tr class="hi">
+          <td><strong>15 s</strong> <span class="mono">fox-15s.sh</span></td>
+          <td class="num">26 min 56 s</td><td class="num">8 min 13 s</td><td class="num">149 s</td>
+        </tr>
+        <tr class="hi">
+          <td><strong>15 s 1344×768</strong></td>
+          <td class="num">—</td><td class="num">—</td><td class="num">dense 947 s · TR 612 s · Sol 719 s</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="cap">
+      v0.12.0 MI300X 15 s no-TR was <strong>213 s</strong>. 1.0MP Sol-Attn needs the
+      &gt;64k-token overflow path. Scoreboard:
+      <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/PERFORMANCE.md">PERFORMANCE.md</a>.
     </p>
 
     <h3>v0.9.0 — Strix Halo kernel milestone (18–26 Aug)</h3>
@@ -693,7 +738,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
   <div class="wrap">
     <div class="foot-links">
       <a href="https://github.com/alexhegit/h3-hip.c">alexhegit/h3-hip.c</a>
-      <a href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.11.0">v0.11.0</a>
+      <a href="https://github.com/alexhegit/h3-hip.c/releases/tag/v0.13.0">v0.13.0</a>
       <a href="https://github.com/alexhegit/h3-hip.c/wiki">Wiki</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/PERFORMANCE.md">Scoreboard</a>
       <a href="https://github.com/alexhegit/h3-hip.c/blob/main/docs/KNOWN_ISSUES.md">Known issues</a>
@@ -706,7 +751,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
       is <span class="mono">backends/h3_gpu_hip.c</span> plus the kernels under
       <span class="mono">kernels/</span>. Model weights are subject to the MiniMax-H3 license.
       Measured on Strix Halo (Ryzen AI MAX+ 395), Instinct MI210, and Instinct MI300X. Tagged
-      <span class="mono">v0.11.0</span> as of 3 Sep 2026.
+      <span class="mono">v0.13.0</span> as of 21 Sep 2026.
       MI250 / MI250X share <span class="mono">HIP_ARCH=gfx90a</span> with MI210 but were not timed.
       Default fox-s2 md5 is no longer the v0.9.0 gate.
     </p>
