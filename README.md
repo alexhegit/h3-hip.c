@@ -252,7 +252,17 @@ say MI300X fox-fast “5.2 s E2E” or 15 s “179.5 s E2E” (those were DiT to
   - **Strix Halo (gfx1151)** — RDNA. Runtime: INT8 DiT + rocWMMA SDPA.
   - **MI210 (gfx90a)** — CDNA2. Runtime: BF16 DiT + MFMA flash SDPA. MI250 / MI250X share this ISA; they were not timed.
   - **MI300X (gfx942)** — CDNA3. Same CDNA kernel paths as MI210.
-- Official BF16 checkpoint at `MiniMax-H3/` (`FL2VA/*`, optional `Ref2VA/*`)
+- Official BF16 checkpoint at `MiniMax-H3/` (`FL2VA/*`, optional `Ref2VA/*`).
+  The full repo is about 464 GiB; this tree does not read the root
+  `transformer/`, `transformer_ref/`, `text_encoder/`, or `vae/` copies.
+  Partial download:
+
+  ```bash
+  pip install -U "huggingface_hub[cli]"
+  ./tools/download_weights.sh --dir ./MiniMax-H3          # T2VA / FL2VA, ~134 GiB
+  ./tools/download_weights.sh --dir ./MiniMax-H3 --both   # also Ref2VA, ~268 GiB
+  export H3_MODEL=$PWD/MiniMax-H3
+  ```
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)
 

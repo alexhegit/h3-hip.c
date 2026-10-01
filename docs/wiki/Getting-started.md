@@ -57,10 +57,23 @@ Set `H3_MODEL` if weights are not at the Makefile default
 
 ## Weights
 
-Official [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). T2VA uses
-`text_encoder/`, `transformer/`, `vae/`, and the audio decoder. See
-[T2VA pipeline](T2VA-pipeline.md) for dtypes (checkpoint BF16/F32; INT8 is
-runtime-only on gfx1151).
+Official [MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). The full
+repo is about **464 GiB** and contains three copies of the same components.
+`h3` opens **`FL2VA/`** for T2VA and first/last-frame (~134 GiB: text encoder,
+DiT, video VAE, audio VAE, tokenizer). Ordered references switch those five
+paths to **`Ref2VA/`** (~134 GiB more). The root `transformer/`,
+`transformer_ref/`, `text_encoder/`, and `vae/` trees are not opened.
+
+```bash
+pip install -U "huggingface_hub[cli]"
+./tools/download_weights.sh --dir ./MiniMax-H3          # T2VA / FL2VA
+./tools/download_weights.sh --dir ./MiniMax-H3 --ref2va # add references later
+./tools/download_weights.sh --dry-run                   # print patterns only
+export H3_MODEL=$PWD/MiniMax-H3
+```
+
+Dtypes: [T2VA pipeline](T2VA-pipeline.md). Checkpoint stays BF16/F32; INT8 is
+runtime-only.
 
 ## First T2VA
 

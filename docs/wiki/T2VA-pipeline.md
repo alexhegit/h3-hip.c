@@ -4,8 +4,12 @@ Text-to-video+audio on official [MiniMax-H3](https://huggingface.co/MiniMaxAI/Mi
 weights. There is no separate FP32 dump of Qwen/DiT and no INT8/FP8 checkpoint.
 Runtime INT8 is the default on all ISAs. Set `H3_INT8_MLP=0` for BF16.
 
-T2VA does not load `FL2VA/`, `Ref2VA/`, or `transformer_ref`. Vision encoder and
-VAE encoders run only with `--first-frame` / `--ref-*`.
+T2VA and first/last-frame load `FL2VA/` (tokenizer, text encoder, DiT, video
+VAE, audio VAE). `--ref-*` switches those five paths to `Ref2VA/`. The root
+`transformer/`, `transformer_ref/`, `text_encoder/`, and `vae/` copies are not
+opened. Download only the partition you need with
+[`tools/download_weights.sh`](../../tools/download_weights.sh). Vision and VAE
+encoders run only with `--first-frame` / `--ref-*`.
 
 ## Forward path
 
