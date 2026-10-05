@@ -12,8 +12,13 @@ the Makefile does **not** probe the GPU.
 Timed scoreboard SKUs are Strix Halo, MI210, and MI300X. MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.13.0** adds quality-path CDNA flash SDPA and Sol-Attn past
-64k tokens (1344×768 · 15 s). INT8 DiT is default on all ISAs. Strix Halo
+Tagged **v0.14.0** adds opt-in `--fbc` (first-block cache). It is the
+fastest lossy knob on the 50-step reuse-1 5 s fixture (gfx1151 3478 → 698 s,
+gfx942 167 → 53 s) and only a small change on 15 s `--reuse 2` (gfx1151
+2457 → 2206 s, slower than TR and Sol-Attn; gfx942 136 s vs `fox-15s.sh`
+146 s). Audio is worse than Sol-Attn. Do not combine with
+`--token-reduction`. v0.13.0 added quality-path CDNA flash SDPA and
+Sol-Attn past 64k tokens. INT8 DiT is default on all ISAs. Strix Halo
 (gfx1151) fox-s2 **v0.9.0** md5 `1731f95c4aa582597cf83d57f46b8f9e` is the historical
 gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 `34507f072c5cabbde6592b3f70b8fa35`.
@@ -23,7 +28,7 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.13.0
+git checkout v0.14.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

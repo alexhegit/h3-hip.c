@@ -56,6 +56,13 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   win on MI300X; **not** a gfx1151 short-clip win in the 2026-09-03 retune).
 - `H3_TOKEN_REDUCTION=1` halves spatial width in middle DiT blocks (~37% faster
   long video). Same as `--token-reduction`.
+- `--fbc` / `H3_FBC=1` is **lossy** first-block cache (off by default). It
+  always runs block 0 and skips the rest of the step when the accumulated
+  relative L2 stays under `H3_FBC_REL` (default 0.15). Head/tail steps
+  (`H3_FBC_HEAD` / `H3_FBC_TAIL`, default 2) stay dense. It does not
+  replace `--reuse`. Do not combine with `--token-reduction`, core reuse
+  above 1, or `--ssd-streaming`. Strongest on 50-step reuse-1 clips;
+  small on 15 s `--reuse 2`. See `docs/PERFORMANCE.md`.
 - `--sol-attn` / `H3_SOL_ATTN=1` is **lossy** long SDPA (off by default).
   Measured on gfx1151, gfx90a, and gfx942. gfx1151 uses a separate wave32
   rocWMMA sparse kernel. Do not stack with `--token-reduction` by default.

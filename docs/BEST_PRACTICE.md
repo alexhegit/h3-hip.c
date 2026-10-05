@@ -27,6 +27,9 @@ H3_INT8_VAE=1 H3_TOKEN_REDUCTION=1 H3_GPU_SAMPLER=1 ./h3 ...
 | `H3_TOKEN_REDUCTION` | `0` | Halve spatial width in middle layers (−33% denoise) |
 | `H3_TOKEN_REDUCTION_SCHEDULE` | (none) | Per-step TR range schedule (see below) |
 | `H3_SOL_ATTN` | `0` | Lossy sparse SDPA (`--sol-attn`); **off** = quality path |
+| `H3_FBC` | `0` | First-block cache (`--fbc`); **off** = full DiT every evaluated step |
+| `H3_FBC_REL` | `0.15` | Accumulated block-0 relative L2 under which later blocks are skipped |
+| `H3_FBC_HEAD` / `H3_FBC_TAIL` | `2` / `2` | Leading and trailing steps that always run the full DiT |
 | `H3_GPU_SAMPLER` | `0` | GPU Euler sampler (reduces latency) |
 | `H3_VAE_TILE_PIXELS` | `480` | VAE tile size (256–512) |
 
@@ -108,6 +111,17 @@ Or use the preset script: `./bench/fox-15s-fast.sh`
 
 > ~15 dB: noticeable softness across the frame, some temporal drift in fine
 > details. Still recognisable; suitable for previews and rapid iteration.
+
+**`--fbc`** is another lossy knob and does not replace `--reuse`. Use it
+when the clip is many consecutive full steps (the 50-step reuse-1 5 s
+fixture): gfx1151 **3478 → 698 s**, video 16.68 dB; gfx942 **167 → 53 s**,
+video 16.35 dB, both better video PSNR than Sol-Attn and token reduction
+on that fixture. Audio SNR is worse than Sol-Attn. On 15 s `--reuse 2`,
+only 5 of 11 evaluations skip: gfx1151 **2206 s** is slower than TR
+(1666 s) and Sol-Attn (1787 s); gfx942 **136 s** is only a little under
+`fox-15s.sh` (146 s) and slower than `fox-15s-fast.sh` (118 s). Do not
+combine with `--token-reduction`.
+[`PERFORMANCE.md`](PERFORMANCE.md#first-block-cache---fbc).
 
 Optional **`--sol-attn`** is a different lossy knob (sparse SDPA, not token
 pairing). Default remains dense. Do not stack with `--token-reduction`

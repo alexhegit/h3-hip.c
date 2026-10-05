@@ -1,0 +1,21 @@
+===== sol-tau1-b2-50 =====
+[Parsed_psnr_0 @ 0x6073552cd040] PSNR y:12.250577 u:29.139536 v:28.970957 average:13.966396 min:8.306546 max:16.614069
+[Parsed_ssim_1 @ 0x6073555d1500] SSIM Y:0.463725 (2.706121) U:0.867787 (8.787246) V:0.860518 (8.554826) All:0.597201 (3.949111)
+audio samples=331776 SNR=5.3460 dB ref_rms=0.10148279 err_rms=0.05483926
+c4b0afeef2d5d17286cc8b274c7a8942  /mnt/doscratch/h3-hip.c/outputs/mi300x-ondevice-p1-sol-tau1-b2-50.mp4
+===== sol-tau05-b4-40 =====
+[Parsed_psnr_0 @ 0x56231442d040] PSNR y:12.688618 u:29.987581 v:30.433970 average:14.411231 min:8.045117 max:17.937959
+[Parsed_ssim_1 @ 0x562314732240] SSIM Y:0.503365 (3.039627) U:0.883753 (9.346165) V:0.880495 (9.226154) All:0.629618 (4.313501)
+audio samples=331776 SNR=6.3836 dB ref_rms=0.10148279 err_rms=0.04866462
+3f32caab64ea0f0aa892745828e1d03f  /mnt/doscratch/h3-hip.c/outputs/mi300x-ondevice-p1-sol-tau05-b4-40.mp4
+===== fbc =====
+[Parsed_psnr_0 @ 0x60ba63e07040] PSNR y:14.664755 u:28.577464 v:29.342419 average:16.345334 min:13.607535 max:19.630728
+[Parsed_ssim_1 @ 0x60ba6410c2c0] SSIM Y:0.536474 (3.339258) U:0.873801 (8.989453) V:0.871420 (8.908252) All:0.648519 (4.540987)
+audio samples=331776 SNR=1.2917 dB ref_rms=0.10148279 err_rms=0.08745926
+5366d2ca09b684e78a5c3202d5300ac3  /mnt/doscratch/h3-hip.c/outputs/mi300x-ondevice-p1-fbc.mp4
+===== tr =====
+[Parsed_psnr_0 @ 0x5649b762b040] PSNR y:13.263736 u:30.830910 v:29.593054 average:14.980581 min:11.526414 max:17.389120
+[Parsed_ssim_1 @ 0x5649b792ef00] SSIM Y:0.510878 (3.105826) U:0.886309 (9.442754) V:0.876822 (9.094669) All:0.634440 (4.370418)
+audio samples=331776 SNR=-4.2598 dB ref_rms=0.10148279 err_rms=0.16572297
+9c9bd45b8c0c6a77449599fb2d7bda54  /mnt/doscratch/h3-hip.c/outputs/mi300x-ondevice-p1-tr.mp4
+66b7f67216918ba712b27a909052eb33  /mnt/doscratch/h3-hip.c/outputs/mi300x-ondevice-p1-baseline.mp4

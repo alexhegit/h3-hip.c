@@ -29,6 +29,8 @@ Build with `HIP_ARCH=gfx1151`, `HIP_ARCH=gfx90a`, or `HIP_ARCH=gfx942`
 | **15 s-fast** | MI300X (gfx942) | **15.1 s (362 f)** | **118 s** | **80.1 s** | reuse=3+TR; process E2E 2026-09-18 |
 | **15 s 1344×768 dense A/B** | MI300X (gfx942) | **15.1 s (362 f)** | **1027 → 947 s (−7.8%)** | **912 → 833 s** | max canvas, no TR; [`MI300X_2026-09-21_1344x768-15s-sdpa.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md) |
 | **15 s 1344×768 TR / Sol-Attn** | MI300X (gfx942) | **15.1 s (362 f)** | dense **947 s** / TR **612 s** / Sol **719 s** | 833 / 497 / 605 s | not stacked; [`MI300X_2026-09-21_1344x768-15s-tr-sol.md`](../perf-runs/MI300X_2026-09-21_1344x768-15s-tr-sol.md) |
+| **15 s `--fbc`** | Strix Halo (gfx1151) | **15.1 s (362 f)** | **2206 s** (−10% vs 2457 s dense) | **1916 s** | reuse 2, no TR; slower than TR and Sol-Attn; [`HALO_SOL_ATTN_2026-09-16.md`](../perf-runs/HALO_SOL_ATTN_2026-09-16.md) |
+| **15 s `--fbc`** | MI300X (gfx942) | **15.1 s (362 f)** | **136 s** | **93 s** | reuse 2, no TR; same-day `fox-15s.sh` **146 s**; [`MI300X_ONDEVICE_2026-10-05.md`](../perf-runs/MI300X_ONDEVICE_2026-10-05.md) |
 
 Posters: `assets/showcase/long-*-cinematic.jpg`  
 Halo phase splits: [`docs/perf-runs/LONG_VIDEO.md`](../perf-runs/LONG_VIDEO.md)  
@@ -80,6 +82,15 @@ Halo three-way (dense / TR / Sol-Attn, not stacked): TR is faster
 dense (**1787 s**, 19.55 dB / 0.721, audio **10.99 dB**). Play
 [fox-15s-3way-compare-gfx1151.mp4](../../assets/showcase/fox-15s-3way-compare-gfx1151.mp4).
 See [`docs/SOL_ATTN.md`](../SOL_ATTN.md).
+
+**`--fbc`** (v0.14.0, off by default) skips the rest of a DiT step when
+block 0 has barely moved. It wins the 50-step reuse-1 5 s fixture on
+both gfx1151 (**698 s**, 16.68 dB) and gfx942 (**53 s**, 16.35 dB). On
+this 15 s reuse-2 schedule the skip rate falls to 5/11: gfx1151
+**2206 s** is slower than TR and Sol-Attn; gfx942 **136 s** is only
+slightly under `fox-15s.sh`. Audio is worse than Sol-Attn. Do not stack
+with `--token-reduction`.
+[`PERFORMANCE.md`](../PERFORMANCE.md#first-block-cache---fbc).
 MI300X **1344×768 · 15 s**: dense **947 s**, TR **612 s** (16.9 dB),
 Sol-Attn **719 s** (17.7 dB); Sol-Attn needs the >64k-token path.
 

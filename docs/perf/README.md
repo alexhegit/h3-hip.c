@@ -35,6 +35,7 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt`](../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt) | gfx1151 fox default / sampler / all-opts `--profile` |
 | [`../perf-runs/HALO_2026-09-12.md`](../perf-runs/HALO_2026-09-12.md) | gfx1151 `bench/` retune on current `main` |
 | [`../perf-runs/HALO_ONDEVICE_2026-10-05.md`](../perf-runs/HALO_ONDEVICE_2026-10-05.md) | gfx1151 H3-OnDevice 832×480 · 5 s · 50-step baseline (carveout 32 GiB) |
+| [`../perf-runs/MI300X_ONDEVICE_2026-10-05.md`](../perf-runs/MI300X_ONDEVICE_2026-10-05.md) | gfx942 same 5 s fixture plus 15 s `fox-15s` `--fbc` vs TR |
 | [`../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log) | gfx1151 15 s quality path, no TR |
 | [`../perf-runs/HALO_SOL_ATTN_2026-09-16.md`](../perf-runs/HALO_SOL_ATTN_2026-09-16.md) | gfx1151 15 s dense / TR / Sol-Attn, plus 2026-10-05 `--fbc` |
 | [`../perf-runs/gfx1151-2026-10-05-fox-15s-fbc.log`](../perf-runs/gfx1151-2026-10-05-fox-15s-fbc.log) | gfx1151 15 s `--fbc`, reuse 2, no TR (2206 s) |

@@ -12,9 +12,19 @@ were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.13.0** adds quality-path CDNA flash SDPA (K/V prefetch +
-P-tile LDS pad) and Sol-Attn past 64k tokens (released **1344×768 · 15 s**
-canvas). INT8 DiT is default on all ISAs (`H3_INT8_MLP=0` for BF16).
+Tagged **v0.14.0** adds opt-in **`--fbc`** (first-block cache). It always
+runs the first active DiT block and skips the rest of that step when the
+block-0 residual has barely moved. It does not replace `--reuse`. On the
+50-step reuse-1 5 s fixture it is the fastest of the lossy knobs and the
+closest video to dense on both gfx1151 (**3478 → 698 s**, 16.68 dB) and
+gfx942 (**167 → 53 s**, 16.35 dB). On 15 s `fox-15s` with `--reuse 2` the
+gain shrinks to about 10% on gfx1151 (**2457 → 2206 s**), where it is
+slower than token reduction and Sol-Attn; on gfx942 the same knobs are
+**136 s**, only a little under `fox-15s.sh` (**146 s**) and still slower
+than `fox-15s-fast.sh` (**118 s**). Audio SNR is worse than Sol-Attn.
+Do not combine with `--token-reduction`. v0.13.0 remains the quality-path
+CDNA flash SDPA and Sol-Attn-past-64k release. INT8 DiT is default on all
+ISAs (`H3_INT8_MLP=0` for BF16).
 v0.12.0 was TR schedule + fused AdaLN + 3-GPU retune; v0.11.x had opt-in
 INT8; v0.10.x is the dual-ISA history; v0.9.x is Strix Halo only. The original project is a native MiniMax-H3
 inference engine (Apple Metal / macOS); this repository reimplements the
@@ -167,7 +177,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.13.0**. `h3 --info` prints `h3-hip 0.13.0`.
+Current tagged line is **v0.14.0**. `h3 --info` prints `h3-hip 0.14.0`.
 
 | Capability | Status |
 |------------|--------|
@@ -179,6 +189,7 @@ Current tagged line is **v0.13.0**. `h3 --info` prints `h3-hip 0.13.0`.
 | `--frames-dir` / `--ssd-streaming` | ✅ |
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
 | `--sol-attn` | ✅ opt-in **lossy** long SDPA on **Strix Halo + MI210 + MI300X** (measured) |
+| `--fbc` | ✅ opt-in **lossy** first-block cache on gfx1151 and gfx942 (measured). Best on 50-step reuse-1 clips; small on 15 s reuse-2. Not with `--token-reduction` |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
 
 ## Daemon (experimental)
@@ -210,6 +221,7 @@ Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
 - **`--sol-attn`** (lossy long SDPA; off by default): [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md)
+- **`--fbc`** (lossy first-block cache; off by default): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md#first-block-cache---fbc)
 - **Known gaps:** [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 - **`--serve` daemon / DSH plugin:** [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md)
 
@@ -274,7 +286,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.13.0
+git checkout v0.14.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

@@ -14,9 +14,50 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.13.0 (2026-09-21)
+## Current release — v0.14.0 (2026-10-05)
 
-One tree, three timed products. `h3 --info` prints `h3-hip 0.13.0`.
+`h3 --info` prints `h3-hip 0.14.0`. Build with `make HIP_ARCH=gfx1151`,
+`gfx90a`, or `gfx942`. The v0.13.0 scoreboard below is unchanged:
+`--fbc` is opt-in and was not folded into `bench/`.
+
+### First-block cache (`--fbc`)
+
+Off by default. Every denoiser step still runs the first active DiT block.
+If the accumulated relative L2 of that block's residual stays under
+`H3_FBC_REL` (default **0.15**), the remaining blocks are skipped and a
+cached tail residual is added. The first `H3_FBC_HEAD` and last
+`H3_FBC_TAIL` steps (default **2**) always run the full DiT. This does
+not replace `--reuse`. It cannot be combined with `--token-reduction`,
+core reuse above 1, or `--ssd-streaming`.
+
+**Advantage.** On a 50-step, `--reuse 1`, 832×480 · 5 s fixture, `--fbc`
+is the fastest lossy path and the closest video to that machine's dense
+clip. Consecutive steps are similar (block-0 relative L2 about 0.02), so
+**41 of 50** steps skip and both SDPA and linear drop. gfx1151:
+**3478 → 698 s** (4.98×), video **16.68 dB / 0.707**. gfx942:
+**167 → 53 s** (3.13×), video **16.35 dB / 0.649**. The skip list matches
+(full steps 1–2, 11, 22, 33, 41, 46, 49–50).
+
+**Disadvantage.** The soundtrack is worse than Sol-Attn (gfx1151 audio
+SNR **3.87 dB** vs 5.2–6.6 dB; gfx942 **1.29 dB** vs 5.3–6.4 dB). On 15 s
+`fox-15s` knobs (`--reuse 2`, 20 steps, 45 layers) only 11 steps are
+evaluated and they are two scheduler steps apart, so relative L2 sits
+around 0.05–0.09 and only **5 of 11** evaluations skip. gfx1151 E2E
+**2457 → 2206 s** (−10%), slower than token reduction (**1666 s**) and
+Sol-Attn τ=0.5 (**1787 s**); SDPA 1584 → 1331 s while linear stays about
+560 s. gfx942 E2E **136 s**, a little under the same-day `fox-15s.sh`
+(**146 s**, September was **149 s**) and still slower than
+`fox-15s-fast.sh` (**118 s**). No 15 s `--fbc` PSNR versus dense was
+measured. Each step syncs once after block 0.
+
+Ledgers:
+[`perf-runs/HALO_ONDEVICE_2026-10-05.md`](perf-runs/HALO_ONDEVICE_2026-10-05.md),
+[`perf-runs/HALO_SOL_ATTN_2026-09-16.md`](perf-runs/HALO_SOL_ATTN_2026-09-16.md),
+[`perf-runs/MI300X_ONDEVICE_2026-10-05.md`](perf-runs/MI300X_ONDEVICE_2026-10-05.md).
+
+## v0.13.0 (2026-09-21)
+
+One tree, three timed products. `h3 --info` on that tag prints `h3-hip 0.13.0`.
 Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 
 v0.13.0 vs v0.12.0: quality-path CDNA flash SDPA (K/V prefetch + P-tile
