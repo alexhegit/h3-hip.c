@@ -77,3 +77,32 @@ Stills:
 [`t8`](../../assets/showcase/fox-15s-3way-t8s.jpg) ·
 [`t11`](../../assets/showcase/fox-15s-3way-t11s.jpg) ·
 [`t14`](../../assets/showcase/fox-15s-3way-t14s.jpg).
+
+## 2026-10-05 — same knobs plus `--fbc`
+
+Same prompt, 864×480, 362 frames, `--steps 20 --layers 45 --reuse 2`,
+seed 42, no `--token-reduction`, no `--sol-attn`. `--fbc` defaults
+(accumulated relative L2 0.15, head 2, tail 2). Tree `main` @ `fadfcda`,
+VRAM carveout 32 GiB. The September dense / TR / Sol-Attn rows above are
+an older tree. The September dense MP4 is not on this disk, so this row
+has no PSNR.
+
+| path | E2E | denoise | sdpa / linear | attention calls |
+|---|---:|---:|---|---:|
+| dense (2026-09-15) | **2457.04 s** | 2170.15 s | 1583.504 / 553.875 s | 495 |
+| `--fbc` (2026-10-05) | **2206.19 s** (−10.2%) | 1916.435 s | 1331.428 / 561.583 s | 275 |
+| `--token-reduction` (2026-09-16) | **1666.33 s** | 1371.25 s | — | — |
+| `--sol-attn` τ=0.5 (2026-09-15) | **1786.72 s** | 1506.12 s | — | — |
+
+`--reuse 2` only evaluates 11 of 20 steps (1, 3, …, 19, 20). Those steps
+are two scheduler steps apart, so block-0 relative L2 sat around
+0.05–0.09, not the ~0.02 of consecutive 50-step evaluations. **6 full /
+5 skip** (full steps 1, 5, 11, 17, 19, 20). Attention calls 495 → 275
+(`6×45 + 5×1`). Denoise wall only fell 12%: SDPA 1584 → 1331 s, linear
+stayed ~560 s. Video VAE 209.9 → 247.3 s. Peak **29.699 GiB**.
+
+On this fixture `--fbc` is the smaller speedup. TR and Sol-Attn τ=0.5
+from September remain faster. Output
+`outputs/fox-15s-fbc-gfx1151.mp4` (864×480, 362 frames, 15.083 s), md5
+`cb127873d7fc818ecd9d33bd559ac9e1`. Log:
+[`gfx1151-2026-10-05-fox-15s-fbc.log`](gfx1151-2026-10-05-fox-15s-fbc.log).
