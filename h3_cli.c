@@ -169,6 +169,7 @@ static void print_help(void) {
     puts("  !core-reuse [N]          Set or show core reuse");
     puts("  !token-reduction [on|off]  Toggle token reduction (quality trade)");
     puts("  !sol-attn [on|off]         Toggle lossy Sol-Attn SDPA (off by default)");
+    puts("  !fbc [on|off]              Toggle first-block cache (off by default)");
     puts("  !ssd-streaming [on|off]   Toggle original-BF16 SSD streaming");
     puts("  !int8-row-fc2 [on|off]    Toggle faster one-scale FC2");
     puts("  !reference-rope [on|off]  Toggle released spatial RoPE");
@@ -198,11 +199,12 @@ static void print_status(const h3_cli_state *state) {
     printf("\nFrames: %d requested, %d generated (%.3g seconds)\n",
            state->params.frames, aligned, (double)aligned / H3_FPS);
     printf("Steps: %d | reuse: %d | layers: %d | core reuse: %d | "
-           "tokens: %s | attn: %s | weights: %s | FC2: %s\n",
+           "tokens: %s | attn: %s%s | weights: %s | FC2: %s\n",
            state->params.steps, state->params.denoise_reuse,
            state->params.dit_layers, state->params.core_reuse,
            state->params.token_reduction ? "reduced" : "full",
            state->params.sol_attn ? "sol-attn" : "dense",
+           state->params.fbc ? " | fbc" : "",
            state->params.ssd_streaming ? "SSD BF16" : "resident",
            state->params.ssd_streaming ? "BF16" :
            state->params.use_int8_row_fc2 ? "int8 row" : "int8 grouped");
@@ -610,6 +612,18 @@ static int process_command(h3_cli_state *state, char *line, int *repeat) {
                 fprintf(stderr,
                         "h3: faster long SDPA, visible quality loss "
                         "(off by default). See docs/SOL_ATTN.md.\n");
+        }
+    } else if (!strcasecmp(command, "fbc")) {
+        int value;
+        if (!parse_toggle(argument, state->params.fbc, &value))
+            fprintf(stderr, "h3: use on or off\n");
+        else {
+            state->params.fbc = value;
+            printf("First-block cache: %s\n", value ? "on" : "off");
+            if (value)
+                fprintf(stderr,
+                        "h3: skip later DiT blocks when block 0 is stable; "
+                        "visible quality loss (off by default)\n");
         }
     } else if (!strcasecmp(command, "ssd-streaming")) {
         int value;

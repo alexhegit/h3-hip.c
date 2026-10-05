@@ -175,11 +175,12 @@ static char *h3_prepared_key(const char *conditioning,
     if (!h3_key_append(
             &key,
             "%s|shape=%dx%dx%d|steps=%d|layers=%d|reuse-core=%d|reduce=%d"
-            "|sol-attn=%d|row-fc2=%d|reference-rope=%d|ssd-streaming=%d"
+            "|sol-attn=%d|fbc=%d|row-fc2=%d|reference-rope=%d|ssd-streaming=%d"
             "|slow=%d%d%d%d%d%d%d%d%d%d",
             conditioning, render_width, render_height, params->frames,
             params->steps, params->dit_layers, params->core_reuse,
-            params->token_reduction, params->sol_attn, params->use_int8_row_fc2,
+            params->token_reduction, params->sol_attn, params->fbc,
+            params->use_int8_row_fc2,
             params->use_reference_rope,
             params->ssd_streaming,
             params->use_slower_bf16_mlp,
@@ -547,6 +548,22 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
         h3_set_error(ctx, "sol-attn must be zero or one");
         return 0;
     }
+    if (params->fbc != 0 && params->fbc != 1) {
+        h3_set_error(ctx, "first-block cache must be zero or one");
+        return 0;
+    }
+    if (params->fbc && params->token_reduction) {
+        h3_set_error(ctx, "first-block cache cannot be combined with token reduction");
+        return 0;
+    }
+    if (params->fbc && params->ssd_streaming) {
+        h3_set_error(ctx, "first-block cache cannot be combined with SSD streaming");
+        return 0;
+    }
+    if (params->fbc && params->core_reuse > 1) {
+        h3_set_error(ctx, "first-block cache cannot be combined with core reuse");
+        return 0;
+    }
     if (params->use_int8_row_fc2 != 0 &&
         params->use_int8_row_fc2 != 1) {
         h3_set_error(ctx, "int8 row FC2 must be zero or one");
@@ -909,6 +926,12 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 "loss (off by default). Supported on gfx90a, gfx942, and "
                 "gfx1151. See docs/SOL_ATTN.md.\n");
     }
+    setenv("H3_FBC", params->fbc ? "1" : "0", 1);
+    if (params->fbc)
+        fprintf(stderr,
+                "h3: --fbc is on: skip later DiT blocks when the first "
+                "block residual is stable (lossy, off by default). "
+                "H3_FBC_REL default 0.15, H3_FBC_HEAD/TAIL default 2.\n");
     if (getenv("H3_TOKEN_REDUCTION_SCHEDULE") &&
         *getenv("H3_TOKEN_REDUCTION_SCHEDULE"))
         fprintf(stderr,

@@ -661,6 +661,11 @@ int h3_gpu_add_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
 int h3_gpu_sub_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                     const h3_gpu_tensor *left, const h3_gpu_tensor *right,
                     uint32_t elements);
+/* acc must hold 2 device f32 values. After submit, acc[0] is ||cur-prev||^2
+ * and acc[1] is ||prev||^2. */
+int h3_gpu_bf16_sqdist(h3_gpu *gpu, const h3_gpu_tensor *current,
+                       const h3_gpu_tensor *previous, h3_gpu_tensor *acc,
+                       uint32_t elements);
 int h3_gpu_token_pool_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                            const h3_gpu_tensor *input,
                            size_t input_offset,

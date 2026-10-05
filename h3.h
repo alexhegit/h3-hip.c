@@ -92,6 +92,12 @@ typedef struct {
      * quality path stays dense. Approximate (not bit-identical); see
      * docs/SOL_ATTN.md. Override τ with H3_SOL_ATTN_TAU (default 0.5). */
     int sol_attn;
+    /* Always run the first active DiT block. Skip the remaining blocks when
+     * that block's residual has barely moved since the previous step, and add
+     * the cached tail residual instead. Lossy. Off by default. Independent of
+     * denoise --reuse. Threshold H3_FBC_REL (default 0.15), forced head/tail
+     * steps H3_FBC_HEAD / H3_FBC_TAIL (default 2). */
+    int fbc;
     /* Use one int8 activation scale per FC2 row and the M5 full-K kernel.
      * Faster, but more numerically aggressive than grouped int8. */
     int use_int8_row_fc2;
@@ -136,7 +142,7 @@ typedef struct {
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
-    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL \
+    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL \
 }
 
 typedef struct {

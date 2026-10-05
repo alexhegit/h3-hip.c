@@ -1,0 +1,100 @@
+=== fbc default rel=0.15 head=2 tail=2 ===
+2026-10-05T16:55:50+08:00
+host 192.168.1.43 git fb2e603 branch gfx1151
+prompt: Cinematic push-in on a starship bridge: a captain in a high-collared navy tunic stands silhouetted at the observation window as a dreadnought armada charges its hyperdrives. A blinding flash, the bridge shudders, and the fleet is gone.
+knobs: 832x480 --seconds 5 --steps 50 --layers 50 --reuse 1 --seed 42 --fbc dense INT8-default no-TR no-sol-attn
+--- free ---
+               total        used        free      shared  buff/cache   available
+Mem:              94           4          36           0          53          89
+Swap:              7           0           7
+--- vram/gtt ---
+34359738368
+50500628480
+--- h3 ---
+h3: --fbc is on: skip later DiT blocks when the first block residual is stable (lossy, off by default). H3_FBC_REL default 0.15, H3_FBC_HEAD/TAIL default 2.
+tokenizer                    0/1   tokenizer                    1/1   
+text encoder                 0/50  text encoder                 1/50  text encoder                 2/50  text encoder                 3/50  text encoder                 4/50  text encoder                 5/50  text encoder                 6/50  text encoder                 7/50  text encoder                 8/50  text encoder                 9/50  text encoder                10/50  text encoder                11/50  text encoder                12/50  text encoder                13/50  text encoder                14/50  text encoder                15/50  text encoder                16/50  text encoder                17/50  text encoder                18/50  text encoder                19/50  text encoder                20/50  text encoder                21/50  text encoder                22/50  text encoder                23/50  text encoder                24/50  text encoder                25/50  text encoder                26/50  text encoder                27/50  text encoder                28/50  text encoder                29/50  text encoder                30/50  text encoder                31/50  text encoder                32/50  text encoder                33/50  text encoder                34/50  text encoder                35/50  text encoder                36/50  text encoder                37/50  text encoder                38/50  text encoder                39/50  text encoder                40/50  text encoder                41/50  text encoder                42/50  text encoder                43/50  text encoder                44/50  text encoder                45/50  text encoder                46/50  text encoder                47/50  text encoder                48/50  text encoder                49/50  text encoder                50/50  
+h3 profile: Qwen text encoder        total          wall=  10.193s encode=  0.023s wait=   4.089s root-gpu=  4.089s peak=  4.551GiB alloc= 46.870GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  4.025s linear=  3.930s sdpa=  0.015s conv=  0.000s other=  0.080s
+h3 profile: Qwen text encoder        weight-load    pin=  3.374s (46.870GiB,  13.89GiB/s) read= 86.418s (46.860GiB,   0.54GiB/s) upload=  2.212s (46.860GiB,  21.18GiB/s) recycled= 93.9% pinned= 0.000GiB device=46.870GiB
+refine text                  0/1   refine text                  1/1   
+h3 profile: H3 DiT load stage refine text          0.481s
+precompute AdaLN             1/50  precompute AdaLN             2/50  precompute AdaLN             3/50  precompute AdaLN             4/50  precompute AdaLN             5/50  precompute AdaLN             6/50  precompute AdaLN             7/50  precompute AdaLN             8/50  precompute AdaLN             9/50  precompute AdaLN            10/50  precompute AdaLN            11/50  precompute AdaLN            12/50  precompute AdaLN            13/50  precompute AdaLN            14/50  precompute AdaLN            15/50  precompute AdaLN            16/50  precompute AdaLN            17/50  precompute AdaLN            18/50  precompute AdaLN            19/50  precompute AdaLN            20/50  precompute AdaLN            21/50  precompute AdaLN            22/50  precompute AdaLN            23/50  precompute AdaLN            24/50  precompute AdaLN            25/50  precompute AdaLN            26/50  precompute AdaLN            27/50  precompute AdaLN            28/50  precompute AdaLN            29/50  precompute AdaLN            30/50  precompute AdaLN            31/50  precompute AdaLN            32/50  precompute AdaLN            33/50  precompute AdaLN            34/50  precompute AdaLN            35/50  precompute AdaLN            36/50  precompute AdaLN            37/50  precompute AdaLN            38/50  precompute AdaLN            39/50  precompute AdaLN            40/50  precompute AdaLN            41/50  precompute AdaLN            42/50  precompute AdaLN            43/50  precompute AdaLN            44/50  precompute AdaLN            45/50  precompute AdaLN            46/50  precompute AdaLN            47/50  precompute AdaLN            48/50  precompute AdaLN            49/50  precompute AdaLN            50/50  
+h3 profile: H3 DiT load stage AdaLN precompute     5.401s
+h3 profile: H3 DiT load stage rope and maps        0.016s
+load transformer core        1/50  load transformer core        2/50  load transformer core        3/50  load transformer core        4/50  load transformer core        5/50  load transformer core        6/50  load transformer core        7/50  load transformer core        8/50  load transformer core        9/50  load transformer core       10/50  load transformer core       11/50  load transformer core       12/50  load transformer core       13/50  load transformer core       14/50  load transformer core       15/50  load transformer core       16/50  load transformer core       17/50  load transformer core       18/50  load transformer core       19/50  load transformer core       20/50  load transformer core       21/50  load transformer core       22/50  load transformer core       23/50  load transformer core       24/50  load transformer core       25/50  load transformer core       26/50  load transformer core       27/50  load transformer core       28/50  load transformer core       29/50  load transformer core       30/50  load transformer core       31/50  load transformer core       32/50  load transformer core       33/50  load transformer core       34/50  load transformer core       35/50  load transformer core       36/50  load transformer core       37/50  load transformer core       38/50  load transformer core       39/50  load transformer core       40/50  load transformer core       41/50  load transformer core       42/50  load transformer core       43/50  load transformer core       44/50  load transformer core       45/50  load transformer core       46/50  load transformer core       47/50  load transformer core       48/50  load transformer core       49/50  load transformer core       50/50  
+h3 profile: H3 DiT core split   block-io=  8.242s quantize=  1.783s
+h3 profile: H3 DiT load stage transformer core    10.040s
+h3 profile: H3 DiT load stage activations          0.258s
+h3 profile: H3 DiT                   load           wall=  16.195s encode= 13.017s wait=   1.354s root-gpu=  1.354s peak= 23.254GiB alloc= 85.003GiB submissions=31 direct=286 linear=62 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  4.273s linear=  3.929s sdpa=  0.000s conv=  0.000s other=  0.344s
+denoise                      0/50  h3: fbc step 1/50 rel 0.0000 accum 0.0000 full forced
+denoise                      1/50  h3: fbc step 2/50 rel 0.0258 accum 0.0258 full forced
+denoise                      2/50  h3: fbc step 3/50 rel 0.0187 accum 0.0187 skip
+denoise                      3/50  h3: fbc step 4/50 rel 0.0180 accum 0.0366 skip
+denoise                      4/50  h3: fbc step 5/50 rel 0.0171 accum 0.0538 skip
+denoise                      5/50  h3: fbc step 6/50 rel 0.0173 accum 0.0710 skip
+denoise                      6/50  h3: fbc step 7/50 rel 0.0199 accum 0.0910 skip
+denoise                      7/50  h3: fbc step 8/50 rel 0.0168 accum 0.1078 skip
+denoise                      8/50  h3: fbc step 9/50 rel 0.0155 accum 0.1233 skip
+denoise                      9/50  h3: fbc step 10/50 rel 0.0209 accum 0.1442 skip
+denoise                     10/50  h3: fbc step 11/50 rel 0.0144 accum 0.1586 full
+denoise                     11/50  h3: fbc step 12/50 rel 0.0150 accum 0.0150 skip
+denoise                     12/50  h3: fbc step 13/50 rel 0.0163 accum 0.0313 skip
+denoise                     13/50  h3: fbc step 14/50 rel 0.0169 accum 0.0483 skip
+denoise                     14/50  h3: fbc step 15/50 rel 0.0136 accum 0.0619 skip
+denoise                     15/50  h3: fbc step 16/50 rel 0.0120 accum 0.0739 skip
+denoise                     16/50  h3: fbc step 17/50 rel 0.0131 accum 0.0869 skip
+denoise                     17/50  h3: fbc step 18/50 rel 0.0164 accum 0.1033 skip
+denoise                     18/50  h3: fbc step 19/50 rel 0.0114 accum 0.1147 skip
+denoise                     19/50  h3: fbc step 20/50 rel 0.0131 accum 0.1279 skip
+denoise                     20/50  h3: fbc step 21/50 rel 0.0164 accum 0.1443 skip
+denoise                     21/50  h3: fbc step 22/50 rel 0.0135 accum 0.1577 full
+denoise                     22/50  h3: fbc step 23/50 rel 0.0140 accum 0.0140 skip
+denoise                     23/50  h3: fbc step 24/50 rel 0.0154 accum 0.0295 skip
+denoise                     24/50  h3: fbc step 25/50 rel 0.0133 accum 0.0428 skip
+denoise                     25/50  h3: fbc step 26/50 rel 0.0123 accum 0.0551 skip
+denoise                     26/50  h3: fbc step 27/50 rel 0.0165 accum 0.0715 skip
+denoise                     27/50  h3: fbc step 28/50 rel 0.0123 accum 0.0838 skip
+denoise                     28/50  h3: fbc step 29/50 rel 0.0142 accum 0.0980 skip
+denoise                     29/50  h3: fbc step 30/50 rel 0.0150 accum 0.1130 skip
+denoise                     30/50  h3: fbc step 31/50 rel 0.0147 accum 0.1277 skip
+denoise                     31/50  h3: fbc step 32/50 rel 0.0137 accum 0.1414 skip
+denoise                     32/50  h3: fbc step 33/50 rel 0.0191 accum 0.1605 full
+denoise                     33/50  h3: fbc step 34/50 rel 0.0161 accum 0.0161 skip
+denoise                     34/50  h3: fbc step 35/50 rel 0.0160 accum 0.0322 skip
+denoise                     35/50  h3: fbc step 36/50 rel 0.0237 accum 0.0558 skip
+denoise                     36/50  h3: fbc step 37/50 rel 0.0191 accum 0.0750 skip
+denoise                     37/50  h3: fbc step 38/50 rel 0.0190 accum 0.0939 skip
+denoise                     38/50  h3: fbc step 39/50 rel 0.0222 accum 0.1161 skip
+denoise                     39/50  h3: fbc step 40/50 rel 0.0265 accum 0.1426 skip
+denoise                     40/50  h3: fbc step 41/50 rel 0.0240 accum 0.1666 full
+denoise                     41/50  h3: fbc step 42/50 rel 0.0287 accum 0.0287 skip
+denoise                     42/50  h3: fbc step 43/50 rel 0.0307 accum 0.0593 skip
+denoise                     43/50  h3: fbc step 44/50 rel 0.0324 accum 0.0917 skip
+denoise                     44/50  h3: fbc step 45/50 rel 0.0435 accum 0.1352 skip
+denoise                     45/50  h3: fbc step 46/50 rel 0.0432 accum 0.1784 full
+denoise                     46/50  h3: fbc step 47/50 rel 0.0525 accum 0.0525 skip
+denoise                     47/50  h3: fbc step 48/50 rel 0.0705 accum 0.1230 skip
+denoise                     48/50  h3: fbc step 49/50 rel 0.0830 accum 0.2060 full forced
+denoise                     49/50  h3: fbc step 50/50 rel 0.1094 accum 0.1094 full forced
+h3: fbc full 9 skip 41 rel<0.150 head 2 tail 2
+denoise                     50/50  
+h3 profile: H3 DiT                   Euler denoise  wall= 588.978s encode=  1.368s wait= 587.114s root-gpu=587.114s peak= 23.254GiB alloc=  0.000GiB submissions=108 direct=5636 linear=0 conv=0 attention=491
+h3 profile: H3 DiT                   op-classes     gpu-op=588.437s linear=315.306s sdpa=256.156s conv=  0.000s other= 16.976s
+h3 profile: H3 DiT                   total          wall= 605.356s encode= 14.385s wait= 588.468s root-gpu=588.468s peak= 23.254GiB alloc= 85.003GiB submissions=139 direct=5922 linear=62 conv=0 attention=493
+h3 profile: H3 DiT                   weight-load    pin= 15.945s (85.003GiB,   5.33GiB/s) read= 28.523s (61.728GiB,   2.16GiB/s) upload=  1.755s (61.728GiB,  35.17GiB/s) recycled= 96.1% pinned= 0.021GiB device=84.982GiB
+audio VAE                    0/7   audio VAE                    1/7   audio VAE                    2/7   audio VAE                    3/7   audio VAE                    4/7   audio VAE                    5/7   audio VAE                    6/7   audio VAE                    7/7   
+h3 profile: audio VAE decoder        total          wall=   1.847s encode=  0.004s wait=   1.676s root-gpu=  1.676s peak=  0.283GiB alloc=  0.815GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  1.677s linear=  0.000s sdpa=  0.000s conv=  1.463s other=  0.214s
+h3 profile: audio VAE decoder        weight-load    pin=  0.075s ( 0.815GiB,  10.80GiB/s) read=  0.013s ( 0.242GiB,  18.71GiB/s) upload=  0.026s ( 0.242GiB,   9.35GiB/s) recycled= 99.5% pinned= 0.000GiB device= 0.815GiB
+h3: video VAE tiles 4x2 at 272 pixels
+video VAE load               1/36  video VAE load               2/36  video VAE load               3/36  video VAE load               4/36  video VAE load               5/36  video VAE load               6/36  video VAE load               7/36  video VAE load               8/36  video VAE load               9/36  video VAE load              10/36  video VAE load              11/36  video VAE load              12/36  video VAE load              13/36  video VAE load              14/36  video VAE load              15/36  video VAE load              16/36  video VAE load              17/36  video VAE load              18/36  video VAE load              19/36  video VAE load              20/36  video VAE load              21/36  video VAE load              22/36  video VAE load              23/36  video VAE load              24/36  video VAE load              25/36  video VAE load              26/36  video VAE load              27/36  video VAE load              28/36  video VAE load              29/36  video VAE load              30/36  video VAE load              31/36  video VAE load              32/36  video VAE load              33/36  video VAE load              34/36  video VAE load              35/36  video VAE load              36/36  
+h3 profile: video VAE decoder        total          wall=  79.157s encode=  1.631s wait=  75.577s root-gpu= 75.577s peak=  9.408GiB alloc=  9.418GiB submissions=56 direct=20552 linear=8120 conv=0 attention=2016
+h3 profile: video VAE decoder        op-classes     gpu-op= 77.078s linear= 64.139s sdpa=  8.362s conv=  0.000s other=  4.577s
+h3 profile: video VAE decoder        weight-load    pin=  2.392s ( 9.418GiB,   3.94GiB/s) read=  0.648s ( 9.028GiB,  13.94GiB/s) upload=  0.368s ( 9.028GiB,  24.55GiB/s) recycled= 98.6% pinned= 0.011GiB device= 9.408GiB
+FFmpeg                       0/124 FFmpeg                     124/124 
+h3: wrote outputs/halo-ondevice-p1-fbc.mp4
+=== after exit 0 ===
+2026-10-05T17:07:28+08:00
+ELAPSED_SEC 697.78

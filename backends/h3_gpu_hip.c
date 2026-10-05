@@ -1722,6 +1722,23 @@ int h3_gpu_sub_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_sub_bf16");
 }
 
+int h3_gpu_bf16_sqdist(h3_gpu *gpu, const h3_gpu_tensor *current,
+                       const h3_gpu_tensor *previous, h3_gpu_tensor *acc,
+                       uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_bf16(ctx, current, elements, "sqdist current") ||
+        !h3_hip_require_bf16(ctx, previous, elements, "sqdist previous") ||
+        !h3_hip_require_f32(ctx, acc, 2, "sqdist accumulator")) {
+        return 0;
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_bf16_sqdist(
+        (const uint16_t *)tensor_ptr(current)->data,
+        (const uint16_t *)tensor_ptr(previous)->data,
+        (float *)tensor_ptr(acc)->data, elements, ctx->stream),
+        "h3_bf16_sqdist");
+}
+
 int h3_gpu_silu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *input, uint32_t elements) {
     struct h3_gpu *ctx = gpu_ptr(gpu);

@@ -352,6 +352,10 @@ int h3_launch_add_bf16(const uint16_t *left, const uint16_t *right,
                        uint16_t *output, uint32_t count, hipStream_t stream);
 int h3_launch_sub_bf16(const uint16_t *left, const uint16_t *right,
                        uint16_t *output, uint32_t count, hipStream_t stream);
+/* acc[0] = sum (cur-prev)^2, acc[1] = sum prev^2. Caller zeros nothing;
+ * the launch clears acc on the stream before the reduction. */
+int h3_launch_bf16_sqdist(const uint16_t *cur, const uint16_t *prev,
+                          float *acc, uint32_t count, hipStream_t stream);
 int h3_launch_silu_bf16(const uint16_t *input, uint16_t *output,
                         uint32_t count, hipStream_t stream);
 int h3_launch_silu_f32(const float *input, float *output, uint32_t count,

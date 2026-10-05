@@ -4975,6 +4975,57 @@ h3_linear_int8_f32_fused_t128_kernel(const float *input, const int8_t *weight,
     }
 }
 
+__device__ float h3_extra_bf16_to_f32(uint16_t value) {
+    return __uint_as_float((uint32_t)value << 16);
+}
+
+/* Grid-stride sum of squared residual and squared reference. One atomic
+ * per CTA keeps the reduction off the per-element path. */
+__global__ void h3_bf16_sqdist_kernel(const uint16_t *cur, const uint16_t *prev,
+                                      uint32_t count, float *acc) {
+    float local_diff = 0.0f;
+    float local_prev = 0.0f;
+    uint32_t stride = blockDim.x * gridDim.x;
+    for (uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+         index < count; index += stride) {
+        float current = h3_extra_bf16_to_f32(cur[index]);
+        float previous = h3_extra_bf16_to_f32(prev[index]);
+        float delta = current - previous;
+        local_diff = fmaf(delta, delta, local_diff);
+        local_prev = fmaf(previous, previous, local_prev);
+    }
+    __shared__ float diff_shared[256];
+    __shared__ float prev_shared[256];
+    uint32_t lane = threadIdx.x;
+    diff_shared[lane] = local_diff;
+    prev_shared[lane] = local_prev;
+    __syncthreads();
+    for (uint32_t offset = blockDim.x >> 1; offset; offset >>= 1) {
+        if (lane < offset) {
+            diff_shared[lane] += diff_shared[lane + offset];
+            prev_shared[lane] += prev_shared[lane + offset];
+        }
+        __syncthreads();
+    }
+    if (lane == 0) {
+        atomicAdd(acc, diff_shared[0]);
+        atomicAdd(acc + 1, prev_shared[0]);
+    }
+}
+
+extern "C" int h3_launch_bf16_sqdist(const uint16_t *cur, const uint16_t *prev,
+                                     float *acc, uint32_t count,
+                                     hipStream_t stream) {
+    if (hipMemsetAsync(acc, 0, 2u * sizeof(float), stream) != hipSuccess)
+        return 0;
+    dim3 block(256, 1, 1);
+    dim3 grid(1024, 1, 1);
+    void *kernel_args[] = {&cur, &prev, &count, &acc};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_bf16_sqdist_kernel), grid,
+               block, kernel_args, 0, stream) == hipSuccess;
+}
+
 extern "C" int h3_launch_linear_int8_f32_fused(
     const float *input, const int8_t *weight, const float *weight_scales,
     float *output, const h3_linear_args *args, hipStream_t stream) {

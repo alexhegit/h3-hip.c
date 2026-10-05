@@ -34,6 +34,7 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/long-15s-tr-int8vae-2026-09-03.log`](../perf-runs/long-15s-tr-int8vae-2026-09-03.log) | gfx1151 15 s TR+INT8 VAE (no sampler) |
 | [`../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt`](../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt) | gfx1151 fox default / sampler / all-opts `--profile` |
 | [`../perf-runs/HALO_2026-09-12.md`](../perf-runs/HALO_2026-09-12.md) | gfx1151 `bench/` retune on current `main` |
+| [`../perf-runs/HALO_ONDEVICE_2026-10-05.md`](../perf-runs/HALO_ONDEVICE_2026-10-05.md) | gfx1151 H3-OnDevice 832×480 · 5 s · 50-step baseline (carveout 32 GiB) |
 | [`../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log`](../perf-runs/gfx1151-2026-09-12-fox-15s-notr.log) | gfx1151 15 s quality path, no TR |
 | [`../perf-runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md) | What antirez/h3.c publishes vs HIP reruns |
 | `docs/perf-day*/STATUS.md` | Session logs |

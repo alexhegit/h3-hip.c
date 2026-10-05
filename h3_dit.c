@@ -114,6 +114,14 @@ struct h3_dit {
     unsigned core_reuse_interval;
     unsigned core_forward_count;
     int core_residual_ready;
+    /* First-block cache: always run the first active block, skip the rest
+     * when its residual has barely moved. Independent of --reuse. */
+    int fbc;
+    int fbc_prev_ready;
+    int fbc_tail_ready;
+    float fbc_accum;
+    unsigned fbc_full_count;
+    unsigned fbc_skip_count;
     unsigned active_block_count;
     uint8_t block_active[H3_DIT_BLOCKS];
     h3_layout layout;
@@ -172,6 +180,11 @@ struct h3_dit {
     h3_gpu_tensor *hidden;
     h3_gpu_tensor *core_input;
     h3_gpu_tensor *core_residual;
+    h3_gpu_tensor *fbc_anchor;
+    h3_gpu_tensor *fbc_residual;
+    h3_gpu_tensor *fbc_prev;
+    h3_gpu_tensor *fbc_tail;
+    h3_gpu_tensor *fbc_sq;
     h3_gpu_tensor *mod_attention;
     h3_gpu_tensor *qkv;
     h3_gpu_tensor *query;
@@ -1867,6 +1880,25 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             return 0;
         }
     }
+    if (dit->fbc) {
+        size_t hidden_elements = sequence * HIDDEN;
+        dit->fbc_anchor = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, hidden_elements);
+        dit->fbc_residual = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, hidden_elements);
+        dit->fbc_prev = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, hidden_elements);
+        dit->fbc_tail = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, hidden_elements);
+        dit->fbc_sq = h3_gpu_tensor_new_f32_device(dit->gpu, 2);
+        if (!dit->fbc_anchor || !dit->fbc_residual || !dit->fbc_prev ||
+            !dit->fbc_tail || !dit->fbc_sq) {
+            fail(error, error_size,
+                 "cannot allocate first-block cache: %s",
+                 h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -1929,6 +1961,17 @@ static h3_dit *load_dit(const char *weight_directory,
      * Keep the old path available for close-reference diagnosis. */
     dit->bf16_final = getenv("H3_DIT_F32_FINAL") == NULL;
     dit->core_reuse_interval = core_reuse_interval;
+    {
+        const char *fbc_env = getenv("H3_FBC");
+        dit->fbc = fbc_env && fbc_env[0] && strcmp(fbc_env, "0") != 0;
+    }
+    if (dit->fbc && (token_reduction || ssd_streaming ||
+                     core_reuse_interval > 1)) {
+        fail(error, error_size,
+             "first-block cache cannot combine with token reduction, "
+             "SSD streaming, or core reuse");
+        goto failed;
+    }
     dit->ssd_streaming = ssd_streaming;
     dit->spatial_rope_scale = spatial_rope_scale;
     configure_active_blocks(dit, active_blocks);
@@ -2474,6 +2517,87 @@ static int run_block(h3_dit *dit, unsigned index, int step,
     return 1;
 }
 
+static int fbc_env_int(const char *name, int fallback, int lo, int hi) {
+    const char *text = getenv(name);
+    char *end = NULL;
+    long value;
+    if (!text || !*text) return fallback;
+    value = strtol(text, &end, 10);
+    if (end == text || *end || value < lo || value > hi) return fallback;
+    return (int)value;
+}
+
+static float fbc_rel_threshold(void) {
+    const char *text = getenv("H3_FBC_REL");
+    char *end = NULL;
+    float value;
+    if (!text || !*text) return 0.15f;
+    value = strtof(text, &end);
+    if (end == text || *end || !isfinite(value) || value < 0.f) return 0.15f;
+    return value;
+}
+
+/* Compare this step's first-block residual with the previous step. A skip
+ * adds the cached tail; a full step clears the accumulator so small deltas
+ * still force a recompute once they add up. */
+static int fbc_decide(h3_dit *dit, int step, uint32_t hidden_elements,
+                      int *skip, char *error, size_t error_size) {
+    int steps = h3_dit_schedule_steps(dit->schedule);
+    int head = fbc_env_int("H3_FBC_HEAD", 2, 0, steps);
+    int tail = fbc_env_int("H3_FBC_TAIL", 2, 0, steps);
+    float threshold = fbc_rel_threshold();
+    int forced = step < head || step >= steps - tail;
+    float rel = 0.f;
+    float shown;
+    *skip = 0;
+    if (!gpu_op(dit, h3_gpu_sub_bf16(dit->gpu, dit->fbc_residual, dit->hidden,
+                                     dit->fbc_anchor, hidden_elements),
+                error, error_size, "fbc block residual"))
+        return 0;
+    if (dit->fbc_prev_ready) {
+        float acc[2];
+        if (!gpu_op(dit, h3_gpu_bf16_sqdist(
+                        dit->gpu, dit->fbc_residual, dit->fbc_prev, dit->fbc_sq,
+                        hidden_elements),
+                    error, error_size, "fbc residual distance") ||
+            !gpu_op(dit, h3_gpu_submit(dit->gpu), error, error_size,
+                    "fbc residual sync"))
+            return 0;
+        if (!h3_gpu_tensor_read_f32(dit->fbc_sq, acc, 2)) {
+            fail(error, error_size, "cannot read first-block cache distance");
+            return 0;
+        }
+        if (!gpu_op(dit, h3_gpu_begin(dit->gpu), error, error_size,
+                    "fbc resume"))
+            return 0;
+        rel = acc[1] < 1e-12f ? 1e9f : sqrtf(acc[0] / acc[1]);
+        dit->fbc_accum += rel;
+    }
+    shown = dit->fbc_accum;
+    if (!gpu_op(dit, h3_gpu_copy_bf16(dit->gpu, dit->fbc_prev, 0,
+                                      dit->fbc_residual, 0, hidden_elements),
+                error, error_size, "fbc save block residual"))
+        return 0;
+    dit->fbc_prev_ready = 1;
+    if (dit->fbc_tail_ready && !forced && shown < threshold) {
+        dit->fbc_skip_count++;
+        *skip = 1;
+        fprintf(stderr, "h3: fbc step %d/%d rel %.4f accum %.4f skip\n",
+                step + 1, steps, rel, shown);
+    } else {
+        dit->fbc_accum = 0.f;
+        dit->fbc_full_count++;
+        fprintf(stderr, "h3: fbc step %d/%d rel %.4f accum %.4f full%s\n",
+                step + 1, steps, rel, shown, forced ? " forced" : "");
+    }
+    if (step + 1 == steps)
+        fprintf(stderr,
+                "h3: fbc full %u skip %u rel<%.3f head %d tail %d\n",
+                dit->fbc_full_count, dit->fbc_skip_count, threshold,
+                head, tail);
+    return 1;
+}
+
 static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                           int disable_command_split, char *error,
                           size_t error_size) {
@@ -2619,6 +2743,8 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
         unsigned completed_blocks = 0;
         int carried_attention_adaln = 0;
         int carried_attention_input_quantized = 0;
+        int fbc_skipped = 0;
+        unsigned fbc_probe = dit->fbc ? first_active_block(dit) : H3_DIT_BLOCKS;
         for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
             int fused_token_adaln = carried_attention_adaln;
             int fused_attention_input_quantized =
@@ -2655,6 +2781,14 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                 !getenv("H3_DISABLE_FUSED_CROSS_BLOCK_ADALN") &&
                 next_block < H3_DIT_BLOCKS &&
                 dit->block_active[next_block] && !next_is_token_boundary;
+            /* The probe block must leave a true residual in hidden. Fusing
+             * the next AdaLN would hide that boundary inside block 1. */
+            if (dit->fbc && block == fbc_probe) {
+                fuse_next_attention = 0;
+                OP(h3_gpu_copy_bf16(dit->gpu, dit->fbc_anchor, 0, dit->hidden,
+                                    0, hidden_elements),
+                   "fbc save block input");
+            }
             h3_dit_block streamed_weight;
             h3_dit_block *weight = &dit->blocks[block];
             h3_dit_stream_job stream_job;
@@ -2739,6 +2873,26 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
                 OP(h3_gpu_begin(dit->gpu),
                    "continue after streamed DiT block");
             }
+            if (dit->fbc && block == fbc_probe) {
+                if (!fbc_decide(dit, step, hidden_elements, &fbc_skipped,
+                                error, error_size))
+                    return 0;
+                if (fbc_skipped) {
+                    OP(h3_gpu_add_bf16(dit->gpu, dit->hidden, dit->hidden,
+                                       dit->fbc_tail, hidden_elements),
+                       "fbc add cached tail");
+                    break;
+                }
+                OP(h3_gpu_copy_bf16(dit->gpu, dit->fbc_anchor, 0, dit->hidden,
+                                    0, hidden_elements),
+                   "fbc save post-probe hidden");
+            }
+        }
+        if (dit->fbc && !fbc_skipped) {
+            OP(h3_gpu_sub_bf16(dit->gpu, dit->fbc_tail, dit->hidden,
+                               dit->fbc_anchor, hidden_elements),
+               "fbc cache tail residual");
+            dit->fbc_tail_ready = 1;
         }
         if (use_token_reduction &&
             token_reduction_end == H3_DIT_BLOCKS &&
@@ -2876,6 +3030,11 @@ int h3_dit_reset_run(h3_dit *dit,
     }
     dit->core_forward_count = 0;
     dit->core_residual_ready = 0;
+    dit->fbc_prev_ready = 0;
+    dit->fbc_tail_ready = 0;
+    dit->fbc_accum = 0.f;
+    dit->fbc_full_count = 0;
+    dit->fbc_skip_count = 0;
     return 1;
 }
 
@@ -3471,6 +3630,8 @@ void h3_dit_free(h3_dit *dit) {
     FREE(video_projected); FREE(audio_projected);
     FREE(video_projection_map); FREE(audio_projection_map); FREE(hidden);
     FREE(core_input); FREE(core_residual);
+    FREE(fbc_anchor); FREE(fbc_residual); FREE(fbc_prev); FREE(fbc_tail);
+    FREE(fbc_sq);
     FREE(mod_attention); FREE(qkv); FREE(query); FREE(key); FREE(value);
     FREE(attention_heads); FREE(attention_output);
     FREE(token_pool_pairs); FREE(token_baseline_indices);

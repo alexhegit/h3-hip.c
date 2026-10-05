@@ -4408,6 +4408,18 @@ int h3_gpu_sub_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
         });
 }
 
+int h3_gpu_bf16_sqdist(h3_gpu *opaque, const h3_gpu_tensor *current,
+                       const h3_gpu_tensor *previous, h3_gpu_tensor *acc,
+                       uint32_t elements) {
+    (void)current;
+    (void)previous;
+    (void)acc;
+    (void)elements;
+    h3_gpu_set_error(GPU(opaque),
+                     @"first-block cache distance is implemented for HIP only");
+    return 0;
+}
+
 int h3_gpu_token_pool_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
                            const h3_gpu_tensor *input,
                            size_t input_offset,

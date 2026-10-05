@@ -40,6 +40,9 @@ static void usage(const char *program) {
         "      --sol-attn         Lossy sparse SDPA for long T2VA (off by\n"
         "                         default). Supports gfx90a/gfx942/gfx1151.\n"
         "                         See docs/SOL_ATTN.md\n"
+        "      --fbc              First-block cache: skip later DiT blocks\n"
+        "                         when block 0's residual is stable (lossy,\n"
+        "                         off by default). Does not replace --reuse.\n"
         "      --ssd-streaming    Stream original BF16 DiT layers from SSD\n"
         "      --use-int8-row-fc2 Faster one-scale int8 FC2 (M5)\n"
         "      --use-reference-rope  Disable native 256 RoPE adaptation\n"
@@ -253,6 +256,7 @@ int main(int argc, char **argv) {
            OPT_CORE_REUSE,
            OPT_TOKEN_REDUCTION,
            OPT_SOL_ATTN,
+           OPT_FBC,
            OPT_SSD_STREAMING,
            OPT_USE_INT8_ROW_FC2,
            OPT_USE_REFERENCE_ROPE,
@@ -287,6 +291,7 @@ int main(int argc, char **argv) {
         {"core-reuse", required_argument, NULL, OPT_CORE_REUSE},
         {"token-reduction", no_argument, NULL, OPT_TOKEN_REDUCTION},
         {"sol-attn", no_argument, NULL, OPT_SOL_ATTN},
+        {"fbc", no_argument, NULL, OPT_FBC},
         {"ssd-streaming", no_argument, NULL, OPT_SSD_STREAMING},
         {"use-int8-row-fc2", no_argument, NULL, OPT_USE_INT8_ROW_FC2},
         {"use-reference-rope", no_argument, NULL, OPT_USE_REFERENCE_ROPE},
@@ -377,6 +382,7 @@ int main(int argc, char **argv) {
                 break;
             case OPT_TOKEN_REDUCTION: params.token_reduction = 1; break;
             case OPT_SOL_ATTN: params.sol_attn = 1; break;
+            case OPT_FBC: params.fbc = 1; break;
             case OPT_SSD_STREAMING: params.ssd_streaming = 1; break;
             case OPT_USE_INT8_ROW_FC2:
                 params.use_int8_row_fc2 = 1;
