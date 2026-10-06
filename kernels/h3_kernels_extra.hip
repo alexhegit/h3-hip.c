@@ -2896,6 +2896,96 @@ extern "C" int h3_try_linear_bf16_hipblas(const uint16_t *input,
                            grid, block, bias_args, 0, stream) == hipSuccess;
 }
 
+/* Row-major C[rows, cols] += B[rows, rank] @ A[rank, cols].
+ * Column-major view: C^T += A^T @ B^T, so both factors are OP_N. */
+extern "C" int h3_bf16_gemm_accumulate(const uint16_t *b, const uint16_t *a,
+                                      uint16_t *c, uint32_t rows,
+                                      uint32_t cols, uint32_t rank,
+                                      float scale, float beta,
+                                      hipStream_t stream) {
+    if (!b || !a || !c || !rows || !cols || !rank) return 0;
+    if (!h3_int8_ensure_hipblas(stream)) return 0;
+    const float alpha = scale;
+    hipblasStatus_t status = hipblasGemmEx(
+        h3_hipblas, HIPBLAS_OP_N, HIPBLAS_OP_N, (int)cols, (int)rows,
+        (int)rank, &alpha, a, HIP_R_16BF, (int)cols, b, HIP_R_16BF, (int)rank,
+        &beta, c, HIP_R_16BF, (int)cols, HIPBLAS_COMPUTE_32F,
+        HIPBLAS_GEMM_DEFAULT);
+    return status == HIPBLAS_STATUS_SUCCESS;
+}
+
+__global__ void h3_qkv_scatter_add_bf16_kernel(uint16_t *weight,
+                                              const uint16_t *delta,
+                                              uint32_t heads, uint32_t head_dim,
+                                              uint32_t cols, uint32_t which) {
+    size_t count = (size_t)heads * head_dim * cols;
+    size_t stride = (size_t)gridDim.x * blockDim.x;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < count; index += stride) {
+        uint32_t col = (uint32_t)(index % cols);
+        uint32_t row = (uint32_t)(index / cols);
+        uint32_t head = row / head_dim;
+        uint32_t dim = row - head * head_dim;
+        size_t dst_row = (size_t)head * (head_dim * 3u) +
+                         (size_t)which * head_dim + dim;
+        size_t dst = dst_row * cols + col;
+        float sum = h3_bf16_to_f32(weight[dst]) + h3_bf16_to_f32(delta[index]);
+        weight[dst] = h3_f32_to_bf16(sum);
+    }
+}
+
+extern "C" int h3_launch_qkv_scatter_add_bf16(uint16_t *weight,
+                                             const uint16_t *delta,
+                                             uint32_t heads, uint32_t head_dim,
+                                             uint32_t cols, uint32_t which,
+                                             hipStream_t stream) {
+    if (!weight || !delta || !heads || !head_dim || !cols || which > 2u)
+        return 0;
+    void *args[] = {&weight, &delta, &heads, &head_dim, &cols, &which};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_qkv_scatter_add_bf16_kernel),
+               dim3(1024), dim3(256), args, 0, stream) == hipSuccess;
+}
+
+__global__ void h3_bf16_axpy_kernel(uint16_t *weight, const uint16_t *delta,
+                                    size_t count, float scale) {
+    size_t stride = (size_t)gridDim.x * blockDim.x;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < count; index += stride) {
+        float sum = h3_bf16_to_f32(weight[index]) +
+                    scale * h3_bf16_to_f32(delta[index]);
+        weight[index] = h3_f32_to_bf16(sum);
+    }
+}
+
+extern "C" int h3_launch_bf16_axpy(uint16_t *weight, const uint16_t *delta,
+                                  size_t count, float scale,
+                                  hipStream_t stream) {
+    if (!weight || !delta || !count) return 0;
+    void *args[] = {&weight, &delta, &count, &scale};
+    return hipLaunchKernel(reinterpret_cast<const void *>(h3_bf16_axpy_kernel),
+                           dim3(1024), dim3(256), args, 0, stream) ==
+           hipSuccess;
+}
+
+__global__ void h3_f32_axpy_bf16_kernel(float *weight, const uint16_t *delta,
+                                        size_t count, float scale) {
+    size_t stride = (size_t)gridDim.x * blockDim.x;
+    for (size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+         index < count; index += stride)
+        weight[index] += scale * h3_bf16_to_f32(delta[index]);
+}
+
+extern "C" int h3_launch_f32_axpy_bf16(float *weight, const uint16_t *delta,
+                                      size_t count, float scale,
+                                      hipStream_t stream) {
+    if (!weight || !delta || !count) return 0;
+    void *args[] = {&weight, &delta, &count, &scale};
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_f32_axpy_bf16_kernel),
+               dim3(1024), dim3(256), args, 0, stream) == hipSuccess;
+}
+
 static float *h3_sdpa_scratch = NULL;
 static size_t h3_sdpa_scratch_bytes = 0;
 

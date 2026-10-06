@@ -334,6 +334,22 @@ int h3_gpu_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                        const h3_gpu_tensor *weight,
                        const h3_gpu_tensor *bias, uint32_t rows,
                        uint32_t input_dim, uint32_t output_dim);
+/* Load-time FastH3 merge. C = beta * C + scale * (B @ A), row-major. */
+int h3_gpu_fasth3_gemm_bf16(h3_gpu *gpu, h3_gpu_tensor *c, size_t c_elem,
+                            const h3_gpu_tensor *b, size_t b_elem,
+                            const h3_gpu_tensor *a, uint32_t rows,
+                            uint32_t cols, uint32_t rank, float scale,
+                            float beta);
+int h3_gpu_fasth3_qkv_scatter_bf16(h3_gpu *gpu, h3_gpu_tensor *weight,
+                                   const h3_gpu_tensor *delta, uint32_t heads,
+                                   uint32_t head_dim, uint32_t cols,
+                                   uint32_t which);
+int h3_gpu_fasth3_axpy_bf16(h3_gpu *gpu, h3_gpu_tensor *weight,
+                            const h3_gpu_tensor *delta, size_t count,
+                            float scale);
+int h3_gpu_fasth3_axpy_f32(h3_gpu *gpu, h3_gpu_tensor *weight,
+                           const h3_gpu_tensor *delta, size_t count,
+                           float scale);
 int h3_gpu_mlp_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                     const h3_gpu_tensor *input,
                     const h3_gpu_tensor *fc1_weight,

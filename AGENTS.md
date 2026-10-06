@@ -81,7 +81,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 
 ## Model weights
 
-Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). Expected at `./MiniMax-H3/` or set `H3_MODEL`. Partial download: `./tools/download_weights.sh` (`FL2VA/` ~134 GiB for T2VA; `--both` adds `Ref2VA/`). Root `transformer/`, `transformer_ref/`, `text_encoder/`, and `vae/` are unused.
+Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). Expected at `./MiniMax-H3/` or set `H3_MODEL`. Partial download: `./tools/download_weights.sh` (`FL2VA/` ~134 GiB for T2VA; `--both` adds `Ref2VA/`). Root `transformer/`, `transformer_ref/`, `text_encoder/`, and `vae/` are unused. The optional 4-step dense LoRA is `./tools/download_fasth3_lora.sh` (`dense-datafree/adapter_model.safetensors`, ~1.4 GiB) and is passed with `--fasth3-lora`.
 
 ## Documentation
 

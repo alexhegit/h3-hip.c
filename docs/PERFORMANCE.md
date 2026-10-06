@@ -55,6 +55,28 @@ Ledgers:
 [`perf-runs/HALO_SOL_ATTN_2026-09-16.md`](perf-runs/HALO_SOL_ATTN_2026-09-16.md),
 [`perf-runs/MI300X_ONDEVICE_2026-10-05.md`](perf-runs/MI300X_ONDEVICE_2026-10-05.md).
 
+### FastH3 4-step LoRA (`--fasth3-lora`)
+
+Off by default, and not part of the v0.14.0 `bench/` scoreboard. The
+flag loads the public dense-datafree adapter (809 tensors) into the
+official MiniMax-H3 weights, then runs the distilled timesteps
+999 / 749 / 500 / 250. Layers stay 50 and `--reuse` stays 1. It does
+not combine with `--token-reduction`, `--sol-attn`, `--fbc`, SSD
+streaming, or core reuse above 1.
+
+On the MI300X 832×480 · 5 s fixture, default INT8 process E2E is
+**30.12 s** against that machine's 50-step dense **166.87 s** (5.54×).
+Denoise is **10.878 s** versus **136.723 s** (12.57×), in line with
+4/50 evaluations. SDPA is 6.0 s either in BF16 or INT8; INT8 is faster
+in the linear layers (5.149 → 3.911 s) and keeps the denoise peak at
+21.9 GiB instead of the BF16 38.9 GiB. Video VAE stays ~9.6 s, a third
+of the 30 s process. The 4-step picture follows the prompt and is a
+different composition from the 50-step clip; BF16 and INT8 match each
+other. No PSNR gate was applied.
+
+Ledger:
+[`perf-runs/MI300X_FASTH3_2026-10-05.md`](perf-runs/MI300X_FASTH3_2026-10-05.md).
+
 ## v0.13.0 (2026-09-21)
 
 One tree, three timed products. `h3 --info` on that tag prints `h3-hip 0.13.0`.

@@ -1801,6 +1801,72 @@ int h3_gpu_swiglu_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_swiglu_bf16");
 }
 
+int h3_gpu_fasth3_gemm_bf16(h3_gpu *gpu, h3_gpu_tensor *c, size_t c_elem,
+                            const h3_gpu_tensor *b, size_t b_elem,
+                            const h3_gpu_tensor *a, uint32_t rows,
+                            uint32_t cols, uint32_t rank, float scale,
+                            float beta) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t c_count = (size_t)rows * (size_t)cols;
+    size_t b_count = (size_t)rows * (size_t)rank;
+    size_t a_count = (size_t)rank * (size_t)cols;
+    if (!ctx || !rows || !cols || !rank ||
+        c_elem > SIZE_MAX - c_count || b_elem > SIZE_MAX - b_count ||
+        !h3_hip_require_bf16(ctx, c, c_elem + c_count, "FastH3 weight") ||
+        !h3_hip_require_bf16(ctx, b, b_elem + b_count, "FastH3 lora_B") ||
+        !h3_hip_require_bf16(ctx, a, a_count, "FastH3 lora_A"))
+        return 0;
+    uint16_t *c_ptr = (uint16_t *)tensor_ptr(c)->data + c_elem;
+    const uint16_t *b_ptr = (const uint16_t *)tensor_ptr(b)->data + b_elem;
+    const uint16_t *a_ptr = (const uint16_t *)tensor_ptr(a)->data;
+    return h3_hip_launch_ok(ctx, h3_bf16_gemm_accumulate(
+        b_ptr, a_ptr, c_ptr, rows, cols, rank, scale, beta, ctx->stream),
+        "fasth3 gemm");
+}
+
+int h3_gpu_fasth3_qkv_scatter_bf16(h3_gpu *gpu, h3_gpu_tensor *weight,
+                                   const h3_gpu_tensor *delta, uint32_t heads,
+                                   uint32_t head_dim, uint32_t cols,
+                                   uint32_t which) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t delta_count = (size_t)heads * (size_t)head_dim * (size_t)cols;
+    size_t weight_count = delta_count * 3u;
+    if (!ctx || !h3_hip_require_bf16(ctx, weight, weight_count,
+                                     "FastH3 QKV weight") ||
+        !h3_hip_require_bf16(ctx, delta, delta_count, "FastH3 QKV delta"))
+        return 0;
+    return h3_hip_launch_ok(ctx, h3_launch_qkv_scatter_add_bf16(
+        (uint16_t *)tensor_ptr(weight)->data,
+        (const uint16_t *)tensor_ptr(delta)->data, heads, head_dim, cols,
+        which, ctx->stream), "fasth3 qkv scatter");
+}
+
+int h3_gpu_fasth3_axpy_bf16(h3_gpu *gpu, h3_gpu_tensor *weight,
+                            const h3_gpu_tensor *delta, size_t count,
+                            float scale) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !h3_hip_require_bf16(ctx, weight, count, "FastH3 weight") ||
+        !h3_hip_require_bf16(ctx, delta, count, "FastH3 diff"))
+        return 0;
+    return h3_hip_launch_ok(ctx, h3_launch_bf16_axpy(
+        (uint16_t *)tensor_ptr(weight)->data,
+        (const uint16_t *)tensor_ptr(delta)->data, count, scale, ctx->stream),
+        "fasth3 bf16 diff");
+}
+
+int h3_gpu_fasth3_axpy_f32(h3_gpu *gpu, h3_gpu_tensor *weight,
+                           const h3_gpu_tensor *delta, size_t count,
+                           float scale) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !h3_hip_require_f32(ctx, weight, count, "FastH3 f32 weight") ||
+        !h3_hip_require_bf16(ctx, delta, count, "FastH3 diff"))
+        return 0;
+    return h3_hip_launch_ok(ctx, h3_launch_f32_axpy_bf16(
+        (float *)tensor_ptr(weight)->data,
+        (const uint16_t *)tensor_ptr(delta)->data, count, scale, ctx->stream),
+        "fasth3 f32 diff");
+}
+
 int h3_gpu_swiglu_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                       const h3_gpu_tensor *fused, uint32_t rows,
                       uint32_t width) {

@@ -1,4 +1,5 @@
 #include "h3_dit_schedule.h"
+#include "h3_fasth3.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -177,6 +178,22 @@ static h3_gpu_tensor *time_embeddings(const h3_weight_store *weights,
         error, error_size);
     h3_gpu_tensor *out_b = weight_f32_1d(weights, gpu,
         "time_embedder.proj_out.bias", H3_DIT_TIME_DIM, error, error_size);
+    if (in_w && in_b && out_w && out_b &&
+        (!h3_fasth3_apply(gpu, in_w, "time_embedder.proj_in.weight",
+                          TIME_HIDDEN, TIME_INPUT, 1, error, error_size) ||
+         !h3_fasth3_apply(gpu, in_b, "time_embedder.proj_in.bias",
+                          TIME_HIDDEN, 1, 1, error, error_size) ||
+         !h3_fasth3_apply(gpu, out_w, "time_embedder.proj_out.weight",
+                          H3_DIT_TIME_DIM, TIME_HIDDEN, 1, error, error_size) ||
+         !h3_fasth3_apply(gpu, out_b, "time_embedder.proj_out.bias",
+                          H3_DIT_TIME_DIM, 1, 1, error, error_size))) {
+        free_tensor(&in_w);
+        free_tensor(&in_b);
+        free_tensor(&out_w);
+        free_tensor(&out_b);
+        h3_gpu_tensor_free(input);
+        return NULL;
+    }
     h3_gpu_tensor *hidden = h3_gpu_tensor_new_f32_device(
         gpu, (size_t)rows * TIME_HIDDEN);
     h3_gpu_tensor *activated = h3_gpu_tensor_new_f32_device(
@@ -372,6 +389,18 @@ h3_dit_schedule *h3_dit_schedule_precompute(
         }
         schedule->blocks[block] = h3_gpu_tensor_new_bf16_device(
             gpu, (size_t)schedule->time_rows * BLOCK_OUTPUT);
+        if (slot->weight && slot->bias) {
+            char weight_name[128], bias_name[128];
+            snprintf(weight_name, sizeof(weight_name),
+                     "blocks.%u.adaln_proj.linear.weight", block);
+            snprintf(bias_name, sizeof(bias_name),
+                     "blocks.%u.adaln_proj.linear.bias", block);
+            if (!h3_fasth3_apply(gpu, slot->weight, weight_name, BLOCK_OUTPUT,
+                                 H3_DIT_TIME_DIM, 0, error, error_size) ||
+                !h3_fasth3_apply(gpu, slot->bias, bias_name, BLOCK_OUTPUT, 1, 0,
+                                 error, error_size))
+                goto block_failed;
+        }
         if (!slot->weight || !slot->bias || !schedule->blocks[block]) {
             if (error && error_size && !*error)
                 snprintf(error, error_size, "%s", slot->error[0] ?
@@ -435,6 +464,10 @@ block_failed:
     schedule->final = h3_gpu_tensor_new_bf16_device(
         gpu, (size_t)schedule->time_rows * FINAL_OUTPUT);
     if (!final_w || !final_b || !schedule->final ||
+        !h3_fasth3_apply(gpu, final_w, "final_layer.adaln_proj.linear.weight",
+                         FINAL_OUTPUT, H3_DIT_TIME_DIM, 0, error, error_size) ||
+        !h3_fasth3_apply(gpu, final_b, "final_layer.adaln_proj.linear.bias",
+                         FINAL_OUTPUT, 1, 0, error, error_size) ||
         !gpu_op(gpu, h3_gpu_begin(gpu), error, error_size,
                 "begin final AdaLN") ||
         !gpu_op(gpu, h3_gpu_linear_bf16(

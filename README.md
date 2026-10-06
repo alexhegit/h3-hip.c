@@ -274,6 +274,7 @@ say MI300X fox-fast “5.2 s E2E” or 15 s “179.5 s E2E” (those were DiT to
   ./tools/download_weights.sh --dir ./MiniMax-H3          # T2VA / FL2VA, ~134 GiB
   ./tools/download_weights.sh --dir ./MiniMax-H3 --both   # also Ref2VA, ~268 GiB
   export H3_MODEL=$PWD/MiniMax-H3
+  ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
   ```
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)

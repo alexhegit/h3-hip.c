@@ -166,6 +166,25 @@ int h3_serving_schedule_build(int evaluations, h3_sigma_schedule *schedule) {
     return 1;
 }
 
+int h3_fasth3_schedule_build(h3_sigma_schedule *schedule) {
+    static const int timesteps[4] = {999, 749, 500, 250};
+    if (!schedule) return 0;
+    memset(schedule, 0, sizeof(*schedule));
+    schedule->steps = 4;
+    for (int index = 0; index < 4; index++) {
+        float base = (float)timesteps[index] / 1000.0f;
+        float video_shift = (float)H3_VIDEO_SIGMA_SHIFT;
+        float audio_shift = (float)H3_AUDIO_SIGMA_SHIFT;
+        schedule->video[index] = video_shift * base /
+            (1.0f + (video_shift - 1.0f) * base);
+        schedule->audio[index] = audio_shift * base /
+            (1.0f + (audio_shift - 1.0f) * base);
+    }
+    schedule->video[4] = 0.0f;
+    schedule->audio[4] = 0.0f;
+    return 1;
+}
+
 typedef struct {
     h3_layout *layout;
     size_t position_capacity;

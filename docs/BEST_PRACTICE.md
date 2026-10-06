@@ -123,6 +123,15 @@ only 5 of 11 evaluations skip: gfx1151 **2206 s** is slower than TR
 combine with `--token-reduction`.
 [`PERFORMANCE.md`](PERFORMANCE.md#first-block-cache---fbc).
 
+**`--fasth3-lora`** is a separate opt-in path. It merges the FastH3
+dense 4-step adapter at load and replaces the schedule with timesteps
+999, 749, 500, 250. On MI300X the 832×480 · 5 s INT8 process is
+**30.12 s** versus the 50-step dense **166.87 s**. The picture is a
+different composition, checked by eye; it is not a PSNR row against
+that dense clip. Download:
+`./tools/download_fasth3_lora.sh`.
+[`MI300X_FASTH3_2026-10-05.md`](perf-runs/MI300X_FASTH3_2026-10-05.md).
+
 Optional **`--sol-attn`** is a different lossy knob (sparse SDPA, not token
 pairing). Default remains dense. Do not stack with `--token-reduction`
 unless you accept compounded error. Fixed-seed 15 s **no TR** E2E/SDPA

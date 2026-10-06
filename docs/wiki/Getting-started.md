@@ -17,7 +17,10 @@ fastest lossy knob on the 50-step reuse-1 5 s fixture (gfx1151 3478 → 698 s,
 gfx942 167 → 53 s) and only a small change on 15 s `--reuse 2` (gfx1151
 2457 → 2206 s, slower than TR and Sol-Attn; gfx942 136 s vs `fox-15s.sh`
 146 s). Audio is worse than Sol-Attn. Do not combine with
-`--token-reduction`. v0.13.0 added quality-path CDNA flash SDPA and
+`--token-reduction`. Opt-in `--fasth3-lora` is a dense 4-step LoRA on
+the same weights: MI300X 832×480 · 5 s INT8 process E2E **30.12 s**
+versus the 50-step dense **166.87 s**
+([ledger](../perf-runs/MI300X_FASTH3_2026-10-05.md)). v0.13.0 added quality-path CDNA flash SDPA and
 Sol-Attn past 64k tokens. INT8 DiT is default on all ISAs. Strix Halo
 (gfx1151) fox-s2 **v0.9.0** md5 `1731f95c4aa582597cf83d57f46b8f9e` is the historical
 gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
@@ -75,6 +78,7 @@ pip install -U "huggingface_hub[cli]"
 ./tools/download_weights.sh --dir ./MiniMax-H3 --ref2va # add references later
 ./tools/download_weights.sh --dry-run                   # print patterns only
 export H3_MODEL=$PWD/MiniMax-H3
+./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
 ```
 
 Dtypes: [T2VA pipeline](T2VA-pipeline.md). Checkpoint stays BF16/F32; INT8 is

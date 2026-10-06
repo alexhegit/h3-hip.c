@@ -401,6 +401,18 @@ int h3_launch_linear_bf16(const uint16_t *input, const uint16_t *weight,
 int h3_try_linear_bf16_hipblas(const uint16_t *input, const uint16_t *weight,
                                const uint16_t *bias, uint16_t *output,
                                const h3_linear_args *args, hipStream_t stream);
+/* Row-major C = beta * C + scale * (B[rows, rank] @ A[rank, cols]). */
+int h3_bf16_gemm_accumulate(const uint16_t *b, const uint16_t *a, uint16_t *c,
+                            uint32_t rows, uint32_t cols, uint32_t rank,
+                            float scale, float beta, hipStream_t stream);
+int h3_launch_qkv_scatter_add_bf16(uint16_t *weight, const uint16_t *delta,
+                                   uint32_t heads, uint32_t head_dim,
+                                   uint32_t cols, uint32_t which,
+                                   hipStream_t stream);
+int h3_launch_bf16_axpy(uint16_t *weight, const uint16_t *delta, size_t count,
+                        float scale, hipStream_t stream);
+int h3_launch_f32_axpy_bf16(float *weight, const uint16_t *delta, size_t count,
+                            float scale, hipStream_t stream);
 int h3_launch_linear_f32(const float *input, const float *weight,
                          const float *bias, float *output,
                          const h3_linear_args *args, hipStream_t stream);

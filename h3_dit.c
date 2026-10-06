@@ -1,6 +1,7 @@
 #include "h3_dit.h"
 
 #include "h3_dit_schedule.h"
+#include "h3_fasth3.h"
 #include "h3_weights.h"
 
 #include <math.h>
@@ -653,6 +654,25 @@ static int load_block(h3_dit *dit, h3_dit_block *block, const char *prefix,
     return 1;
 }
 
+static int fasth3_block(h3_gpu *gpu, const h3_dit_block *block,
+                        const char *prefix, char *error, size_t error_size) {
+    char name[160];
+#define APPLY(field, suffix, rows, cols) do {                                  \
+    snprintf(name, sizeof(name), "%s%s", prefix, suffix);                     \
+    if (!h3_fasth3_apply(gpu, block->field, name, (uint32_t)(rows),            \
+                         (uint32_t)(cols), 0, error, error_size))              \
+        return 0;                                                              \
+} while (0)
+    APPLY(qkv, "attn.qkv_proj.weight", INNER * 3, HIDDEN);
+    APPLY(out, "attn.out_proj.weight", HIDDEN, INNER);
+    APPLY(fc1, "mlp.fc1.weight", FFN * 2, HIDDEN);
+    APPLY(fc2, "mlp.fc2.weight", HIDDEN, FFN);
+    APPLY(norm1, "norm1.weight", HIDDEN, 1);
+    APPLY(norm2, "norm2.weight", HIDDEN, 1);
+#undef APPLY
+    return 1;
+}
+
 static int load_block_norms(h3_dit *dit, h3_dit_block *block,
                             const char *prefix,
                             char *error, size_t error_size) {
@@ -1057,6 +1077,19 @@ static int refine_text(h3_dit *dit, const h3_text_embedding *text,
         activated = h3_gpu_tensor_new_bf16_device(dit->gpu, rows * FFN);
         ok = dit->refined_text && norm && qkv && query && key && value &&
              heads && branch && fc1 && activated;
+    }
+    if (ok) {
+        ok = h3_fasth3_apply(dit->gpu, condition_w, "condition_proj.weight",
+                             HIDDEN, TEXT_DIM, 0, error, error_size) &&
+             h3_fasth3_apply(dit->gpu, condition_b, "condition_proj.bias",
+                             HIDDEN, 1, 0, error, error_size) &&
+             h3_fasth3_apply(dit->gpu, final_norm,
+                             "token_refiner.final_norm.weight", HIDDEN, 1, 0,
+                             error, error_size) &&
+             fasth3_block(dit->gpu, &refiner[0], "token_refiner.blocks.0.",
+                          error, error_size) &&
+             fasth3_block(dit->gpu, &refiner[1], "token_refiner.blocks.1.",
+                          error, error_size);
     }
     if (!ok) {
         if (!error || !*error)
@@ -1498,7 +1531,9 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
         } else {
             double io_start = stage_timing ? stream_now() : 0.0;
             if (!load_block(dit, &dit->blocks[index], prefix, error,
-                            error_size))
+                            error_size) ||
+                !fasth3_block(dit->gpu, &dit->blocks[index], prefix, error,
+                              error_size))
                 return 0;
             if (stage_timing) wait_io += stream_now() - io_start;
             int need_quant = dit->int8_mlp || dit->int8_qkv ||
@@ -1599,6 +1634,34 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                             HIDDEN, error, error_size);
     dit->final_audio_b = f1(dit, "final_layer.audio_out.bias", AUDIO_CHANNELS,
                             error, error_size);
+    if (dit->video_patch_w && dit->video_patch_b && dit->audio_patch_w &&
+        dit->audio_patch_b && dit->final_norm && dit->final_video_w &&
+        dit->final_video_b && dit->final_audio_w && dit->final_audio_b &&
+        (!h3_fasth3_apply(dit->gpu, dit->video_patch_w,
+                          "video_patch_proj.weight", HIDDEN, VIDEO_PATCH, 1,
+                          error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->video_patch_b, "video_patch_proj.bias",
+                          HIDDEN, 1, 1, error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->audio_patch_w,
+                          "audio_patch_proj.weight", HIDDEN, AUDIO_CHANNELS, 1,
+                          error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->audio_patch_b, "audio_patch_proj.bias",
+                          HIDDEN, 1, 1, error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->final_norm, "final_layer.norm.weight",
+                          HIDDEN, 1, 0, error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->final_video_w,
+                          "final_layer.video_out.weight", VIDEO_PATCH, HIDDEN, 1,
+                          error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->final_video_b,
+                          "final_layer.video_out.bias", VIDEO_PATCH, 1, 1,
+                          error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->final_audio_w,
+                          "final_layer.audio_out.weight", AUDIO_CHANNELS,
+                          HIDDEN, 1, error, error_size) ||
+         !h3_fasth3_apply(dit->gpu, dit->final_audio_b,
+                          "final_layer.audio_out.bias", AUDIO_CHANNELS, 1, 1,
+                          error, error_size)))
+        return 0;
     if (dit->bf16_final && dit->final_video_w && dit->final_video_b &&
         dit->final_audio_w && dit->final_audio_b) {
         h3_gpu_tensor *source[4] = {
@@ -2087,6 +2150,7 @@ static h3_dit *load_dit(const char *weight_directory,
         goto failed;
     }
     h3_gpu_profile_mark(dit->gpu, "load");
+    if (!h3_fasth3_finish(error, error_size)) goto failed;
     return dit;
 failed:
     h3_dit_free(dit);
