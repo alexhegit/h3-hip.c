@@ -10,6 +10,7 @@
 #include "h3_tokenizer.h"
 #include "h3_video_encoder.h"
 #include "h3_video_vae.h"
+#include "h3_taeh3.h"
 #include "h3_vision_encoder.h"
 #include "h3_weights.h"
 
@@ -175,7 +176,7 @@ static char *h3_prepared_key(const char *conditioning,
     if (!h3_key_append(
             &key,
             "%s|shape=%dx%dx%d|steps=%d|layers=%d|reuse-core=%d|reduce=%d"
-            "|sol-attn=%d|fbc=%d|fasth3=%s|row-fc2=%d|reference-rope=%d"
+            "|sol-attn=%d|fbc=%d|fasth3=%s|vsa=%d|row-fc2=%d|reference-rope=%d"
             "|ssd-streaming=%d"
             "|slow=%d%d%d%d%d%d%d%d%d%d",
             conditioning, render_width, render_height, params->frames,
@@ -183,6 +184,7 @@ static char *h3_prepared_key(const char *conditioning,
             params->token_reduction, params->sol_attn, params->fbc,
             params->fasth3_lora && params->fasth3_lora[0] ?
                 params->fasth3_lora : "0",
+            params->vsa,
             params->use_int8_row_fc2,
             params->use_reference_rope,
             params->ssd_streaming,
@@ -584,6 +586,23 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
             return 0;
         }
     }
+    if (params->vsa != 0 && params->vsa != 1) {
+        h3_set_error(ctx, "VSA must be zero or one");
+        return 0;
+    }
+    if (params->vsa &&
+        !(params->fasth3_lora && params->fasth3_lora[0])) {
+        h3_set_error(ctx, "VSA requires --fasth3-lora");
+        return 0;
+    }
+    if (params->vsa &&
+        (params->token_reduction || params->sol_attn || params->fbc ||
+         params->ssd_streaming || params->core_reuse > 1)) {
+        h3_set_error(ctx,
+            "VSA cannot be combined with token reduction, sol-attn, "
+            "first-block cache, SSD streaming, or core reuse");
+        return 0;
+    }
     if (params->use_int8_row_fc2 != 0 &&
         params->use_int8_row_fc2 != 1) {
         h3_set_error(ctx, "int8 row FC2 must be zero or one");
@@ -951,6 +970,13 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
            params->fasth3_lora && params->fasth3_lora[0] ? params->fasth3_lora
                                                          : "",
            1);
+    setenv("H3_TAEH3",
+           params->taeh3 && params->taeh3[0] ? params->taeh3 : "", 1);
+    setenv("H3_VSA", params->vsa ? "1" : "0", 1);
+    if (params->vsa)
+        fprintf(stderr,
+                "h3: --vsa is on: video tiles stay 4x4x4 and the prefix "
+                "stays dense (off by default). H3_VSA_SPARSITY default 0.9.\n");
     if (params->fbc)
         fprintf(stderr,
                 "h3: --fbc is on: skip later DiT blocks when the first "
@@ -1692,7 +1718,9 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     h3_rng_fill_normal(&video_rng, video, video_count);
     h3_rng_fill_normal(&audio_rng, audio, audio_count);
     if (!params->preview_denoise)
-        h3_weight_warmup_start(&decode_warmup, audio_vae_path, vae_path);
+        h3_weight_warmup_start(&decode_warmup, audio_vae_path,
+                               params->taeh3 && params->taeh3[0] ? NULL
+                                                                 : vae_path);
     if (!h3_dit_denoise_euler_preview(
             dit, video, audio, params->denoise_reuse,
             h3_dit_progress_bridge, &progress,
@@ -1761,7 +1789,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     free(audio);
     audio = NULL;
     if (progress.cancelled) goto cleanup;
-    if (!preview_decoder && ctx->cache_enabled) {
+    if (!preview_decoder && ctx->cache_enabled &&
+        !(params->taeh3 && params->taeh3[0])) {
         h3_progress_emit(&progress, "video VAE load", 0, 36);
         preview_decoder = h3_acquire_video_decoder(
             ctx, decoder_key, vae_path, latent_h, latent_w,
@@ -1774,15 +1803,24 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             goto cleanup;
         }
     }
-    int video_ok = preview_decoder ?
-        h3_video_vae_decoder_decode(
-            preview_decoder, video, temporal.video_t, &frames,
-            detail, sizeof(detail)) :
-        h3_video_vae_decode(
-            vae_path, "h3_shaders.metal", video,
-            temporal.video_t, latent_h, latent_w,
-            h3_vae_progress_bridge, &progress, &frames,
-            detail, sizeof(detail));
+    int video_ok;
+    if (params->taeh3 && params->taeh3[0]) {
+        h3_progress_emit(&progress, "video TAEH3", 0, 1);
+        video_ok = h3_taeh3_decode(
+            params->taeh3, video, temporal.video_t, latent_h, latent_w,
+            &frames, detail, sizeof(detail));
+        if (video_ok) h3_progress_emit(&progress, "video TAEH3", 1, 1);
+    } else {
+        video_ok = preview_decoder ?
+            h3_video_vae_decoder_decode(
+                preview_decoder, video, temporal.video_t, &frames,
+                detail, sizeof(detail)) :
+            h3_video_vae_decode(
+                vae_path, "h3_shaders.metal", video,
+                temporal.video_t, latent_h, latent_w,
+                h3_vae_progress_bridge, &progress, &frames,
+                detail, sizeof(detail));
+    }
     if (!video_ok) {
         h3_set_error(ctx, "%s", detail);
         goto cleanup;

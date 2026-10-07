@@ -14,11 +14,95 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.14.0 (2026-10-05)
+## Current release — v0.15.0 (2026-10-07)
 
-`h3 --info` prints `h3-hip 0.14.0`. Build with `make HIP_ARCH=gfx1151`,
-`gfx90a`, or `gfx942`. The v0.13.0 scoreboard below is unchanged:
-`--fbc` is opt-in and was not folded into `bench/`.
+`h3 --info` prints `h3-hip 0.15.0`. Build with `make HIP_ARCH=gfx1151`,
+`gfx90a`, or `gfx942`. Three opt-in FastH3 paths stay off unless the
+flag is set: `--fasth3-lora` (dense 4-step LoRA), `--taeh3` (tiny video
+decoder), and `--vsa` (sparse video attention, requires the
+vsa-datafree adapter). They are not part of the `bench/` scoreboard.
+The v0.14.0 `--fbc` numbers and the v0.13.0 scoreboard below are
+unchanged.
+
+Quality is a visual check, not a PSNR gate against dense. The 4-step
+LoRA is a different schedule and a different composition. On the 5 s
+starship clip, dense is a wide view from behind a railing and the
+4-step clip stays at the console. On the 15 s fox-15s canvas, FastH3
+keeps one engineer, the typing close-up, and the fox in the monitor.
+VSA follows that opening and the fox, and frame 361 has a second
+person. TAEH3 matches the corresponding 4-step frames and is softer.
+
+### MI300X side by side (5 s and 15 s)
+
+gfx942 on DORobot, default INT8 DiT, seed **42**. Process E2E is
+`/usr/bin/time` until `h3: wrote`. These two canvases do not share a step
+count or a layer count. FastH3 and VSA reject `--token-reduction`,
+`--fbc`, and `--reuse` other than 1, and they keep all 50 layers. The
+4-step schedule replaces `--steps` with evaluations at **999, 749, 500,
+250**. `all-opt` in both tables is `--token-reduction` on that canvas.
+It is not stacked with `--fbc`. The older 15 s bundle
+`H3_GPU_SAMPLER=1 H3_INT8_VAE=1 H3_TOKEN_REDUCTION=1` (~2.4 min, denoise
+113 s, INT8 VAE 24.6 s) is a different cell and is not the `all-opt` row
+below.
+
+Ledger:
+[`perf-runs/MI300X_COMPARE_2026-10-07.md`](perf-runs/MI300X_COMPARE_2026-10-07.md).
+
+#### 5 s — input and output
+
+Input: the starship-bridge prompt, `--width 832 --height 480 --seconds 5
+--seed 42`. Output: **832×480**, 24 fps, **124 frames**, **5.167 s**,
+H.264 + AAC.
+
+| path | steps actually run | layers | reuse | video decode | other flags |
+|---|---|---:|---:|---|---|
+| dense | 50 | 50 | 1 | full VAE | none |
+| all-opt | 50 | 50 | 1 | full VAE | `--token-reduction` |
+| `--fbc` | 50, 9 full / 41 skip | 50 | 1 | full VAE | `H3_FBC_REL=0.15`, head 2, tail 2 |
+| FastH3 4-step | 4 (999/749/500/250) | 50 | 1 | full VAE | dense-datafree LoRA |
+| FastH3 + TAEH3 | 4 | 50 | 1 | TAEH3 | same LoRA, `--taeh3` |
+| VSA | 4 | 50 | 1 | full VAE | vsa-datafree, `--vsa`, sparsity 0.9, keep 29 of 280 video tiles |
+| VSA + TAEH3 | 4 | 50 | 1 | TAEH3 | same VSA flags, `--taeh3` |
+
+| path | E2E | denoise | sdpa / linear | video decode |
+|---|---:|---:|---|---:|
+| dense | **166.87 s** | 136.723 s | 75.998 / 49.233 s | 9.807 s |
+| all-opt | **127.61 s** | 93.098 s | 46.223 / 36.841 s | 9.826 s |
+| `--fbc` | **53.31 s** | 31.177 s | 14.926 / 9.796 s | 9.797 s |
+| FastH3 4-step | **30.12 s** | 10.878 s | 6.029 / 3.911 s | 9.628 s |
+| FastH3 + TAEH3 | **27.72 s** | 10.910 s | 6.032 / 3.943 s | 3.443 s |
+| VSA | **32.61 s** | 9.044 s | 3.811 / 4.300 s | 9.723 s |
+| VSA + TAEH3 | **26.02 s** | 9.152 s | 3.947 / 4.276 s | 3.488 s |
+
+VSA and VSA + TAEH3 quote the warmer text-cache launch. A second VSA
+launch on that binary was denoise 8.853 s / SDPA 3.682 s and E2E 33.20 s
+with a colder text-encoder read.
+
+#### 15 s — input and output
+
+Input: the `bench/fox-15s.sh` prompt, `--width 864 --height 480
+--seconds 15 --seed 42`. Output: **864×480**, 24 fps, **362 frames**,
+**15.083 s**, H.264 + AAC.
+
+| path | steps actually run | layers | reuse | video decode | other flags |
+|---|---|---:|---:|---|---|
+| dense | 20, reuse keeps 11 | 45 | 2 | full VAE | no token reduction (2026-09-18) |
+| all-opt | 20, reuse keeps 11 | 45 | 2 | full VAE | `fox-15s.sh` `--token-reduction` (2026-10-05) |
+| `--fbc` | 11 evaluations, 6 full / 5 skip | 45 | 2 | full VAE | fox-15s knobs, `--fbc` instead of token reduction |
+| FastH3 4-step | 4 (999/749/500/250) | 50 | 1 | full VAE | dense-datafree LoRA. The script's reuse 2, 45 layers, and token reduction are rejected |
+| FastH3 + TAEH3 | 4 | 50 | 1 | TAEH3 | same FastH3 4-step knobs, `--taeh3` |
+| VSA | 4 | 50 | 1 | full VAE | vsa-datafree, `--vsa`, sparsity 0.9, keep 76 of 756 video tiles |
+| VSA + TAEH3 | 4 | 50 | 1 | TAEH3 | same VSA flags, `--taeh3`. Latents 107×30×54 |
+
+| path | E2E | denoise | sdpa / linear | video decode |
+|---|---:|---:|---|---:|
+| dense | **213.3 s** | 175.5 s | — | 28.6 s |
+| all-opt | **146.21 s** | 103.950 s | 76.148 / 21.092 s | 28.787 s |
+| `--fbc` | **136.43 s** | 92.626 s | 70.770 / 15.939 s | 28.763 s |
+| FastH3 4-step | **108.68 s** | 65.727 s | 51.390 / 11.559 s | 28.435 s |
+| FastH3 + TAEH3 | **89.12 s** | 65.434 s | 51.144 / 11.526 s | 10.558 s |
+| VSA | **95.06 s** | 49.569 s | 34.297 / 12.545 s | 28.526 s |
+| VSA + TAEH3 | **76.72 s** | 49.512 s | 34.343 / 12.419 s | 10.698 s |
 
 ### First-block cache (`--fbc`)
 
@@ -76,6 +160,65 @@ other. No PSNR gate was applied.
 
 Ledger:
 [`perf-runs/MI300X_FASTH3_2026-10-05.md`](perf-runs/MI300X_FASTH3_2026-10-05.md).
+
+### VSA (`--vsa`)
+
+Off by default. It loads the vsa-datafree adapter (856 tensors, including
+`to_gate_compress`) on top of the same 4-step schedule. The 5 s INT8
+fixture above is the acceptance clip: full video VAE, sparsity 0.9,
+tile 64, keep 29 of 280 video tiles, prefix dense. It does not combine
+with token reduction, `--sol-attn`, `--fbc`, SSD streaming, or core
+reuse above 1.
+
+The first idle-GPU measurement used a 32-lane fine kernel and a BF16
+gate GEMM: process E2E **118.70 s**, denoise **85.390 s**, SDPA
+**42.443 s**, linear **42.030 s**. That is not the optimized path.
+
+The follow-up quantizes `to_gate_compress` with the existing INT8
+weight path and runs the selected 64-token tiles through the same
+rocWMMA QK/PV fragments as dense CDNA flash (`H3_VSA_MFMA=0` keeps the
+32-lane kernel). On the same idle GPU the process E2E is **31.53 s**,
+denoise **9.568 s**, SDPA **4.384 s**, linear **4.226 s**.
+
+The next kernel compacts the selected tile ids and prefetches the next
+K/V tile under the MMA, in 32-row chunks. Two idle-GPU launches of that
+binary: denoise **8.853 s** / SDPA **3.682 s**, and denoise **9.044 s**
+/ SDPA **3.811 s**. Both beat the 31.53 s row and the FastH3 INT8
+denoise (10.878 s / 6.029 s). Process E2E on the warmer launch is
+**32.61 s**. DiT load on these two launches was 9.171 s and 9.566 s
+versus 7.833 s on the 31.53 s row, so the process time does not tighten
+even though denoise does. Video VAE stays ~9.7 s.
+
+Stacking that prefetch kernel with `--taeh3` replaces the video VAE.
+Two idle-GPU launches: process E2E **26.30 s** and **26.02 s**. The
+warmer launch is text 2.434 s, DiT load 9.070 s, denoise 9.152 s
+(SDPA 3.947 s, linear 4.276 s), audio 0.511 s, TAEH3 decode **3.488 s**.
+That is the fastest 5 s process on this fixture: FastH3 INT8 is 30.12 s,
+FastH3 plus TAEH3 is 27.72 s. Frames 0, 62, and 123 still follow the
+prompt; the tiny decoder is the softer picture already seen on the
+FastH3 TAEH3 clip. The scalar 1665 s SDPA run is not a
+performance result.
+
+On the fox-15s canvas (864×480, 362 frames, seed 42, same prompt) the
+4-step path cannot take that script's `--reuse 2`, `--layers 45`, or
+`--token-reduction`. Idle-GPU process E2E is FastH3 **108.68 s**,
+FastH3 plus TAEH3 **89.12 s**, VSA **95.06 s**, VSA plus TAEH3
+**76.72 s**. Same-canvas published rows are dense no-TR **213.3 s**
+(2026-09-18), `fox-15s.sh` **146.21 s** (2026-10-05), and `--fbc`
+**136.43 s** (reuse 2, no TR). Denoise is 65.7 / 65.4 / 49.6 / 49.5 s.
+Video decode is 28.4 s for the full VAE and about **10.6 s** for
+TAEH3. VSA geometry: 24 prefix tiles, 756 video tiles, keep 76. The
+VSA ending frame shows two people in the office; the FastH3 ending
+stays one engineer.
+
+Ledgers:
+[`perf-runs/MI300X_VSA_2026-10-06.md`](perf-runs/MI300X_VSA_2026-10-06.md),
+[`perf-runs/MI300X_FOX15S_FASTH3_2026-10-07.md`](perf-runs/MI300X_FOX15S_FASTH3_2026-10-07.md).
+
+Prompt 1 at **1344×768 · 5 s** (NVlabs seed 0, 50 dense steps) is a
+different fixture. MI300X process E2E is **668.15 s**. The comparison
+with the published RTX 5090 and 4×H100 times is
+[`perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`](perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md).
 
 ## v0.13.0 (2026-09-21)
 

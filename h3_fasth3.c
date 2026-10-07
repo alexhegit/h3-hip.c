@@ -33,6 +33,19 @@ int h3_fasth3_finish(char *error, size_t error_size) {
     return 0;
 }
 
+int h3_fasth3_load_gate(h3_gpu *gpu, unsigned block, uint32_t rows,
+                        uint32_t cols, h3_gpu_tensor **out, char *error,
+                        size_t error_size) {
+    (void)gpu;
+    (void)block;
+    (void)rows;
+    (void)cols;
+    (void)out;
+    if (error && error_size)
+        snprintf(error, error_size, "VSA requires the HIP backend");
+    return 0;
+}
+
 #else
 
 enum { FASTH3_PLAIN = 0, FASTH3_QKV = 1, FASTH3_FC1 = 2 };
@@ -449,6 +462,98 @@ static int apply_plain(h3_gpu *gpu, h3_gpu_tensor *weight, const char *stem,
                       error_size);
 }
 
+static float fasth3_bf16_f32(uint16_t bits) {
+    uint32_t wide = (uint32_t)bits << 16;
+    float value;
+    memcpy(&value, &wide, sizeof(value));
+    return value;
+}
+
+static uint16_t fasth3_f32_bf16(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    uint32_t lsb = (bits >> 16) & 1u;
+    bits += 0x7fffu + lsb;
+    return (uint16_t)(bits >> 16);
+}
+
+int h3_fasth3_load_gate(h3_gpu *gpu, unsigned block, uint32_t rows,
+                        uint32_t cols, h3_gpu_tensor **out, char *error,
+                        size_t error_size) {
+    char key[320];
+    char local[256];
+    const h3_st_tensor *tensor;
+    uint16_t *host = NULL;
+    size_t count;
+    if (!error || !error_size) {
+        error = local;
+        error_size = sizeof(local);
+    }
+    if (!gpu || !out || !rows || !cols) {
+        fasth3_fail(error, error_size, "invalid FastH3 gate request");
+        return 0;
+    }
+    *out = NULL;
+    if (!open_adapter(error, error_size)) return 0;
+    if (snprintf(key, sizeof(key),
+                 "transformer_blocks.%u.attn.to_gate_compress.set_weight",
+                 block) >= (int)sizeof(key)) {
+        fasth3_fail(error, error_size, "FastH3 gate key is too long");
+        return 0;
+    }
+    tensor = h3_st_find(&fasth3.header, key);
+    if (!tensor) {
+        snprintf(error, error_size,
+                 "FastH3 adapter is missing %s; --vsa needs vsa-datafree",
+                 key);
+        return 0;
+    }
+    if (tensor->ndim != 2 || tensor->shape[0] != (uint64_t)rows ||
+        tensor->shape[1] != (uint64_t)cols ||
+        (tensor->dtype != H3_DTYPE_BF16 && tensor->dtype != H3_DTYPE_F32)) {
+        snprintf(error, error_size, "FastH3 %s has the wrong shape", key);
+        return 0;
+    }
+    count = (size_t)rows * (size_t)cols;
+    host = malloc(count * sizeof(uint16_t));
+    if (!host) {
+        fasth3_fail(error, error_size, "out of memory reading FastH3 gate");
+        return 0;
+    }
+    if (tensor->dtype == H3_DTYPE_BF16) {
+        if (!h3_st_read_data(&fasth3.header, tensor, host,
+                             count * sizeof(uint16_t), error, error_size)) {
+            free(host);
+            return 0;
+        }
+    } else {
+        float *wide = malloc(count * sizeof(float));
+        if (!wide ||
+            !h3_st_read_data(&fasth3.header, tensor, wide,
+                             count * sizeof(float), error, error_size)) {
+            free(wide);
+            free(host);
+            if (error && error_size && !error[0])
+                fasth3_fail(error, error_size,
+                            "out of memory reading FastH3 gate");
+            return 0;
+        }
+        for (size_t index = 0; index < count; index++)
+            host[index] = fasth3_f32_bf16(wide[index]);
+        free(wide);
+    }
+    if (fasth3.strength != 1.0f) {
+        for (size_t index = 0; index < count; index++)
+            host[index] = fasth3_f32_bf16(fasth3_bf16_f32(host[index]) *
+                                          fasth3.strength);
+    }
+    *out = upload_bf16(gpu, host, count, error, error_size);
+    free(host);
+    if (!*out) return 0;
+    mark_tensor(tensor);
+    return 1;
+}
+
 int h3_fasth3_apply(h3_gpu *gpu, h3_gpu_tensor *weight, const char *name,
                     uint32_t rows, uint32_t cols, int weight_f32,
                     char *error, size_t error_size) {
@@ -488,18 +593,26 @@ int h3_fasth3_finish(char *error, size_t error_size) {
         error_size = sizeof(local);
     }
     if (!fasth3.open && !open_adapter(error, error_size)) return 0;
+    const char *vsa_env = getenv("H3_VSA");
+    int vsa = vsa_env && vsa_env[0] && strcmp(vsa_env, "0") != 0;
+    int gate_unused = 0;
     for (size_t index = 0; index < fasth3.header.tensor_count; index++) {
+        const char *name = fasth3.header.tensors[index].name;
         if (fasth3.used[index]) {
             applied++;
             continue;
         }
-        if (!pending && error && error_size) {
+        if (name && strstr(name, "to_gate_compress")) gate_unused = 1;
+        if (!pending && error && error_size && name) {
             snprintf(error, error_size, "FastH3 key was not applied: %s",
-                     fasth3.header.tensors[index].name);
+                     name);
         }
         pending++;
     }
     if (pending) {
+        if (gate_unused && !vsa && error && error_size)
+            snprintf(error, error_size,
+                     "FastH3 adapter has to_gate_compress; pass --vsa");
         fprintf(stderr, "h3: FastH3 left %zu adapter tensors unused\n",
                 pending);
         return 0;

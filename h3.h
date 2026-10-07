@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define H3_VERSION "0.14.0"
+#define H3_VERSION "0.15.0"
 #define H3_DEFAULT_WIDTH 864
 #define H3_DEFAULT_HEIGHT 480
 #define H3_DEFAULT_FRAMES 56
@@ -140,12 +140,17 @@ typedef struct {
     /* Opt-in FastH3 dense 4-step LoRA file. NULL keeps the quality path,
      * fox-fast, and the existing kernels unchanged. */
     const char *fasth3_lora;
+    /* Opt-in TAEH3 tiny video decoder. NULL keeps the full video VAE. */
+    const char *taeh3;
+    /* Opt-in FastH3 video sparse attention. Requires --fasth3-lora pointing
+     * at the vsa-datafree adapter. Off by default. */
+    int vsa;
 } h3_params;
 
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
-    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL \
+    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, 0 \
 }
 
 typedef struct {

@@ -46,6 +46,12 @@ static void usage(const char *program) {
         "      --fasth3-lora PATH Merge a FastH3 dense 4-step LoRA at load\n"
         "                         (off by default). Forces timesteps\n"
         "                         999,749,500,250 and --reuse 1.\n"
+        "      --taeh3 PATH       Decode video with the TAEH3 tiny decoder\n"
+        "                         (off by default). Softer preview, same\n"
+        "                         latents. Audio VAE is unchanged.\n"
+        "      --vsa              Sparse video attention from the FastH3\n"
+        "                         vsa-datafree adapter (off by default).\n"
+        "                         Requires --fasth3-lora. Prefix stays dense.\n"
         "      --ssd-streaming    Stream original BF16 DiT layers from SSD\n"
         "      --use-int8-row-fc2 Faster one-scale int8 FC2 (M5)\n"
         "      --use-reference-rope  Disable native 256 RoPE adaptation\n"
@@ -261,6 +267,8 @@ int main(int argc, char **argv) {
            OPT_SOL_ATTN,
            OPT_FBC,
            OPT_FASTH3_LORA,
+           OPT_TAEH3,
+           OPT_VSA,
            OPT_SSD_STREAMING,
            OPT_USE_INT8_ROW_FC2,
            OPT_USE_REFERENCE_ROPE,
@@ -297,6 +305,8 @@ int main(int argc, char **argv) {
         {"sol-attn", no_argument, NULL, OPT_SOL_ATTN},
         {"fbc", no_argument, NULL, OPT_FBC},
         {"fasth3-lora", required_argument, NULL, OPT_FASTH3_LORA},
+        {"taeh3", required_argument, NULL, OPT_TAEH3},
+        {"vsa", no_argument, NULL, OPT_VSA},
         {"ssd-streaming", no_argument, NULL, OPT_SSD_STREAMING},
         {"use-int8-row-fc2", no_argument, NULL, OPT_USE_INT8_ROW_FC2},
         {"use-reference-rope", no_argument, NULL, OPT_USE_REFERENCE_ROPE},
@@ -389,6 +399,8 @@ int main(int argc, char **argv) {
             case OPT_SOL_ATTN: params.sol_attn = 1; break;
             case OPT_FBC: params.fbc = 1; break;
             case OPT_FASTH3_LORA: params.fasth3_lora = optarg; break;
+            case OPT_TAEH3: params.taeh3 = optarg; break;
+            case OPT_VSA: params.vsa = 1; break;
             case OPT_SSD_STREAMING: params.ssd_streaming = 1; break;
             case OPT_USE_INT8_ROW_FC2:
                 params.use_int8_row_fc2 = 1;

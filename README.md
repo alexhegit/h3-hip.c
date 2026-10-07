@@ -12,19 +12,23 @@ were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.14.0** adds opt-in **`--fbc`** (first-block cache). It always
-runs the first active DiT block and skips the rest of that step when the
-block-0 residual has barely moved. It does not replace `--reuse`. On the
-50-step reuse-1 5 s fixture it is the fastest of the lossy knobs and the
-closest video to dense on both gfx1151 (**3478 → 698 s**, 16.68 dB) and
-gfx942 (**167 → 53 s**, 16.35 dB). On 15 s `fox-15s` with `--reuse 2` the
-gain shrinks to about 10% on gfx1151 (**2457 → 2206 s**), where it is
-slower than token reduction and Sol-Attn; on gfx942 the same knobs are
-**136 s**, only a little under `fox-15s.sh` (**146 s**) and still slower
-than `fox-15s-fast.sh` (**118 s**). Audio SNR is worse than Sol-Attn.
-Do not combine with `--token-reduction`. v0.13.0 remains the quality-path
-CDNA flash SDPA and Sol-Attn-past-64k release. INT8 DiT is default on all
-ISAs (`H3_INT8_MLP=0` for BF16).
+Tagged **v0.15.0** adds three opt-in FastH3 paths, all off by default.
+`--fasth3-lora` merges a dense 4-step LoRA and runs timesteps 999 / 749 /
+500 / 250. `--taeh3` replaces the video VAE with a tiny decoder.
+`--vsa` turns on sparse video attention and requires the vsa-datafree
+adapter. They do not combine with `--token-reduction`, `--sol-attn`,
+`--fbc`, or `--reuse` above 1, and they keep all 50 layers. On MI300X
+the 832×480 · 5 s INT8 process is dense **166.87 s**, `--fbc` **53.31 s**,
+FastH3 **30.12 s**, FastH3+TAEH3 **27.72 s**, VSA **32.61 s**, VSA+TAEH3
+**26.02 s**. The fox-15s canvas (864×480 · 15 s; FastH3 uses 4 steps and
+reuse 1, not the script's 20 steps / 45 layers / reuse 2) is dense
+**213.3 s**, `fox-15s.sh` **146.21 s**, `--fbc` **136.43 s**, FastH3
+**108.68 s**, FastH3+TAEH3 **89.12 s**, VSA **95.06 s**, VSA+TAEH3
+**76.72 s**. The 4-step picture follows the prompt and is a different
+composition from dense; TAEH3 is softer, and the 15 s VSA ending has a
+second person in the office. v0.14.0 remains the `--fbc` release.
+v0.13.0 remains the quality-path CDNA flash SDPA and Sol-Attn-past-64k
+release. INT8 DiT is default on all ISAs (`H3_INT8_MLP=0` for BF16).
 v0.12.0 was TR schedule + fused AdaLN + 3-GPU retune; v0.11.x had opt-in
 INT8; v0.10.x is the dual-ISA history; v0.9.x is Strix Halo only. The original project is a native MiniMax-H3
 inference engine (Apple Metal / macOS); this repository reimplements the
@@ -86,6 +90,7 @@ port. Click a poster for the MP4. Several clips are **untitled** model output
 | **Ref2VA** — AMD developer community (untitled) | [![AMD community](assets/showcase/amd-developer-community-raw.jpg)](assets/showcase/amd-developer-community-raw.mp4) [mp4](assets/showcase/amd-developer-community-raw.mp4) |
 | **T2VA** — 15 s cinematic office (untitled) | [![15 s long](assets/showcase/long-15s-cinematic.jpg)](assets/showcase/long-15s-cinematic.mp4) [mp4](assets/showcase/long-15s-cinematic.mp4) |
 | **T2VA** — 15 s Halo three-way (dense / TR / Sol-Attn) | [![15 s 3-way](assets/showcase/fox-15s-3way-compare-gfx1151.jpg)](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) [mp4](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) |
+| **T2VA** — 15 s MI300X FastH3 (4-step / 4-step+TAEH3) | [![FastH3 2-way](assets/showcase/fox-15s-fasth3-2way-gfx942.jpg)](assets/showcase/fox-15s-fasth3-2way-gfx942.mp4) [mp4](assets/showcase/fox-15s-fasth3-2way-gfx942.mp4) |
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
@@ -177,7 +182,7 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.14.0**. `h3 --info` prints `h3-hip 0.14.0`.
+Current tagged line is **v0.15.0**. `h3 --info` prints `h3-hip 0.15.0`.
 
 | Capability | Status |
 |------------|--------|
@@ -190,6 +195,9 @@ Current tagged line is **v0.14.0**. `h3 --info` prints `h3-hip 0.14.0`.
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
 | `--sol-attn` | ✅ opt-in **lossy** long SDPA on **Strix Halo + MI210 + MI300X** (measured) |
 | `--fbc` | ✅ opt-in **lossy** first-block cache on gfx1151 and gfx942 (measured). Best on 50-step reuse-1 clips; small on 15 s reuse-2. Not with `--token-reduction` |
+| `--fasth3-lora` | ✅ opt-in dense 4-step LoRA. MI300X only in v0.15.0. Forces 999/749/500/250, 50 layers, `--reuse 1` |
+| `--taeh3` | ✅ opt-in tiny video decoder. Softer picture. Audio VAE unchanged |
+| `--vsa` | ✅ opt-in sparse video attention. Requires the vsa-datafree `--fasth3-lora`. Not with token reduction, Sol-Attn, `--fbc`, or reuse above 1 |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
 
 ## Daemon (experimental)

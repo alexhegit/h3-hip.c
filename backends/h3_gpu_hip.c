@@ -600,6 +600,16 @@ struct h3_gpu {
     int sol_attn_sparse_q0;
     void *nax_fc1_temp;
     size_t nax_fc1_temp_elems;
+    int vsa_ready;
+    uint32_t vsa_sequence, vsa_t, vsa_h, vsa_w, vsa_nseg;
+    uint32_t vsa_seg[8];
+    float vsa_sparsity;
+    uint32_t vsa_n_tiles, vsa_n_prefix, vsa_keep, vsa_padded;
+    uint32_t *vsa_slot;
+    uint32_t *vsa_blocks;
+    uint16_t *vsa_q, *vsa_k, *vsa_v, *vsa_g, *vsa_o;
+    float *vsa_pq, *vsa_pk, *vsa_pv, *vsa_scores, *vsa_acc;
+    uint8_t *vsa_mask;
 };
 
 static int h3_hip_env_on(const char *name);
@@ -1014,6 +1024,19 @@ void h3_gpu_free(h3_gpu *gpu) {
         hipFree(ctx->sol_scratch);
     }
     if (ctx->nax_fc1_temp) h3_gpu_tensor_free((h3_gpu_tensor *)ctx->nax_fc1_temp);
+    hipFree(ctx->vsa_slot);
+    hipFree(ctx->vsa_blocks);
+    hipFree(ctx->vsa_q);
+    hipFree(ctx->vsa_k);
+    hipFree(ctx->vsa_v);
+    hipFree(ctx->vsa_g);
+    hipFree(ctx->vsa_o);
+    hipFree(ctx->vsa_pq);
+    hipFree(ctx->vsa_pk);
+    hipFree(ctx->vsa_pv);
+    hipFree(ctx->vsa_scores);
+    hipFree(ctx->vsa_acc);
+    hipFree(ctx->vsa_mask);
     hipStreamDestroy(ctx->stream);
     free(ctx);
     h3_hip_pin_purge();
@@ -2809,6 +2832,186 @@ int h3_gpu_conv3d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         "h3_conv3d_f32");
 }
 
+static const float *taeh3_f32(const h3_gpu_tensor *tensor) {
+    return (const float *)tensor_ptr(tensor)->data;
+}
+
+static float *taeh3_f32_mut(h3_gpu_tensor *tensor) {
+    return (float *)tensor_ptr(tensor)->data;
+}
+
+int h3_gpu_taeh3_conv2d(h3_gpu *gpu, h3_gpu_tensor *output,
+                        const h3_gpu_tensor *input,
+                        const h3_gpu_tensor *weight,
+                        const h3_gpu_tensor *bias, uint32_t batch,
+                        uint32_t in_channels, uint32_t out_channels,
+                        uint32_t height, uint32_t width, uint32_t kernel) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !batch || !in_channels || !out_channels || !height || !width ||
+        (kernel != 1u && kernel != 3u)) {
+        return 0;
+    }
+    size_t in_n = (size_t)batch * in_channels * height * width;
+    size_t out_n = (size_t)batch * out_channels * height * width;
+    size_t w_n = (size_t)out_channels * in_channels * kernel * kernel;
+    if (!h3_hip_require_f32(ctx, input, in_n, "TAEH3 conv input") ||
+        !h3_hip_require_f32(ctx, weight, w_n, "TAEH3 conv weight") ||
+        !h3_hip_require_f32(ctx, output, out_n, "TAEH3 conv output") ||
+        (bias && !h3_hip_require_f32(ctx, bias, out_channels,
+                                    "TAEH3 conv bias"))) {
+        return 0;
+    }
+    h3_taeh3_conv2d_args args = {batch, in_channels, out_channels, height,
+                                 width, kernel, kernel / 2u, bias ? 1u : 0u};
+    const float *bias_ptr = bias ? taeh3_f32(bias) : taeh3_f32(input);
+    return h3_hip_launch_conv(ctx, h3_launch_taeh3_conv2d(
+        taeh3_f32(input), taeh3_f32(weight), bias_ptr, taeh3_f32_mut(output),
+        &args, ctx->stream), "h3_taeh3_conv2d");
+}
+
+int h3_gpu_taeh3_tanh_clamp(h3_gpu *gpu, h3_gpu_tensor *output,
+                            const h3_gpu_tensor *input, uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, input, elements, "TAEH3 tanh input") ||
+        !h3_hip_require_f32(ctx, output, elements, "TAEH3 tanh output")) {
+        return 0;
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_taeh3_tanh_clamp(
+        taeh3_f32(input), taeh3_f32_mut(output), elements, ctx->stream),
+        "h3_taeh3_tanh_clamp");
+}
+
+int h3_gpu_taeh3_relu(h3_gpu *gpu, h3_gpu_tensor *output,
+                      const h3_gpu_tensor *input, uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, input, elements, "TAEH3 relu input") ||
+        !h3_hip_require_f32(ctx, output, elements, "TAEH3 relu output")) {
+        return 0;
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_taeh3_relu(
+        taeh3_f32(input), taeh3_f32_mut(output), elements, ctx->stream),
+        "h3_taeh3_relu");
+}
+
+int h3_gpu_taeh3_add_relu(h3_gpu *gpu, h3_gpu_tensor *output,
+                          const h3_gpu_tensor *left, const h3_gpu_tensor *right,
+                          uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, left, elements, "TAEH3 add left") ||
+        !h3_hip_require_f32(ctx, right, elements, "TAEH3 add right") ||
+        !h3_hip_require_f32(ctx, output, elements, "TAEH3 add output")) {
+        return 0;
+    }
+    return h3_hip_launch_ok(ctx, h3_launch_taeh3_add_relu(
+        taeh3_f32(left), taeh3_f32(right), taeh3_f32_mut(output), elements,
+        ctx->stream), "h3_taeh3_add_relu");
+}
+
+int h3_gpu_taeh3_upsample2(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *input, uint32_t batch,
+                           uint32_t channels, uint32_t height, uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t in_n = (size_t)batch * channels * height * width;
+    size_t out_n = in_n * 4u;
+    if (!ctx || !batch || !channels || !height || !width ||
+        !h3_hip_require_f32(ctx, input, in_n, "TAEH3 upsample input") ||
+        !h3_hip_require_f32(ctx, output, out_n, "TAEH3 upsample output")) {
+        return 0;
+    }
+    h3_taeh3_nchw_args args = {batch, channels, height, width};
+    return h3_hip_launch_ok(ctx, h3_launch_taeh3_upsample2(
+        taeh3_f32(input), taeh3_f32_mut(output), &args, ctx->stream),
+        "h3_taeh3_upsample2");
+}
+
+int h3_gpu_taeh3_time_past(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *input,
+                           const h3_gpu_tensor *memory, uint32_t batch,
+                           uint32_t channels, uint32_t height, uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t frame = (size_t)channels * height * width;
+    if (!ctx || !batch || !channels || !height || !width ||
+        !h3_hip_require_f32(ctx, input, (size_t)batch * frame, "TAEH3 past input") ||
+        !h3_hip_require_f32(ctx, memory, frame, "TAEH3 past memory") ||
+        !h3_hip_require_f32(ctx, output, (size_t)batch * frame,
+                            "TAEH3 past output")) {
+        return 0;
+    }
+    h3_taeh3_nchw_args args = {batch, channels, height, width};
+    return h3_hip_launch_ok(ctx, h3_launch_taeh3_time_past(
+        taeh3_f32(input), taeh3_f32(memory), taeh3_f32_mut(output), &args,
+        ctx->stream), "h3_taeh3_time_past");
+}
+
+int h3_gpu_taeh3_cat_channels(h3_gpu *gpu, h3_gpu_tensor *output,
+                              const h3_gpu_tensor *left,
+                              const h3_gpu_tensor *right, uint32_t batch,
+                              uint32_t channels, uint32_t height,
+                              uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t one = (size_t)batch * channels * height * width;
+    if (!ctx || !batch || !channels || !height || !width ||
+        !h3_hip_require_f32(ctx, left, one, "TAEH3 cat left") ||
+        !h3_hip_require_f32(ctx, right, one, "TAEH3 cat right") ||
+        !h3_hip_require_f32(ctx, output, one * 2u, "TAEH3 cat output")) {
+        return 0;
+    }
+    h3_taeh3_nchw_args args = {batch, channels, height, width};
+    return h3_hip_launch_ok(ctx, h3_launch_taeh3_cat_channels(
+        taeh3_f32(left), taeh3_f32(right), taeh3_f32_mut(output), &args,
+        ctx->stream), "h3_taeh3_cat_channels");
+}
+
+int h3_gpu_taeh3_pixel_shuffle2(h3_gpu *gpu, h3_gpu_tensor *output,
+                                const h3_gpu_tensor *input, uint32_t batch,
+                                uint32_t height, uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t in_n = (size_t)batch * 12u * height * width;
+    size_t out_n = (size_t)batch * 3u * (height * 2u) * (width * 2u);
+    if (!ctx || !batch || !height || !width ||
+        !h3_hip_require_f32(ctx, input, in_n, "TAEH3 shuffle input") ||
+        !h3_hip_require_f32(ctx, output, out_n, "TAEH3 shuffle output")) {
+        return 0;
+    }
+    h3_taeh3_nchw_args args = {batch, 12u, height, width};
+    return h3_hip_launch_ok(ctx, h3_launch_taeh3_pixel_shuffle2(
+        taeh3_f32(input), taeh3_f32_mut(output), &args, ctx->stream),
+        "h3_taeh3_pixel_shuffle2");
+}
+
+int h3_gpu_taeh3_copy_frame(h3_gpu *gpu, h3_gpu_tensor *dst,
+                            const h3_gpu_tensor *src, uint32_t frame,
+                            uint32_t channels, uint32_t height,
+                            uint32_t width) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t frame_n = (size_t)channels * height * width;
+    size_t need = ((size_t)frame + 1u) * frame_n;
+    if (!ctx || !channels || !height || !width ||
+        !h3_hip_require_f32(ctx, src, need, "TAEH3 frame source") ||
+        !h3_hip_require_f32(ctx, dst, frame_n, "TAEH3 frame dest")) {
+        return 0;
+    }
+    const float *from = taeh3_f32(src) + (size_t)frame * frame_n;
+    return hipMemcpyAsync(taeh3_f32_mut(dst), from, frame_n * sizeof(float),
+                          hipMemcpyDeviceToDevice, ctx->stream) == hipSuccess;
+}
+
+int h3_gpu_taeh3_copy(h3_gpu *gpu, h3_gpu_tensor *dst,
+                      const h3_gpu_tensor *src, uint32_t elements) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, src, elements, "TAEH3 copy source") ||
+        !h3_hip_require_f32(ctx, dst, elements, "TAEH3 copy dest")) {
+        return 0;
+    }
+    return hipMemcpyAsync(taeh3_f32_mut(dst), taeh3_f32(src),
+                          (size_t)elements * sizeof(float),
+                          hipMemcpyDeviceToDevice, ctx->stream) == hipSuccess;
+}
+
 int h3_gpu_vae_encoder_group_norm_silu_f32(
     h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *input,
     const h3_gpu_tensor *weight, const h3_gpu_tensor *bias, uint32_t batch,
@@ -2979,6 +3182,219 @@ static int h3_hip_sdpa_bf16_run(struct h3_gpu *ctx, uint16_t *output,
                               h3_launch_sdpa_bf16(query, key, value, output,
                                                   &args, ctx->stream),
                               "h3_sdpa_bf16");
+}
+
+static void h3_vsa_release(struct h3_gpu *ctx) {
+    hipFree(ctx->vsa_slot);
+    hipFree(ctx->vsa_blocks);
+    hipFree(ctx->vsa_q);
+    hipFree(ctx->vsa_k);
+    hipFree(ctx->vsa_v);
+    hipFree(ctx->vsa_g);
+    hipFree(ctx->vsa_o);
+    hipFree(ctx->vsa_pq);
+    hipFree(ctx->vsa_pk);
+    hipFree(ctx->vsa_pv);
+    hipFree(ctx->vsa_scores);
+    hipFree(ctx->vsa_acc);
+    hipFree(ctx->vsa_mask);
+    ctx->vsa_slot = NULL;
+    ctx->vsa_blocks = NULL;
+    ctx->vsa_q = ctx->vsa_k = ctx->vsa_v = ctx->vsa_g = ctx->vsa_o = NULL;
+    ctx->vsa_pq = ctx->vsa_pk = ctx->vsa_pv = ctx->vsa_scores = ctx->vsa_acc =
+        NULL;
+    ctx->vsa_mask = NULL;
+    ctx->vsa_ready = 0;
+}
+
+static int h3_vsa_same(const struct h3_gpu *ctx, uint32_t sequence, uint32_t t,
+                       uint32_t h, uint32_t w, const uint32_t *prefix,
+                       uint32_t n_prefix, float sparsity) {
+    if (!ctx->vsa_ready || ctx->vsa_sequence != sequence || ctx->vsa_t != t ||
+        ctx->vsa_h != h || ctx->vsa_w != w || ctx->vsa_nseg != n_prefix ||
+        ctx->vsa_sparsity != sparsity)
+        return 0;
+    for (uint32_t i = 0; i < n_prefix; i++)
+        if (ctx->vsa_seg[i] != prefix[i]) return 0;
+    return 1;
+}
+
+static int h3_vsa_prepare(struct h3_gpu *ctx, uint32_t sequence, uint32_t t,
+                          uint32_t h, uint32_t w, const uint32_t *prefix,
+                          uint32_t n_prefix, float sparsity) {
+    if (h3_vsa_same(ctx, sequence, t, h, w, prefix, n_prefix, sparsity))
+        return 1;
+    if (n_prefix > 8u || h == 0u || w == 0u || t == 0u ||
+        sparsity < 0.0f || sparsity >= 1.0f)
+        return 0;
+    uint32_t prefix_tokens = 0;
+    for (uint32_t i = 0; i < n_prefix; i++) prefix_tokens += prefix[i];
+    const uint32_t video = t * h * w;
+    if (prefix_tokens + video != sequence || video == 0u) return 0;
+    uint32_t tiles = 0;
+    for (uint32_t i = 0; i < n_prefix; i++)
+        tiles += (prefix[i] + 63u) / 64u;
+    const uint32_t n_prefix_tiles = tiles;
+    tiles += ((t + 3u) / 4u) * ((h + 3u) / 4u) * ((w + 3u) / 4u);
+    if (tiles == 0u || tiles > 4096u) return 0;
+    const uint32_t video_tiles = tiles - n_prefix_tiles;
+    uint32_t keep =
+        (uint32_t)ceil((1.0 - (double)sparsity) * (double)video_tiles);
+    if (keep < 1u) keep = 1u;
+    if (keep > video_tiles) keep = video_tiles;
+
+    uint32_t *slot = calloc(sequence, sizeof(*slot));
+    uint32_t *blocks = calloc(tiles, sizeof(*blocks));
+    if (!slot || !blocks) {
+        free(slot);
+        free(blocks);
+        return 0;
+    }
+    uint32_t cursor = 0;
+    uint32_t tile = 0;
+    for (uint32_t seg = 0; seg < n_prefix; seg++) {
+        uint32_t done = 0;
+        while (done < prefix[seg]) {
+            uint32_t n = prefix[seg] - done;
+            if (n > 64u) n = 64u;
+            blocks[tile] = n;
+            for (uint32_t j = 0; j < n; j++)
+                slot[cursor + j] = tile * 64u + j;
+            cursor += n;
+            done += n;
+            tile++;
+        }
+    }
+    const uint32_t nt = (t + 3u) / 4u;
+    const uint32_t nh = (h + 3u) / 4u;
+    const uint32_t nw = (w + 3u) / 4u;
+    for (uint32_t tt = 0; tt < nt; tt++) {
+        for (uint32_t th = 0; th < nh; th++) {
+            for (uint32_t tw = 0; tw < nw; tw++) {
+                uint32_t filled = 0;
+                const uint32_t t1 = tt * 4u + 4u < t ? tt * 4u + 4u : t;
+                const uint32_t y1 = th * 4u + 4u < h ? th * 4u + 4u : h;
+                const uint32_t x1 = tw * 4u + 4u < w ? tw * 4u + 4u : w;
+                for (uint32_t ti = tt * 4u; ti < t1; ti++) {
+                    for (uint32_t y = th * 4u; y < y1; y++) {
+                        for (uint32_t x = tw * 4u; x < x1; x++) {
+                            slot[cursor + (ti * h + y) * w + x] =
+                                tile * 64u + filled;
+                            filled++;
+                        }
+                    }
+                }
+                blocks[tile] = filled;
+                tile++;
+            }
+        }
+    }
+    if (tile != tiles || cursor != prefix_tokens) {
+        free(slot);
+        free(blocks);
+        return 0;
+    }
+    h3_vsa_release(ctx);
+    const uint32_t padded = tiles * 64u;
+    const size_t tiled_bytes = (size_t)56u * padded * 128u * sizeof(uint16_t);
+    const size_t pool_bytes = (size_t)56u * tiles * 128u * sizeof(float);
+    const size_t score_bytes = (size_t)56u * tiles * tiles * sizeof(float);
+    const size_t acc_bytes = (size_t)56u * padded * 128u * sizeof(float);
+    int ok = hipMalloc((void **)&ctx->vsa_slot, sequence * sizeof(uint32_t)) ==
+                 hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_blocks, tiles * sizeof(uint32_t)) ==
+                 hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_q, tiled_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_k, tiled_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_v, tiled_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_g, tiled_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_o, tiled_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_pq, pool_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_pk, pool_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_pv, pool_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_scores, score_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_acc, acc_bytes) == hipSuccess &&
+             hipMalloc((void **)&ctx->vsa_mask, (size_t)56u * tiles * tiles) ==
+                 hipSuccess;
+    if (ok) {
+        ok = hipMemcpy(ctx->vsa_slot, slot, sequence * sizeof(uint32_t),
+                       hipMemcpyHostToDevice) == hipSuccess &&
+             hipMemcpy(ctx->vsa_blocks, blocks, tiles * sizeof(uint32_t),
+                       hipMemcpyHostToDevice) == hipSuccess;
+    }
+    free(slot);
+    free(blocks);
+    if (!ok) {
+        h3_vsa_release(ctx);
+        return 0;
+    }
+    ctx->vsa_sequence = sequence;
+    ctx->vsa_t = t;
+    ctx->vsa_h = h;
+    ctx->vsa_w = w;
+    ctx->vsa_nseg = n_prefix;
+    for (uint32_t i = 0; i < n_prefix; i++) ctx->vsa_seg[i] = prefix[i];
+    ctx->vsa_sparsity = sparsity;
+    ctx->vsa_n_tiles = tiles;
+    ctx->vsa_n_prefix = n_prefix_tiles;
+    ctx->vsa_keep = keep;
+    ctx->vsa_padded = padded;
+    ctx->vsa_ready = 1;
+    static int printed;
+    if (!printed) {
+        fprintf(stderr,
+                "VSA tile 64 sparsity %.2f: %u prefix tiles, %u video tiles, "
+                "keep %u\n",
+                sparsity, n_prefix_tiles, video_tiles, keep);
+        printed = 1;
+    }
+    return 1;
+}
+
+int h3_gpu_vsa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                    const h3_gpu_tensor *query, const h3_gpu_tensor *key,
+                    const h3_gpu_tensor *value, const h3_gpu_tensor *gate,
+                    uint32_t sequence, uint32_t heads, uint32_t head_dim,
+                    float scale, int kv_head_major, uint32_t latent_t,
+                    uint32_t token_h, uint32_t token_w,
+                    const uint32_t *prefix_rows, uint32_t n_prefix,
+                    float sparsity) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)sequence * heads * head_dim;
+    if (!ctx || !output || !query || !key || !value || !gate || heads != 56u ||
+        head_dim != 128u ||
+        !h3_hip_require_bf16(ctx, query, count, "VSA query") ||
+        !h3_hip_require_bf16(ctx, key, count, "VSA key") ||
+        !h3_hip_require_bf16(ctx, value, count, "VSA value") ||
+        !h3_hip_require_bf16(ctx, gate, count, "VSA gate") ||
+        !h3_hip_require_bf16(ctx, output, count, "VSA output"))
+        return 0;
+    if (!h3_vsa_prepare(ctx, sequence, latent_t, token_h, token_w, prefix_rows,
+                        n_prefix, sparsity))
+        return 0;
+    /* QKV/RoPE sets this after writing head-major K and V. Query stays
+     * seq-major. H3_SDPA_NO_KV_HM forces both seq-major. */
+    int kv_hm = kv_head_major || ctx->sdpa_kv_already_hm;
+    ctx->sdpa_kv_already_hm = 0;
+    if (getenv("H3_SDPA_NO_KV_HM") &&
+        strcmp(getenv("H3_SDPA_NO_KV_HM"), "0") != 0)
+        kv_hm = 0;
+    const uint16_t *q = (const uint16_t *)tensor_ptr(query)->data;
+    const uint16_t *k = (const uint16_t *)tensor_ptr(key)->data;
+    const uint16_t *v = (const uint16_t *)tensor_ptr(value)->data;
+    const uint16_t *g = (const uint16_t *)tensor_ptr(gate)->data;
+    uint16_t *out = (uint16_t *)tensor_ptr(output)->data;
+    return h3_hip_launch_sdpa(
+        ctx,
+        h3_launch_vsa_bf16(q, k, v, g, out, ctx->vsa_slot, ctx->vsa_blocks,
+                           ctx->vsa_q, ctx->vsa_k, ctx->vsa_v, ctx->vsa_g,
+                           ctx->vsa_o, ctx->vsa_pq, ctx->vsa_pk, ctx->vsa_pv,
+                           ctx->vsa_scores, ctx->vsa_acc, ctx->vsa_mask,
+                           sequence, heads,
+                           head_dim, ctx->vsa_padded, ctx->vsa_n_tiles,
+                           ctx->vsa_n_prefix, ctx->vsa_keep, scale,
+                           kv_hm ? 1u : 0u, ctx->stream),
+        "h3_vsa_bf16");
 }
 
 int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,

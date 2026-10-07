@@ -654,6 +654,60 @@ int h3_launch_linear_fp8_fc1_swiglu_bf16(
     const float *weight_scales, uint16_t *output,
     const h3_linear_args *args, hipStream_t stream);
 
+typedef struct {
+    uint32_t batch;
+    uint32_t in_channels;
+    uint32_t out_channels;
+    uint32_t height;
+    uint32_t width;
+    uint32_t kernel;
+    uint32_t pad;
+    uint32_t has_bias;
+} h3_taeh3_conv2d_args;
+
+typedef struct {
+    uint32_t batch;
+    uint32_t channels;
+    uint32_t height;
+    uint32_t width;
+} h3_taeh3_nchw_args;
+
+int h3_launch_taeh3_conv2d(const float *input, const float *weight,
+                           const float *bias, float *output,
+                           const h3_taeh3_conv2d_args *args,
+                           hipStream_t stream);
+int h3_launch_taeh3_tanh_clamp(const float *input, float *output,
+                               uint32_t elements, hipStream_t stream);
+int h3_launch_taeh3_relu(const float *input, float *output,
+                         uint32_t elements, hipStream_t stream);
+int h3_launch_taeh3_add_relu(const float *left, const float *right,
+                             float *output, uint32_t elements,
+                             hipStream_t stream);
+int h3_launch_taeh3_upsample2(const float *input, float *output,
+                              const h3_taeh3_nchw_args *args,
+                              hipStream_t stream);
+int h3_launch_taeh3_time_past(const float *input, const float *memory,
+                              float *output, const h3_taeh3_nchw_args *args,
+                              hipStream_t stream);
+int h3_launch_taeh3_cat_channels(const float *left, const float *right,
+                                 float *output, const h3_taeh3_nchw_args *args,
+                                 hipStream_t stream);
+int h3_launch_taeh3_pixel_shuffle2(const float *input, float *output,
+                                   const h3_taeh3_nchw_args *args,
+                                   hipStream_t stream);
+int h3_launch_vsa_bf16(const uint16_t *query, const uint16_t *key,
+                       const uint16_t *value, const uint16_t *gate,
+                       uint16_t *output, const uint32_t *slot,
+                       const uint32_t *block_sizes, uint16_t *tiled_q,
+                       uint16_t *tiled_k, uint16_t *tiled_v, uint16_t *tiled_g,
+                       uint16_t *tiled_o, float *pool_q, float *pool_k,
+                       float *pool_v, float *scores, float *fine_acc,
+                       uint8_t *mask,
+                       uint32_t sequence, uint32_t heads, uint32_t dim,
+                       uint32_t padded, uint32_t n_tiles, uint32_t n_prefix,
+                       uint32_t keep, float scale, uint32_t kv_head_major,
+                       hipStream_t stream);
+
 #ifdef __cplusplus
 }
 #endif

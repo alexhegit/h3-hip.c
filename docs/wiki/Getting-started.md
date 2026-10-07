@@ -12,16 +12,15 @@ the Makefile does **not** probe the GPU.
 Timed scoreboard SKUs are Strix Halo, MI210, and MI300X. MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.14.0** adds opt-in `--fbc` (first-block cache). It is the
-fastest lossy knob on the 50-step reuse-1 5 s fixture (gfx1151 3478 → 698 s,
-gfx942 167 → 53 s) and only a small change on 15 s `--reuse 2` (gfx1151
-2457 → 2206 s, slower than TR and Sol-Attn; gfx942 136 s vs `fox-15s.sh`
-146 s). Audio is worse than Sol-Attn. Do not combine with
-`--token-reduction`. Opt-in `--fasth3-lora` is a dense 4-step LoRA on
-the same weights: MI300X 832×480 · 5 s INT8 process E2E **30.12 s**
-versus the 50-step dense **166.87 s**
-([ledger](../perf-runs/MI300X_FASTH3_2026-10-05.md)). v0.13.0 added quality-path CDNA flash SDPA and
-Sol-Attn past 64k tokens. INT8 DiT is default on all ISAs. Strix Halo
+Tagged **v0.15.0** adds opt-in `--fasth3-lora`, `--taeh3`, and `--vsa`.
+All three stay off unless set. MI300X 832×480 · 5 s INT8 process E2E is
+dense **166.87 s**, FastH3 **30.12 s**, FastH3+TAEH3 **27.72 s**, VSA
+**32.61 s**, VSA+TAEH3 **26.02 s**. The 15 s fox-15s canvas is in
+[the comparison ledger](../perf-runs/MI300X_COMPARE_2026-10-07.md).
+The 4-step picture follows the prompt and is a different composition
+from dense; TAEH3 is softer. v0.14.0 remains `--fbc`. v0.13.0 added
+quality-path CDNA flash SDPA and Sol-Attn past 64k tokens. INT8 DiT is
+default on all ISAs. Strix Halo
 (gfx1151) fox-s2 **v0.9.0** md5 `1731f95c4aa582597cf83d57f46b8f9e` is the historical
 gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 `34507f072c5cabbde6592b3f70b8fa35`.
@@ -31,7 +30,7 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.14.0
+git checkout v0.15.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
@@ -79,6 +78,8 @@ pip install -U "huggingface_hub[cli]"
 ./tools/download_weights.sh --dry-run                   # print patterns only
 export H3_MODEL=$PWD/MiniMax-H3
 ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
+./tools/download_fasth3_lora.sh --vsa --dir ./FastH3-4-step-LoRA   # adds the VSA adapter
+./tools/download_taeh3.sh --dir ./FastH3-4-step-LoRA          # optional tiny video decoder
 ```
 
 Dtypes: [T2VA pipeline](T2VA-pipeline.md). Checkpoint stays BF16/F32; INT8 is

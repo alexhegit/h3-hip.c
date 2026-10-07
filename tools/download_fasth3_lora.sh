@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Download the FastH3 dense 4-step LoRA used by --fasth3-lora.
+# Download a FastH3 4-step adapter used by --fasth3-lora.
 #
 # Repo: FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA
-# File: dense-datafree/adapter_model.safetensors, about 1.4 GiB.
-# The base weights stay official MiniMax-H3. This is not the VSA adapter.
+# Default file: dense-datafree/adapter_model.safetensors, about 1.4 GiB.
+# --vsa fetches vsa-datafree/adapter_model.safetensors (the gate weights).
+# The base weights stay official MiniMax-H3.
 #
 # Usage:
 #   ./tools/download_fasth3_lora.sh
-#   ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA
+#   ./tools/download_fasth3_lora.sh --vsa --dir ./FastH3-4-step-LoRA
 #   ./tools/download_fasth3_lora.sh --dry-run
 #
 # Needs the Hugging Face CLI (`hf` or `huggingface-cli`):
@@ -18,6 +19,7 @@ set -euo pipefail
 REPO="${H3_FASTH3_HF_REPO:-FastVideo/FastVideo-FastH3-4-step-Preview-v1-LoRA}"
 DEST="${H3_FASTH3_LORA_DIR:-./FastH3-4-step-LoRA}"
 INCLUDE="dense-datafree/adapter_model.safetensors"
+VSA=0
 DRY=0
 
 usage() {
@@ -30,6 +32,10 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -gt 0 ]] || { echo "download_fasth3_lora: --dir needs a path" >&2; exit 2; }
             DEST="$1"
+            ;;
+        --vsa)
+            VSA=1
+            INCLUDE="vsa-datafree/adapter_model.safetensors"
             ;;
         --dry-run) DRY=1 ;;
         -h|--help) usage; exit 0 ;;
@@ -72,4 +78,8 @@ if [[ ! -f "$lora" ]]; then
 fi
 
 echo "lora ready: $lora"
-echo "  ./h3 --fasth3-lora \"$lora\" -d \"\$H3_MODEL\" -p PROMPT --width 832 --height 480 --seconds 5 --layers 50 --reuse 1"
+if [[ "$VSA" -eq 1 ]]; then
+    echo "  ./h3 --fasth3-lora \"$lora\" --vsa -d \"\$H3_MODEL\" -p PROMPT --width 832 --height 480 --seconds 5 --layers 50 --reuse 1"
+else
+    echo "  ./h3 --fasth3-lora \"$lora\" -d \"\$H3_MODEL\" -p PROMPT --width 832 --height 480 --seconds 5 --layers 50 --reuse 1"
+fi

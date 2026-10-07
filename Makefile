@@ -34,7 +34,8 @@ ifeq ($(H3_BACKEND),hip)
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \
 	backends/h3_hip_probe.o backends/h3_device.o \
 	backends/h3_tokenizer.o kernels/h3_kernels.o \
-	kernels/h3_kernels_extra.o
+	kernels/h3_kernels_extra.o kernels/h3_kernels_taeh3.o \
+	kernels/h3_kernels_vsa.o
   ICU_CFLAGS := $(shell pkg-config --cflags icu-uc 2>/dev/null)
   ICU_LIBS := $(shell pkg-config --libs icu-uc 2>/dev/null)
   CFLAGS += $(ICU_CFLAGS)
@@ -53,7 +54,7 @@ else
 endif
 
 LIB_C := h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c \
-	h3_fasth3.c h3_dit_schedule.c h3_dit.c
+	h3_fasth3.c h3_taeh3.c h3_dit_schedule.c h3_dit.c
 
 LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c h3_ffmpeg.c \
 	h3_terminal.c h3_vision_encoder.c h3_multimodal.c
@@ -328,6 +329,12 @@ kernels/h3_kernels.o: kernels/h3_kernels.hip kernels/h3_kernels_sol.hip kernels/
 	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
 
 kernels/h3_kernels_extra.o: kernels/h3_kernels_extra.hip kernels/h3_kernels.h
+	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
+
+kernels/h3_kernels_taeh3.o: kernels/h3_kernels_taeh3.hip kernels/h3_kernels.h
+	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
+
+kernels/h3_kernels_vsa.o: kernels/h3_kernels_vsa.hip kernels/h3_kernels.h
 	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
 else
 %.o: %.m

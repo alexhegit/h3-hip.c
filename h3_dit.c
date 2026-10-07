@@ -51,6 +51,9 @@ typedef struct {
     h3_gpu_tensor *out_fp8;
     h3_gpu_tensor *fc1_fp8;
     h3_gpu_tensor *fc2_fp8;
+    h3_gpu_tensor *gate_compress;
+    h3_gpu_tensor *gate_int8;
+    h3_gpu_tensor *gate_scales;
 } h3_dit_block;
 
 enum {
@@ -141,6 +144,10 @@ struct h3_dit {
     uint32_t audio_target_start;
     uint32_t video_target_start;
     uint32_t sequence;
+    int vsa;
+    float vsa_sparsity;
+    uint32_t vsa_prefix_n;
+    uint32_t vsa_prefix[8];
     uint32_t reduced_sequence;
     uint32_t reduced_video_rows;
     uint32_t token_baseline_rows;
@@ -192,6 +199,7 @@ struct h3_dit {
     h3_gpu_tensor *key;
     h3_gpu_tensor *value;
     h3_gpu_tensor *attention_heads;
+    h3_gpu_tensor *vsa_gate;
     h3_gpu_tensor *attention_output;
     h3_gpu_tensor *token_pool_pairs;
     h3_gpu_tensor *token_baseline_indices;
@@ -711,6 +719,9 @@ static void free_block(h3_dit_block *block) {
     free_tensor(&block->out_fp8);
     free_tensor(&block->fc1_fp8);
     free_tensor(&block->fc2_fp8);
+    free_tensor(&block->gate_compress);
+    free_tensor(&block->gate_int8);
+    free_tensor(&block->gate_scales);
 }
 
 static double stream_now(void) {
@@ -965,6 +976,24 @@ static int quantize_block_attention_out(h3_dit *dit, h3_dit_block *block,
     return 1;
 }
 
+static int quantize_block_gate(h3_dit *dit, h3_dit_block *block,
+                               char *error, size_t error_size) {
+    if (!block->gate_compress) return 1;
+    block->gate_int8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)INNER * HIDDEN);
+    block->gate_scales = h3_gpu_tensor_new_f32_device(dit->gpu, INNER);
+    int ok = block->gate_int8 && block->gate_scales &&
+             h3_gpu_quantize_weight_int8(
+                 dit->gpu, block->gate_int8, block->gate_scales,
+                 block->gate_compress, INNER, HIDDEN);
+    if (!ok) {
+        fail(error, error_size, "cannot quantize DiT VSA gate weight: %s",
+             h3_gpu_error(dit->gpu));
+        return 0;
+    }
+    return 1;
+}
+
 static void free_block_quant_sources(h3_dit *dit, h3_dit_block *block) {
     if (dit->fp8_mlp && !dit->keep_bf16_mlp) {
         free_tensor(&block->fc1);
@@ -981,6 +1010,7 @@ static void free_block_quant_sources(h3_dit *dit, h3_dit_block *block) {
         free_tensor(&block->out);
     else if (dit->int8_attention_out && !dit->keep_bf16_attention_out)
         free_tensor(&block->out);
+    if (block->gate_int8) free_tensor(&block->gate_compress);
 }
 
 /* Flush a deferred INT8 quantize batch: sync stream, then drop BF16 sources.
@@ -1535,6 +1565,11 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                 !fasth3_block(dit->gpu, &dit->blocks[index], prefix, error,
                               error_size))
                 return 0;
+            if (dit->vsa &&
+                !h3_fasth3_load_gate(dit->gpu, index, INNER, HIDDEN,
+                                     &dit->blocks[index].gate_compress,
+                                     error, error_size))
+                return 0;
             if (stage_timing) wait_io += stream_now() - io_start;
             int need_quant = dit->int8_mlp || dit->int8_qkv ||
                              dit->int8_attention_out ||
@@ -1567,6 +1602,11 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                 if (dit->int8_attention_out &&
                     !quantize_block_attention_out(
                         dit, &dit->blocks[index], error, error_size))
+                    goto core_failed;
+                if ((dit->int8_mlp || dit->int8_qkv ||
+                     dit->int8_attention_out) &&
+                    !quantize_block_gate(dit, &dit->blocks[index], error,
+                                         error_size))
                     goto core_failed;
                 if (dit->fp8_mlp &&
                     !quantize_block_mlp_fp8(dit, &dit->blocks[index],
@@ -1787,6 +1827,15 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
              h3_gpu_error(dit->gpu));
         return 0;
     }
+    if (dit->vsa) {
+        dit->vsa_gate = h3_gpu_tensor_new_bf16_device(
+            dit->gpu, sequence * INNER);
+        if (!dit->vsa_gate) {
+            fail(error, error_size, "cannot allocate VSA gate activation: %s",
+                 h3_gpu_error(dit->gpu));
+            return 0;
+        }
+    }
     if (getenv("H3_DISABLE_FUSED_FINAL_SLICE")) {
         dit->final_audio_input = h3_gpu_tensor_new_bf16(
             dit->gpu, audio * HIDDEN);
@@ -1975,6 +2024,68 @@ static void schedule_report(int completed, int total, void *opaque) {
     report(state->callback, state->opaque, "precompute AdaLN", completed, total);
 }
 
+static int configure_vsa(h3_dit *dit, char *error, size_t error_size) {
+    const char *env = getenv("H3_VSA");
+    const char *sol;
+    const char *sparsity_text;
+    uint32_t sum = 0;
+    uint32_t token_h;
+    uint32_t token_w;
+    if (!env || !env[0] || !strcmp(env, "0")) return 1;
+    dit->vsa = 1;
+    dit->vsa_sparsity = 0.9f;
+    sparsity_text = getenv("H3_VSA_SPARSITY");
+    if (sparsity_text && *sparsity_text) {
+        char *tail = NULL;
+        float parsed = strtof(sparsity_text, &tail);
+        if (tail == sparsity_text || *tail || parsed < 0.0f || parsed >= 1.0f) {
+            fail(error, error_size, "H3_VSA_SPARSITY must be in [0, 1)");
+            return 0;
+        }
+        dit->vsa_sparsity = parsed;
+    }
+    sol = getenv("H3_SOL_ATTN");
+    if (dit->token_reduction || dit->fbc || dit->ssd_streaming ||
+        dit->core_reuse_interval > 1 ||
+        (sol && sol[0] && strcmp(sol, "0") != 0)) {
+        fail(error, error_size,
+             "VSA cannot be combined with token reduction, sol-attn, "
+             "first-block cache, SSD streaming, or core reuse");
+        return 0;
+    }
+    token_h = (uint32_t)dit->latent_h / 2u;
+    token_w = (uint32_t)dit->latent_w / 2u;
+    if (!token_h || !token_w ||
+        (uint64_t)(uint32_t)dit->latent_t * token_h * token_w !=
+            dit->video_rows ||
+        dit->video_target_start + dit->video_rows != dit->sequence) {
+        fail(error, error_size,
+             "VSA requires the target video to end the packed layout");
+        return 0;
+    }
+    for (size_t index = 0; index < dit->layout.segment_count; index++) {
+        const h3_segment *segment = &dit->layout.segments[index];
+        uint32_t rows;
+        if (segment->kind == H3_SEG_VIDEO) continue;
+        if (segment->kind == H3_SEG_REF_IMAGE) {
+            fail(error, error_size, "VSA does not support a reference image");
+            return 0;
+        }
+        if (dit->vsa_prefix_n >= 8u) {
+            fail(error, error_size, "VSA prefix has too many segments");
+            return 0;
+        }
+        rows = (uint32_t)(segment->stop - segment->start);
+        dit->vsa_prefix[dit->vsa_prefix_n++] = rows;
+        sum += rows;
+    }
+    if (sum != dit->video_target_start) {
+        fail(error, error_size, "VSA prefix does not match the video start");
+        return 0;
+    }
+    return 1;
+}
+
 static h3_dit *load_dit(const char *weight_directory,
                         const char *shader_source_path,
                         const h3_text_embedding *text,
@@ -2041,7 +2152,8 @@ static h3_dit *load_dit(const char *weight_directory,
     if (!copy_layout(dit, layout, error, error_size) ||
         !validate_layout(dit, text, error, error_size) ||
         !configure_token_reduction(dit, token_reduction,
-                                   error, error_size)) goto failed;
+                                   error, error_size) ||
+        !configure_vsa(dit, error, error_size)) goto failed;
     size_t wanted_video_condition =
         (size_t)dit->video_condition_rows * VIDEO_PATCH;
     size_t wanted_audio_condition =
@@ -2391,7 +2503,52 @@ static int run_block(h3_dit *dit, unsigned index, int step,
         dit->int8_attention_head_scales && dit->int8_attention_row_scales &&
         !getenv("H3_DISABLE_INT8_SDPA") &&
         getenv("H3_ENABLE_INT8_SDPA");
-    if (getenv("H3_SOL_ATTN") && strcmp(getenv("H3_SOL_ATTN"), "0") != 0) {
+    int use_vsa = weight->gate_compress != NULL || weight->gate_int8 != NULL;
+    if (use_vsa) {
+        if (dit->token_reduction_active || !dit->vsa_gate) {
+            fail(error, error_size, dit->token_reduction_active
+                     ? "VSA cannot run with token reduction"
+                     : "VSA gate activation is missing");
+            return 0;
+        }
+        head_major_attention_output = 0;
+        int8_sdpa = 0;
+        if (weight->gate_int8 && dit->int8_qkv &&
+            !getenv("H3_DISABLE_INT8_QKV")) {
+            /* QKV just quantized mod_attention into the shared int8 buffer. */
+            OP(h3_gpu_linear_int8_prequant(
+                   dit->gpu, dit->vsa_gate, dit->int8_activation,
+                   dit->int8_activation_scales, weight->gate_int8,
+                   weight->gate_scales, rows, HIDDEN, INNER),
+               "DiT VSA gate");
+        } else if (weight->gate_int8) {
+            OP(h3_gpu_linear_int8_bf16(
+                   dit->gpu, dit->vsa_gate, dit->int8_activation,
+                   dit->int8_activation_scales, dit->mod_attention,
+                   weight->gate_int8, weight->gate_scales, rows, HIDDEN,
+                   INNER, dit->use_slower_uncached_int8_scales),
+               "DiT VSA gate");
+        } else {
+            OP(h3_gpu_linear_bf16(dit->gpu, dit->vsa_gate, dit->mod_attention,
+                                  weight->gate_compress, NULL, rows, HIDDEN,
+                                  INNER),
+               "DiT VSA gate");
+        }
+#ifdef H3_HIP
+        OP(h3_gpu_vsa_bf16(
+               dit->gpu, dit->attention_heads, dit->query, dit->key,
+               dit->value, dit->vsa_gate, rows, HEADS, HEAD_DIM,
+               1.0f / sqrtf((float)HEAD_DIM), 0, (uint32_t)dit->latent_t,
+               (uint32_t)dit->latent_h / 2u, (uint32_t)dit->latent_w / 2u,
+               dit->vsa_prefix, dit->vsa_prefix_n, dit->vsa_sparsity),
+           "DiT VSA");
+#else
+        fail(error, error_size, "VSA requires the HIP backend");
+        return 0;
+#endif
+    }
+    if (!use_vsa && getenv("H3_SOL_ATTN") &&
+        strcmp(getenv("H3_SOL_ATTN"), "0") != 0) {
         unsigned begin = 4, end = 40;
         const char *range = getenv("H3_SOL_ATTN_BLOCKS");
         if (range && *range) {
@@ -2415,7 +2572,9 @@ static int run_block(h3_dit *dit, unsigned index, int step,
             dit->gpu, index >= begin && index < end && step_sparse, prefix,
             (int)dit->video_target_start);
     }
-    if (int8_sdpa) {
+    if (use_vsa) {
+        /* Sparse attention already wrote row-major heads. */
+    } else if (int8_sdpa) {
         OP(h3_gpu_sdpa_bf16_head_major_output_int8(
             dit->gpu, dit->int8_activation, dit->int8_attention_head_scales,
             dit->int8_attention_row_scales,
@@ -3697,7 +3856,7 @@ void h3_dit_free(h3_dit *dit) {
     FREE(fbc_anchor); FREE(fbc_residual); FREE(fbc_prev); FREE(fbc_tail);
     FREE(fbc_sq);
     FREE(mod_attention); FREE(qkv); FREE(query); FREE(key); FREE(value);
-    FREE(attention_heads); FREE(attention_output);
+    FREE(attention_heads); FREE(vsa_gate); FREE(attention_output);
     FREE(token_pool_pairs); FREE(token_baseline_indices);
     FREE(token_expand_parents); FREE(token_original); FREE(mod_mlp); FREE(fc1);
     FREE(activated); FREE(mlp_output); FREE(int8_activation);

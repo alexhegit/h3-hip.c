@@ -14,7 +14,14 @@ int h3_fasth3_apply(h3_gpu *gpu, h3_gpu_tensor *weight, const char *name,
                     uint32_t rows, uint32_t cols, int weight_f32,
                     char *error, size_t error_size);
 
-/* Fail if any adapter tensor was never applied. No-op when FastH3 is off. */
+/* Fail if any adapter tensor was never applied. No-op when FastH3 is off.
+ * A VSA adapter without H3_VSA fails here. */
 int h3_fasth3_finish(char *error, size_t error_size);
+
+/* Load transformer_blocks.N.attn.to_gate_compress.set_weight. The gate is a
+ * replacement parameter, not a LoRA factor, and stays BF16. */
+int h3_fasth3_load_gate(h3_gpu *gpu, unsigned block, uint32_t rows,
+                        uint32_t cols, h3_gpu_tensor **out, char *error,
+                        size_t error_size);
 
 #endif

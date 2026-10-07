@@ -130,7 +130,10 @@ dense 4-step adapter at load and replaces the schedule with timesteps
 different composition, checked by eye; it is not a PSNR row against
 that dense clip. Download:
 `./tools/download_fasth3_lora.sh`.
-[`MI300X_FASTH3_2026-10-05.md`](perf-runs/MI300X_FASTH3_2026-10-05.md).
+The MI300X 5 s and 15 s tables (dense, token-reduction, `--fbc`, FastH3,
+TAEH3, VSA), with the resolution, step count, and layer count of each
+row, are in
+[`PERFORMANCE.md`](PERFORMANCE.md#mi300x-side-by-side-5-s-and-15-s).
 
 Optional **`--sol-attn`** is a different lossy knob (sparse SDPA, not token
 pairing). Default remains dense. Do not stack with `--token-reduction`

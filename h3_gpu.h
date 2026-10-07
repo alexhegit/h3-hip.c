@@ -319,6 +319,41 @@ int h3_gpu_conv3d_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                       uint32_t kernel_depth, uint32_t kernel_height,
                       uint32_t kernel_width, uint32_t stride_depth,
                       uint32_t stride_height, uint32_t stride_width);
+/* TAEH3 tiny decoder. Tensors are NCHW. conv2d is stride-1 with pad k/2. */
+int h3_gpu_taeh3_conv2d(h3_gpu *gpu, h3_gpu_tensor *output,
+                        const h3_gpu_tensor *input,
+                        const h3_gpu_tensor *weight,
+                        const h3_gpu_tensor *bias, uint32_t batch,
+                        uint32_t in_channels, uint32_t out_channels,
+                        uint32_t height, uint32_t width, uint32_t kernel);
+int h3_gpu_taeh3_tanh_clamp(h3_gpu *gpu, h3_gpu_tensor *output,
+                            const h3_gpu_tensor *input, uint32_t elements);
+int h3_gpu_taeh3_relu(h3_gpu *gpu, h3_gpu_tensor *output,
+                      const h3_gpu_tensor *input, uint32_t elements);
+int h3_gpu_taeh3_add_relu(h3_gpu *gpu, h3_gpu_tensor *output,
+                          const h3_gpu_tensor *left, const h3_gpu_tensor *right,
+                          uint32_t elements);
+int h3_gpu_taeh3_upsample2(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *input, uint32_t batch,
+                           uint32_t channels, uint32_t height, uint32_t width);
+int h3_gpu_taeh3_time_past(h3_gpu *gpu, h3_gpu_tensor *output,
+                           const h3_gpu_tensor *input,
+                           const h3_gpu_tensor *memory, uint32_t batch,
+                           uint32_t channels, uint32_t height, uint32_t width);
+int h3_gpu_taeh3_cat_channels(h3_gpu *gpu, h3_gpu_tensor *output,
+                              const h3_gpu_tensor *left,
+                              const h3_gpu_tensor *right, uint32_t batch,
+                              uint32_t channels, uint32_t height,
+                              uint32_t width);
+int h3_gpu_taeh3_pixel_shuffle2(h3_gpu *gpu, h3_gpu_tensor *output,
+                                const h3_gpu_tensor *input, uint32_t batch,
+                                uint32_t height, uint32_t width);
+int h3_gpu_taeh3_copy_frame(h3_gpu *gpu, h3_gpu_tensor *dst,
+                            const h3_gpu_tensor *src, uint32_t frame,
+                            uint32_t channels, uint32_t height,
+                            uint32_t width);
+int h3_gpu_taeh3_copy(h3_gpu *gpu, h3_gpu_tensor *dst,
+                      const h3_gpu_tensor *src, uint32_t elements);
 int h3_gpu_vae_encoder_group_norm_silu_f32(
                       h3_gpu *gpu, h3_gpu_tensor *output,
                       const h3_gpu_tensor *input,
@@ -621,6 +656,17 @@ int h3_gpu_sdpa_bf16_head_major_output(
                      uint32_t heads, uint32_t head_dim, float scale);
 /* Opt-in INT8 SDPA (`H3_ENABLE_INT8_SDPA`). HIP returns 0 until a kernel
  * lands; the DiT path stays on BF16 SDPA. */
+/* FastH3 VSA. prefix_rows are the packed segments before the target video,
+ * each tiled on its own so a 64-token tile never crosses a segment.
+ * token_h/token_w are the video token grid (latent height and width / 2). */
+int h3_gpu_vsa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                    const h3_gpu_tensor *query, const h3_gpu_tensor *key,
+                    const h3_gpu_tensor *value, const h3_gpu_tensor *gate,
+                    uint32_t sequence, uint32_t heads, uint32_t head_dim,
+                    float scale, int kv_head_major, uint32_t latent_t,
+                    uint32_t token_h, uint32_t token_w,
+                    const uint32_t *prefix_rows, uint32_t n_prefix,
+                    float sparsity);
 int h3_gpu_sdpa_bf16_head_major_output_int8(
                      h3_gpu *gpu, h3_gpu_tensor *quantized_output,
                      h3_gpu_tensor *head_scales, h3_gpu_tensor *row_scales,

@@ -1,0 +1,72 @@
+h3: --vsa is on: video tiles stay 4x4x4 and the prefix stays dense (off by default). H3_VSA_SPARSITY default 0.9.
+tokenizer                    0/1   tokenizer                    1/1   
+text encoder                 0/50  text encoder                 1/50  text encoder                 2/50  text encoder                 3/50  text encoder                 4/50  text encoder                 5/50  text encoder                 6/50  text encoder                 7/50  text encoder                 8/50  text encoder                 9/50  text encoder                10/50  text encoder                11/50  text encoder                12/50  text encoder                13/50  text encoder                14/50  text encoder                15/50  text encoder                16/50  text encoder                17/50  text encoder                18/50  text encoder                19/50  text encoder                20/50  text encoder                21/50  text encoder                22/50  text encoder                23/50  text encoder                24/50  text encoder                25/50  text encoder                26/50  text encoder                27/50  text encoder                28/50  text encoder                29/50  text encoder                30/50  text encoder                31/50  text encoder                32/50  text encoder                33/50  text encoder                34/50  text encoder                35/50  text encoder                36/50  text encoder                37/50  text encoder                38/50  text encoder                39/50  text encoder                40/50  text encoder                41/50  text encoder                42/50  text encoder                43/50  text encoder                44/50  text encoder                45/50  text encoder                46/50  text encoder                47/50  text encoder                48/50  text encoder                49/50  text encoder                50/50  
+h3 profile: Qwen text encoder        total          wall=   3.786s encode=  1.198s wait=   0.200s root-gpu=  0.200s peak=  4.587GiB alloc= 46.906GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  1.349s linear=  1.183s sdpa=  0.034s conv=  0.000s other=  0.132s
+h3 profile: Qwen text encoder        weight-load    pin=  3.398s (46.906GiB,  13.80GiB/s) read= 11.800s (46.860GiB,   3.97GiB/s) upload=  6.102s (46.860GiB,   7.68GiB/s) recycled= 94.3% pinned= 0.000GiB device=46.906GiB
+h3: FastH3 schedule overrides --steps 20 with 4 evaluations at timesteps 999, 749, 500, 250
+refine text                  0/1   h3: FastH3 LoRA /mnt/doscratch/FastH3/vsa-datafree/adapter_model.safetensors strength 1.000 (W += B @ A, then .diff; 4 steps 999/749/500/250)
+refine text                  1/1   
+h3 profile: H3 DiT load stage refine text          0.421s
+precompute AdaLN             1/50  precompute AdaLN             2/50  precompute AdaLN             3/50  precompute AdaLN             4/50  precompute AdaLN             5/50  precompute AdaLN             6/50  precompute AdaLN             7/50  precompute AdaLN             8/50  precompute AdaLN             9/50  precompute AdaLN            10/50  precompute AdaLN            11/50  precompute AdaLN            12/50  precompute AdaLN            13/50  precompute AdaLN            14/50  precompute AdaLN            15/50  precompute AdaLN            16/50  precompute AdaLN            17/50  precompute AdaLN            18/50  precompute AdaLN            19/50  precompute AdaLN            20/50  precompute AdaLN            21/50  precompute AdaLN            22/50  precompute AdaLN            23/50  precompute AdaLN            24/50  precompute AdaLN            25/50  precompute AdaLN            26/50  precompute AdaLN            27/50  precompute AdaLN            28/50  precompute AdaLN            29/50  precompute AdaLN            30/50  precompute AdaLN            31/50  precompute AdaLN            32/50  precompute AdaLN            33/50  precompute AdaLN            34/50  precompute AdaLN            35/50  precompute AdaLN            36/50  precompute AdaLN            37/50  precompute AdaLN            38/50  precompute AdaLN            39/50  precompute AdaLN            40/50  precompute AdaLN            41/50  precompute AdaLN            42/50  precompute AdaLN            43/50  precompute AdaLN            44/50  precompute AdaLN            45/50  precompute AdaLN            46/50  precompute AdaLN            47/50  precompute AdaLN            48/50  precompute AdaLN            49/50  precompute AdaLN            50/50  
+h3 profile: H3 DiT load stage AdaLN precompute     2.418s
+h3 profile: H3 DiT load stage rope and maps        0.038s
+load transformer core        1/50  load transformer core        2/50  load transformer core        3/50  load transformer core        4/50  load transformer core        5/50  load transformer core        6/50  load transformer core        7/50  load transformer core        8/50  load transformer core        9/50  load transformer core       10/50  load transformer core       11/50  load transformer core       12/50  load transformer core       13/50  load transformer core       14/50  load transformer core       15/50  load transformer core       16/50  load transformer core       17/50  load transformer core       18/50  load transformer core       19/50  load transformer core       20/50  load transformer core       21/50  load transformer core       22/50  load transformer core       23/50  load transformer core       24/50  load transformer core       25/50  load transformer core       26/50  load transformer core       27/50  load transformer core       28/50  load transformer core       29/50  load transformer core       30/50  load transformer core       31/50  load transformer core       32/50  load transformer core       33/50  load transformer core       34/50  load transformer core       35/50  load transformer core       36/50  load transformer core       37/50  load transformer core       38/50  load transformer core       39/50  load transformer core       40/50  load transformer core       41/50  load transformer core       42/50  load transformer core       43/50  load transformer core       44/50  load transformer core       45/50  load transformer core       46/50  load transformer core       47/50  load transformer core       48/50  load transformer core       49/50  load transformer core       50/50  
+h3 profile: H3 DiT core split   block-io=  6.109s quantize=  0.060s
+h3 profile: H3 DiT load stage transformer core     6.178s
+h3 profile: H3 DiT load stage activations          0.018s
+h3 profile: H3 DiT                   load           wall=   9.073s encode=  7.408s wait=   0.019s root-gpu=  0.019s peak= 31.916GiB alloc= 98.685GiB submissions=31 direct=988 linear=60 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  2.665s linear=  0.039s sdpa=  0.001s conv=  0.000s other=  2.625s
+h3: FastH3 merged 856 adapter tensors
+denoise                      0/4   VSA tile 64 sparsity 0.90: 24 prefix tiles, 756 video tiles, keep 76
+denoise                      1/4   denoise                      2/4   denoise                      3/4   denoise                      4/4   
+h3 profile: H3 DiT                   Euler denoise  wall=  49.512s encode=  0.347s wait=  49.008s root-gpu= 49.008s peak= 31.916GiB alloc=  0.000GiB submissions=8 direct=2236 linear=0 conv=0 attention=200
+h3 profile: H3 DiT                   op-classes     gpu-op= 49.340s linear= 12.419s sdpa= 34.343s conv=  0.000s other=  2.578s
+h3 profile: H3 DiT                   total          wall=  58.617s encode=  7.755s wait=  49.027s root-gpu= 49.027s peak= 31.916GiB alloc= 98.685GiB submissions=39 direct=3224 linear=60 conv=0 attention=202
+h3 profile: H3 DiT                   weight-load    pin=  3.002s (98.685GiB,  32.87GiB/s) read=  4.223s (61.728GiB,  14.62GiB/s) upload=  2.582s (61.728GiB,  23.91GiB/s) recycled= 95.6% pinned= 5.017GiB device=93.667GiB
+audio VAE                    0/7   audio VAE                    1/7   audio VAE                    2/7   audio VAE                    3/7   audio VAE                    4/7   audio VAE                    5/7   audio VAE                    6/7   audio VAE                    7/7   
+h3 profile: audio VAE decoder        total          wall=   0.834s encode=  0.003s wait=   0.741s root-gpu=  0.741s peak=  0.286GiB alloc=  1.450GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  0.741s linear=  0.000s sdpa=  0.000s conv=  0.544s other=  0.196s
+h3 profile: audio VAE decoder        weight-load    pin=  0.025s ( 1.450GiB,  58.22GiB/s) read=  0.030s ( 0.242GiB,   8.07GiB/s) upload=  0.019s ( 0.242GiB,  12.96GiB/s) recycled= 99.5% pinned= 0.000GiB device= 1.450GiB
+video TAEH3                  0/1   h3: TAEH3 decoded 362 frames from 107 x 30 x 54 latents in 10.698s
+h3 profile: HIP context              total          wall=  10.702s encode=  0.015s wait=   9.608s root-gpu=  9.608s peak=  1.553GiB alloc=  1.568GiB submissions=22 direct=2112 linear=0 conv=770 attention=0
+h3 profile: HIP context              op-classes     gpu-op=  9.603s linear=  0.000s sdpa=  0.000s conv=  9.552s other=  0.051s
+h3 profile: HIP context              weight-load    pin=  0.013s ( 1.568GiB, 116.25GiB/s) read=  0.000s ( 0.000GiB,   0.00GiB/s) upload=  0.000s ( 0.000GiB,   0.00GiB/s) recycled=  0.0% pinned= 0.052GiB device= 1.516GiB
+video TAEH3                  1/1   
+FFmpeg                       0/362 FFmpeg                     362/362 
+h3: wrote outputs/mi300x-fox15s-vsa-taeh3.mp4
+	Command being timed: "./h3 --profile -d /mnt/doscratch/MiniMax-H3 -p 15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
+
+[0–3 seconds] Medium shot from behind the desk. Code scrolls on dual monitors; warm red accent light reflects on glass. Ambient: quiet keyboard clicks, soft fan hum, distant city rain.
+
+[3–6 seconds] Slow push-in over the shoulder. On screen, glowing matrix tiles and magenta wavefronts visualize a neural network training. The engineer pauses, sips coffee. Sound: gentle electronic pulse, a single soft notification chime.
+
+[6–9 seconds] Cut to close-up of hands typing, then rack focus to a small window showing a red fox walking through digital snow inside the monitor reflection. Sound: rising synthesized tone, subtle wind.
+
+[9–12 seconds] Smooth lateral move across the desk: terminal windows, GPU metrics, and a grid of video frames assembling on screen. Warm amber grade, volumetric dust in the lamp beam.
+
+[12–15 seconds] Controlled pullback reveals the full workspace at rest. The engineer leans back, satisfied. Sound: clean final impact, room tone fades.
+
+No readable text, no logos, no subtitles. Premium technology documentary aesthetic. --width 864 --height 480 --seconds 15 --steps 20 --layers 50 --reuse 1 --seed 42 --fasth3-lora /mnt/doscratch/FastH3/vsa-datafree/adapter_model.safetensors --vsa --taeh3 /mnt/doscratch/FastH3/taeh3.safetensors -o outputs/mi300x-fox15s-vsa-taeh3.mp4"
+	User time (seconds): 92.13
+	System time (seconds): 99.00
+	Percent of CPU this job got: 249%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:16.72
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5394148
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 4420891
+	Voluntary context switches: 76495
+	Involuntary context switches: 17733
+	Swaps: 0
+	File system inputs: 6460848
+	File system outputs: 164144
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

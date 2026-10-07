@@ -1,0 +1,70 @@
+tokenizer                    0/1   tokenizer                    1/1   
+text encoder                 0/50  text encoder                 1/50  text encoder                 2/50  text encoder                 3/50  text encoder                 4/50  text encoder                 5/50  text encoder                 6/50  text encoder                 7/50  text encoder                 8/50  text encoder                 9/50  text encoder                10/50  text encoder                11/50  text encoder                12/50  text encoder                13/50  text encoder                14/50  text encoder                15/50  text encoder                16/50  text encoder                17/50  text encoder                18/50  text encoder                19/50  text encoder                20/50  text encoder                21/50  text encoder                22/50  text encoder                23/50  text encoder                24/50  text encoder                25/50  text encoder                26/50  text encoder                27/50  text encoder                28/50  text encoder                29/50  text encoder                30/50  text encoder                31/50  text encoder                32/50  text encoder                33/50  text encoder                34/50  text encoder                35/50  text encoder                36/50  text encoder                37/50  text encoder                38/50  text encoder                39/50  text encoder                40/50  text encoder                41/50  text encoder                42/50  text encoder                43/50  text encoder                44/50  text encoder                45/50  text encoder                46/50  text encoder                47/50  text encoder                48/50  text encoder                49/50  text encoder                50/50  
+h3 profile: Qwen text encoder        total          wall=   4.529s encode=  0.565s wait=   0.165s root-gpu=  0.165s peak=  4.587GiB alloc= 46.906GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  0.708s linear=  0.581s sdpa=  0.034s conv=  0.000s other=  0.093s
+h3 profile: Qwen text encoder        weight-load    pin=  3.202s (46.906GiB,  14.65GiB/s) read= 20.283s (46.860GiB,   2.31GiB/s) upload=  5.847s (46.860GiB,   8.01GiB/s) recycled= 93.4% pinned= 0.000GiB device=46.906GiB
+h3: FastH3 schedule overrides --steps 20 with 4 evaluations at timesteps 999, 749, 500, 250
+refine text                  0/1   h3: FastH3 LoRA /mnt/doscratch/FastH3/dense-datafree/adapter_model.safetensors strength 1.000 (W += B @ A, then .diff; 4 steps 999/749/500/250)
+refine text                  1/1   
+h3 profile: H3 DiT load stage refine text          0.437s
+precompute AdaLN             1/50  precompute AdaLN             2/50  precompute AdaLN             3/50  precompute AdaLN             4/50  precompute AdaLN             5/50  precompute AdaLN             6/50  precompute AdaLN             7/50  precompute AdaLN             8/50  precompute AdaLN             9/50  precompute AdaLN            10/50  precompute AdaLN            11/50  precompute AdaLN            12/50  precompute AdaLN            13/50  precompute AdaLN            14/50  precompute AdaLN            15/50  precompute AdaLN            16/50  precompute AdaLN            17/50  precompute AdaLN            18/50  precompute AdaLN            19/50  precompute AdaLN            20/50  precompute AdaLN            21/50  precompute AdaLN            22/50  precompute AdaLN            23/50  precompute AdaLN            24/50  precompute AdaLN            25/50  precompute AdaLN            26/50  precompute AdaLN            27/50  precompute AdaLN            28/50  precompute AdaLN            29/50  precompute AdaLN            30/50  precompute AdaLN            31/50  precompute AdaLN            32/50  precompute AdaLN            33/50  precompute AdaLN            34/50  precompute AdaLN            35/50  precompute AdaLN            36/50  precompute AdaLN            37/50  precompute AdaLN            38/50  precompute AdaLN            39/50  precompute AdaLN            40/50  precompute AdaLN            41/50  precompute AdaLN            42/50  precompute AdaLN            43/50  precompute AdaLN            44/50  precompute AdaLN            45/50  precompute AdaLN            46/50  precompute AdaLN            47/50  precompute AdaLN            48/50  precompute AdaLN            49/50  precompute AdaLN            50/50  
+h3 profile: H3 DiT load stage AdaLN precompute     2.742s
+h3 profile: H3 DiT load stage rope and maps        0.024s
+load transformer core        1/50  load transformer core        2/50  load transformer core        3/50  load transformer core        4/50  load transformer core        5/50  load transformer core        6/50  load transformer core        7/50  load transformer core        8/50  load transformer core        9/50  load transformer core       10/50  load transformer core       11/50  load transformer core       12/50  load transformer core       13/50  load transformer core       14/50  load transformer core       15/50  load transformer core       16/50  load transformer core       17/50  load transformer core       18/50  load transformer core       19/50  load transformer core       20/50  load transformer core       21/50  load transformer core       22/50  load transformer core       23/50  load transformer core       24/50  load transformer core       25/50  load transformer core       26/50  load transformer core       27/50  load transformer core       28/50  load transformer core       29/50  load transformer core       30/50  load transformer core       31/50  load transformer core       32/50  load transformer core       33/50  load transformer core       34/50  load transformer core       35/50  load transformer core       36/50  load transformer core       37/50  load transformer core       38/50  load transformer core       39/50  load transformer core       40/50  load transformer core       41/50  load transformer core       42/50  load transformer core       43/50  load transformer core       44/50  load transformer core       45/50  load transformer core       46/50  load transformer core       47/50  load transformer core       48/50  load transformer core       49/50  load transformer core       50/50  
+h3 profile: H3 DiT core split   block-io=  2.873s quantize=  0.048s
+h3 profile: H3 DiT load stage transformer core     2.928s
+h3 profile: H3 DiT load stage activations          0.112s
+h3 profile: H3 DiT                   load           wall=   6.243s encode=  4.448s wait=   0.027s root-gpu=  0.027s peak= 29.522GiB alloc= 92.702GiB submissions=31 direct=941 linear=60 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  2.521s linear=  0.050s sdpa=  0.001s conv=  0.000s other=  2.470s
+h3: FastH3 merged 809 adapter tensors
+denoise                      0/4   denoise                      1/4   denoise                      2/4   denoise                      3/4   denoise                      4/4   
+h3 profile: H3 DiT                   Euler denoise  wall=  65.727s encode=  0.431s wait=  65.133s root-gpu= 65.133s peak= 29.522GiB alloc=  0.000GiB submissions=8 direct=2036 linear=0 conv=0 attention=200
+h3 profile: H3 DiT                   op-classes     gpu-op= 65.551s linear= 11.559s sdpa= 51.390s conv=  0.000s other=  2.601s
+h3 profile: H3 DiT                   total          wall=  71.997s encode=  4.879s wait=  65.160s root-gpu= 65.160s peak= 29.522GiB alloc= 92.702GiB submissions=39 direct=2977 linear=60 conv=0 attention=202
+h3 profile: H3 DiT                   weight-load    pin=  1.909s (92.702GiB,  48.57GiB/s) read=  4.302s (61.728GiB,  14.35GiB/s) upload=  2.706s (61.728GiB,  22.82GiB/s) recycled= 95.9% pinned= 1.429GiB device=91.273GiB
+audio VAE                    0/7   audio VAE                    1/7   audio VAE                    2/7   audio VAE                    3/7   audio VAE                    4/7   audio VAE                    5/7   audio VAE                    6/7   audio VAE                    7/7   
+h3 profile: audio VAE decoder        total          wall=   0.835s encode=  0.003s wait=   0.742s root-gpu=  0.742s peak=  0.286GiB alloc=  1.450GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  0.742s linear=  0.000s sdpa=  0.000s conv=  0.546s other=  0.196s
+h3 profile: audio VAE decoder        weight-load    pin=  0.025s ( 1.450GiB,  58.99GiB/s) read=  0.030s ( 0.242GiB,   8.14GiB/s) upload=  0.018s ( 0.242GiB,  13.46GiB/s) recycled= 99.5% pinned= 0.000GiB device= 1.450GiB
+h3: video VAE tiles 4x2 at 272 pixels
+video VAE load               1/36  video VAE load               2/36  video VAE load               3/36  video VAE load               4/36  video VAE load               5/36  video VAE load               6/36  video VAE load               7/36  video VAE load               8/36  video VAE load               9/36  video VAE load              10/36  video VAE load              11/36  video VAE load              12/36  video VAE load              13/36  video VAE load              14/36  video VAE load              15/36  video VAE load              16/36  video VAE load              17/36  video VAE load              18/36  video VAE load              19/36  video VAE load              20/36  video VAE load              21/36  video VAE load              22/36  video VAE load              23/36  video VAE load              24/36  video VAE load              25/36  video VAE load              26/36  video VAE load              27/36  video VAE load              28/36  video VAE load              29/36  video VAE load              30/36  video VAE load              31/36  video VAE load              32/36  video VAE load              33/36  video VAE load              34/36  video VAE load              35/36  video VAE load              36/36  
+h3 profile: video VAE decoder        total          wall=  28.435s encode=  0.870s wait=  23.506s root-gpu= 23.506s peak=  9.408GiB alloc=  9.440GiB submissions=168 direct=61656 linear=24360 conv=0 attention=6048
+h3 profile: video VAE decoder        op-classes     gpu-op= 23.794s linear= 17.918s sdpa=  2.323s conv=  0.000s other=  3.554s
+h3 profile: video VAE decoder        weight-load    pin=  0.191s ( 9.440GiB,  49.53GiB/s) read=  0.735s ( 9.028GiB,  12.29GiB/s) upload=  0.392s ( 9.028GiB,  23.03GiB/s) recycled= 98.6% pinned= 0.032GiB device= 9.408GiB
+FFmpeg                       0/362 FFmpeg                     362/362 
+h3: wrote outputs/mi300x-fox15s-fasth3.mp4
+	Command being timed: "./h3 --profile -d /mnt/doscratch/MiniMax-H3 -p 15 seconds, 16:9 landscape cinematic. A lone software engineer works late in a dim home office lit only by monitor glow and a desk lamp. Photoreal live-action feel with subtle handheld camera breathing.
+
+[0–3 seconds] Medium shot from behind the desk. Code scrolls on dual monitors; warm red accent light reflects on glass. Ambient: quiet keyboard clicks, soft fan hum, distant city rain.
+
+[3–6 seconds] Slow push-in over the shoulder. On screen, glowing matrix tiles and magenta wavefronts visualize a neural network training. The engineer pauses, sips coffee. Sound: gentle electronic pulse, a single soft notification chime.
+
+[6–9 seconds] Cut to close-up of hands typing, then rack focus to a small window showing a red fox walking through digital snow inside the monitor reflection. Sound: rising synthesized tone, subtle wind.
+
+[9–12 seconds] Smooth lateral move across the desk: terminal windows, GPU metrics, and a grid of video frames assembling on screen. Warm amber grade, volumetric dust in the lamp beam.
+
+[12–15 seconds] Controlled pullback reveals the full workspace at rest. The engineer leans back, satisfied. Sound: clean final impact, room tone fades.
+
+No readable text, no logos, no subtitles. Premium technology documentary aesthetic. --width 864 --height 480 --seconds 15 --steps 20 --layers 50 --reuse 1 --seed 42 --fasth3-lora /mnt/doscratch/FastH3/dense-datafree/adapter_model.safetensors -o outputs/mi300x-fox15s-fasth3.mp4"
+	User time (seconds): 129.07
+	System time (seconds): 129.37
+	Percent of CPU this job got: 237%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 1:48.68
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5565620
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 4601869
+	Voluntary context switches: 94059
+	Involuntary context switches: 19201
+	Swaps: 0
+	File system inputs: 13805488
+	File system outputs: 179192
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
