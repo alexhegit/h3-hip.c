@@ -215,8 +215,9 @@ Ledgers:
 [`perf-runs/MI300X_VSA_2026-10-06.md`](perf-runs/MI300X_VSA_2026-10-06.md),
 [`perf-runs/MI300X_FOX15S_FASTH3_2026-10-07.md`](perf-runs/MI300X_FOX15S_FASTH3_2026-10-07.md).
 
-Prompt 1 at **1344×768 · 5 s** (NVlabs seed 0, 50 dense steps) is a
-different fixture. MI300X process E2E is **668.15 s**. The comparison
+Prompt 1 at **1344×768 · 5 s** (NVlabs seed 0) is a different fixture.
+MI300X process E2E is dense **668.15 s**, all-opt (`--token-reduction`)
+**439.64 s**, FastH3 **96.51 s**, VSA+TAEH3 **62.22 s**. The comparison
 with the published RTX 5090 and 4×H100 times is
 [`perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`](perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md).
 
