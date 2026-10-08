@@ -12,27 +12,44 @@ were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.15.0** adds three opt-in FastH3 paths, all off by default.
-`--fasth3-lora` merges a dense 4-step LoRA and runs timesteps 999 / 749 /
-500 / 250. `--taeh3` replaces the video VAE with a tiny decoder.
-`--vsa` turns on sparse video attention and requires the vsa-datafree
-adapter. They do not combine with `--token-reduction`, `--sol-attn`,
-`--fbc`, or `--reuse` above 1, and they keep all 50 layers. On MI300X
-the 832×480 · 5 s INT8 process is dense **166.87 s**, `--fbc` **53.31 s**,
-FastH3 **30.12 s**, FastH3+TAEH3 **27.72 s**, VSA **32.61 s**, VSA+TAEH3
-**26.02 s**. The fox-15s canvas (864×480 · 15 s; FastH3 uses 4 steps and
-reuse 1, not the script's 20 steps / 45 layers / reuse 2) is dense
-**213.3 s**, `fox-15s.sh` **146.21 s**, `--fbc` **136.43 s**, FastH3
-**108.68 s**, FastH3+TAEH3 **89.12 s**, VSA **95.06 s**, VSA+TAEH3
-**76.72 s**. The 4-step picture follows the prompt and is a different
-composition from dense; TAEH3 is softer, and the 15 s VSA ending has a
-second person in the office. v0.14.0 remains the `--fbc` release.
-v0.13.0 remains the quality-path CDNA flash SDPA and Sol-Attn-past-64k
-release. INT8 DiT is default on all ISAs (`H3_INT8_MLP=0` for BF16).
-v0.12.0 was TR schedule + fused AdaLN + 3-GPU retune; v0.11.x had opt-in
-INT8; v0.10.x is the dual-ISA history; v0.9.x is Strix Halo only. The original project is a native MiniMax-H3
-inference engine (Apple Metal / macOS); this repository reimplements the
-GPU backend in pure HIP so the same CLI and model stack run on ROCm.
+Tagged **v0.15.0** adds three opt-in paths, all off by default.
+`--fasth3-lora` merges a dense 4-step LoRA (timesteps 999 / 749 / 500 / 250).
+`--vsa` turns on sparse video attention and needs the vsa-datafree adapter.
+`--taeh3` replaces the video VAE with a tiny decoder. They keep all 50
+layers, require `--reuse 1`, and do not combine with `--token-reduction`,
+`--sol-attn`, or `--fbc`. INT8 DiT stays the default (`H3_INT8_MLP=0` for BF16).
+
+On one MI300X, Prompt 1 at **1344×768 · 5 s** (124 frames, seed 0) is
+dense **668.15 s** and VSA+TAEH3 **62.22 s**. The 4-step picture follows
+the prompt and is a different composition from the 50-step clip. `--fbc`
+is not in that 62-second number. Write-up:
+[11 minutes to 62 seconds](https://github.com/alexhegit/h3-hip.c/wiki/11-minutes-to-62-seconds).
+
+| path | process E2E |
+|---|---:|
+| dense 50-step | **668.15 s** |
+| all-opt (`--token-reduction`) | **439.64 s** |
+| FastH3 4-step | **96.51 s** |
+| VSA + TAEH3 | **62.22 s** |
+
+NVIDIA published warm times for this same workload
+([MiniMax-H3 table](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3),
+[5090 ladder](https://nvlabs.github.io/Sana/Sol-Engine/H3-OnDevice/)).
+Four H100s take **81.47 s** at baseline, so one MI300X is 1.31× faster,
+and **22.89 s** full opt, so four H100s are 2.72× faster. A single RTX 5090
+is **1045.4 s** at baseline and **231.2 s** full opt. Their full opt is
+Sol-Attn plus a cross-step cache on a BF16 50-step model. Ours is a 4-step
+INT8 LoRA. Ledger:
+[`docs/perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`](docs/perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md).
+
+The smaller MI300X canvases are in
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md#mi300x-side-by-side-5-s-and-15-s).
+VSA+TAEH3 is **26.02 s** at 832×480 · 5 s and **76.72 s** at 864×480 · 15 s.
+TAEH3 is softer. The 15 s VSA ending has a second person in the office.
+
+The original project is a native MiniMax-H3 inference engine (Apple Metal /
+macOS); this repository reimplements the GPU backend in pure HIP so the same
+CLI and model stack run on ROCm.
 
 [![h3-hip.c ident](assets/showcase/h3-hip-ident.jpg)](assets/showcase/h3-hip-ident.mp4)
 
@@ -41,12 +58,12 @@ Project ident, generated on Strix Halo (gfx1151) (864×480, 56 frames, `--steps 
 [h3-hip-ident.mp4](assets/showcase/h3-hip-ident.mp4).
 
 **Project page:** [alexhegit.github.io/h3-hip.c](https://alexhegit.github.io/h3-hip.c/)
-**Wiki:** [github.com/alexhegit/h3-hip.c/wiki](https://github.com/alexhegit/h3-hip.c/wiki)
+**Wiki:** [11 minutes to 62 seconds](https://github.com/alexhegit/h3-hip.c/wiki/11-minutes-to-62-seconds)
 **Original project:** [antirez/h3.c](https://github.com/antirez/h3.c)
 **CUDA sibling (DGX Spark):** [alexhegit/h3-spark.c](https://github.com/alexhegit/h3-spark.c)
 **Official weights:** [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3)
 
-Headline T2VA (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
+Quality path, **v0.13.0** (same knobs; details in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
@@ -76,11 +93,12 @@ and [`docs/perf-runs/MI300X_2026-09-21_1344x768-15s-sdpa.md`](docs/perf-runs/MI3
 | **fox showcase** | 512² · 22 f | `--steps 20 --layers 50 --reuse 1` | README / wiki gallery fox |
 | **15 s cinematic** | 864×480 · 362 f | `--steps 20 --layers 45 --reuse 2` | Same quality path as fox-fast, long duration |
 
-## Showcase (Strix Halo)
+## Showcase
 
-Clips below were generated on an AMD Strix Halo iGPU (`gfx1151`) with this HIP
-port. Click a poster for the MP4. Several clips are **untitled** model output
-(no ffmpeg captions). The 15 s three-way reel is labelled left-to-right.
+Halo clips were generated on an AMD Strix Halo iGPU (`gfx1151`). The FastH3
+pair is MI300X (`gfx942`). Click a poster for the MP4. Several clips are
+**untitled** model output (no ffmpeg captions). The 15 s three-way reel is
+labelled left-to-right.
 
 | Mode | Sample |
 |------|--------|
@@ -183,6 +201,10 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 ## Status
 
 Current tagged line is **v0.15.0**. `h3 --info` prints `h3-hip 0.15.0`.
+v0.14.0 remains `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
+and Sol-Attn past 64k tokens. v0.12.0 was the TR schedule, fused AdaLN, and
+the three-GPU retune. v0.11.x had opt-in INT8. v0.10.x is the dual-ISA
+history. v0.9.x is Strix Halo only.
 
 | Capability | Status |
 |------------|--------|
@@ -259,10 +281,9 @@ Tagged scoreboard stays without TR. Per-step schedule is on-demand only:
 stderr warning when `--token-reduction` or `H3_TOKEN_REDUCTION_SCHEDULE` is on.
 
 Wiki pages not mirrored under `docs/wiki/` (Home, CLI, Showcase, Performance,
-Known issues) live only on GitHub wiki. In-tree copies of Getting started,
-T2VA pipeline, and Long video are under `docs/wiki/`. After this retake,
-republish the GitHub wiki **Performance** / Home pages so they do not still
-say MI300X fox-fast “5.2 s E2E” or 15 s “179.5 s E2E” (those were DiT total).
+Known issues, and [11 minutes to 62 seconds](https://github.com/alexhegit/h3-hip.c/wiki/11-minutes-to-62-seconds))
+live only on GitHub wiki. In-tree copies of Getting started, T2VA pipeline,
+and Long video are under `docs/wiki/`.
 
 ## Requirements
 
@@ -283,6 +304,8 @@ say MI300X fox-fast “5.2 s E2E” or 15 s “179.5 s E2E” (those were DiT to
   ./tools/download_weights.sh --dir ./MiniMax-H3 --both   # also Ref2VA, ~268 GiB
   export H3_MODEL=$PWD/MiniMax-H3
   ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
+  ./tools/download_fasth3_lora.sh --vsa --dir ./FastH3-4-step-LoRA   # adds the VSA adapter
+  ./tools/download_taeh3.sh --dir ./FastH3-4-step-LoRA          # optional tiny video decoder
   ```
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)
@@ -295,7 +318,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.14.0
+git checkout v0.15.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
