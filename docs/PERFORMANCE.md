@@ -14,15 +14,41 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.15.0 (2026-10-07)
+## Current release — v0.16.0 (2026-10-09)
 
-`h3 --info` prints `h3-hip 0.15.0`. Build with `make HIP_ARCH=gfx1151`,
+`h3 --info` prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
 `gfx90a`, or `gfx942`. Three opt-in FastH3 paths stay off unless the
 flag is set: `--fasth3-lora` (dense 4-step LoRA), `--taeh3` (tiny video
 decoder), and `--vsa` (sparse video attention, requires the
-vsa-datafree adapter). They are not part of the `bench/` scoreboard.
-The v0.14.0 `--fbc` numbers and the v0.13.0 scoreboard below are
-unchanged.
+vsa-datafree adapter). On gfx1151, `--vsa` uses the wave32 rocWMMA fine
+kernel unless `H3_VSA_MFMA=0`. They are not part of the `bench/`
+scoreboard. The v0.15.0 MI300X tables, the v0.14.0 `--fbc` numbers, and
+the v0.13.0 scoreboard below are unchanged.
+
+### Strix Halo side by side (832×480 · 5 s)
+
+gfx1151, 32 GiB VRAM carveout, default INT8 DiT, seed **42**, 124 frames.
+Process E2E is `/usr/bin/time` until `h3: wrote`. Dense is 50 steps.
+FastH3 and VSA are 4 steps, 50 layers, `--reuse 1`. The rocWMMA rows are
+the v0.16.0 fine kernel. Scalar `--vsa` was 529.65 s and 477.89 s with
+`--taeh3`.
+
+| path | E2E | denoise | sdpa / linear | video decode |
+|---|---:|---:|---|---|
+| dense | **3477.57 s** | 3357.873 s | 1494.108 / 1794.197 s | VAE 87.577 s |
+| `--fbc` | **697.78 s** | 588.978 s | 256.156 / 315.306 s | VAE 79.157 s |
+| FastH3 | **350.38 s** | 237.856 s | 102.924 / 129.796 s | VAE 79.610 s |
+| FastH3 + TAEH3 | **299.34 s** | 238.613 s | 103.425 / 130.091 s | TAEH3 28.043 s |
+| VSA rocWMMA | **293.71 s** | 180.586 s | 37.802 / 138.081 s | VAE 79.317 s |
+| VSA + TAEH3 | **226.69 s** | 183.703 s | 37.718 / 140.917 s | TAEH3 6.689 s |
+
+Peaks are 22.657 GiB (dense), 21.902 GiB (FastH3), and 23.897 GiB (VSA).
+The 299.34 s FastH3 + TAEH3 row is the 2026-10-09 naive conv (decode
+28.043 s). The tiled conv is measured on the VSA + TAEH3 row above
+(decode 6.689 s) and on the 864×480 · 15 s fox canvas: dense 4-step
+**1706.16 s**, the same command with `--taeh3` **1435.79 s** (decode
+19.475 s), both at 29.522 GiB. Ledger:
+[`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).
 
 Quality is a visual check, not a PSNR gate against dense. The 4-step
 LoRA is a different schedule and a different composition. On the 5 s
@@ -224,8 +250,8 @@ Ledgers:
 gfx1151 does not launch the CDNA MFMA fine kernel. With `H3_VSA_MFMA`
 unset it uses a wave32 rocWMMA fine kernel; `H3_VSA_MFMA=0` keeps the
 scalar kernel. On the same 832×480 · 5 s fixture the rocWMMA process is
-**293.71 s** (SDPA 37.802 s, denoise 180.586 s) and **247.59 s** with
-`--taeh3` (SDPA 38.509 s). The scalar runs were 529.65 s and 477.89 s.
+**293.71 s** (SDPA 37.802 s, denoise 180.586 s) and **226.69 s** with
+`--taeh3` (SDPA 37.718 s, TAEH3 6.689 s). The scalar runs were 529.65 s and 477.89 s.
 Peak stays 23.897 GiB. Versus the matching scalar clip, video is
 19.23 dB / 0.745 and 19.65 dB / 0.757. Ledger:
 [`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).

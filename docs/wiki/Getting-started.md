@@ -12,10 +12,15 @@ the Makefile does **not** probe the GPU.
 Timed scoreboard SKUs are Strix Halo, MI210, and MI300X. MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.15.0** adds opt-in `--fasth3-lora`, `--taeh3`, and `--vsa`.
-All three stay off unless set. MI300X 832×480 · 5 s INT8 process E2E is
-dense **166.87 s**, FastH3 **30.12 s**, FastH3+TAEH3 **27.72 s**, VSA
-**32.61 s**, VSA+TAEH3 **26.02 s**. The 15 s fox-15s canvas is in
+Tagged **v0.16.0** runs `--vsa` on Strix Halo through a wave32 rocWMMA
+fine kernel, and TAEH3 conv runs as a tiled FP32 kernel. On gfx1151 the
+832×480 · 5 s INT8 fixture is dense
+**3477.57 s** and VSA+TAEH3 **226.69 s**
+([ledger](../perf-runs/HALO_FASTH3_2026-10-09.md)). v0.15.0 added opt-in
+`--fasth3-lora`, `--taeh3`, and `--vsa`. All three stay off unless set.
+MI300X 832×480 · 5 s INT8 process E2E is dense **166.87 s**, FastH3
+**30.12 s**, FastH3+TAEH3 **27.72 s**, VSA **32.61 s**, VSA+TAEH3
+**26.02 s**. The 15 s fox-15s canvas is in
 [the comparison ledger](../perf-runs/MI300X_COMPARE_2026-10-07.md).
 The 4-step picture follows the prompt and is a different composition
 from dense; TAEH3 is softer. v0.14.0 remains `--fbc`. v0.13.0 added
@@ -30,7 +35,7 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.15.0
+git checkout v0.16.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

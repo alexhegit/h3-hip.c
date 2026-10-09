@@ -12,25 +12,34 @@ were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.15.0** adds three opt-in paths, all off by default.
-`--fasth3-lora` merges a dense 4-step LoRA (timesteps 999 / 749 / 500 / 250).
-`--vsa` turns on sparse video attention and needs the vsa-datafree adapter.
-`--taeh3` replaces the video VAE with a tiny decoder. They keep all 50
-layers, require `--reuse 1`, and do not combine with `--token-reduction`,
-`--sol-attn`, or `--fbc`. INT8 DiT stays the default (`H3_INT8_MLP=0` for BF16).
+Tagged **v0.16.0** runs `--vsa` on Strix Halo through a wave32 rocWMMA
+fine kernel. The v0.15.0 paths stay opt-in and off by default:
+`--fasth3-lora` merges a dense 4-step LoRA (timesteps 999 / 749 / 500 / 250),
+`--vsa` needs the vsa-datafree adapter, and `--taeh3` replaces the video
+VAE with a tiny decoder. They keep all 50 layers, require `--reuse 1`, and
+do not combine with `--token-reduction`, `--sol-attn`, or `--fbc`. INT8 DiT
+stays the default (`H3_INT8_MLP=0` for BF16). `H3_VSA_MFMA=0` keeps the
+scalar VSA kernel.
 
-On one MI300X, Prompt 1 at **1344×768 · 5 s** (124 frames, seed 0) is
-dense **668.15 s** and VSA+TAEH3 **62.22 s**. The 4-step picture follows
-the prompt and is a different composition from the 50-step clip. `--fbc`
-is not in that 62-second number. Write-up:
-[11 minutes to 62 seconds](https://github.com/alexhegit/h3-hip.c/wiki/11-minutes-to-62-seconds).
+On one Strix Halo (gfx1151, 32 GiB VRAM carveout), the 832×480 · 5 s
+fixture (124 frames, seed 42, INT8) is dense **3477.57 s** and VSA+TAEH3
+**226.69 s**. SDPA in that VSA denoise is **37.7 s**. The 4-step picture
+follows the prompt and is a different composition from the 50-step clip.
+TAEH3 is softer. Ledger:
+[`docs/perf-runs/HALO_FASTH3_2026-10-09.md`](docs/perf-runs/HALO_FASTH3_2026-10-09.md).
 
 | path | process E2E |
 |---|---:|
-| dense 50-step | **668.15 s** |
-| all-opt (`--token-reduction`) | **439.64 s** |
-| FastH3 4-step | **96.51 s** |
-| VSA + TAEH3 | **62.22 s** |
+| dense 50-step | **3477.57 s** |
+| `--fbc` | **697.78 s** |
+| FastH3 4-step | **350.38 s** |
+| FastH3 + TAEH3 | **299.34 s** |
+| VSA (rocWMMA) | **293.71 s** |
+| VSA + TAEH3 | **226.69 s** |
+
+v0.15.0 on one MI300X, Prompt 1 at **1344×768 · 5 s** (124 frames, seed 0),
+is dense **668.15 s** and VSA+TAEH3 **62.22 s**. Write-up:
+[11 minutes to 62 seconds](https://github.com/alexhegit/h3-hip.c/wiki/11-minutes-to-62-seconds).
 
 NVIDIA published warm times for this same workload
 ([MiniMax-H3 table](https://github.com/NVlabs/Sana/tree/sol-engine/models/minimax_h3),
@@ -200,8 +209,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.15.0**. `h3 --info` prints `h3-hip 0.15.0`.
-v0.14.0 remains `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
+Current tagged line is **v0.16.0**. `h3 --info` prints `h3-hip 0.16.0`.
+v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
+`--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
 and Sol-Attn past 64k tokens. v0.12.0 was the TR schedule, fused AdaLN, and
 the three-GPU retune. v0.11.x had opt-in INT8. v0.10.x is the dual-ISA
 history. v0.9.x is Strix Halo only.
@@ -218,7 +228,7 @@ history. v0.9.x is Strix Halo only.
 | `--sol-attn` | ✅ opt-in **lossy** long SDPA on **Strix Halo + MI210 + MI300X** (measured) |
 | `--fbc` | ✅ opt-in **lossy** first-block cache on gfx1151 and gfx942 (measured). Best on 50-step reuse-1 clips; small on 15 s reuse-2. Not with `--token-reduction` |
 | `--fasth3-lora` | ✅ opt-in dense 4-step LoRA. Measured on MI300X and gfx1151. Forces 999/749/500/250, 50 layers, `--reuse 1` |
-| `--taeh3` | ✅ opt-in tiny video decoder. Softer picture. Audio VAE unchanged |
+| `--taeh3` | ✅ opt-in tiny video decoder. Tiled FP32 conv (`H3_TAEH3_NAIVE=1` restores the per-pixel kernel). Softer picture. Audio VAE unchanged |
 | `--vsa` | ✅ opt-in sparse video attention. gfx1151 uses the wave32 rocWMMA fine kernel (measured). Requires the vsa-datafree `--fasth3-lora`. Not with token reduction, Sol-Attn, `--fbc`, or reuse above 1 |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
 
@@ -318,7 +328,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.15.0
+git checkout v0.16.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

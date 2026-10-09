@@ -8,7 +8,11 @@ outputs/
 *.o
 *.d
 *.air
+*.bc
+*.hipi
+*.hipfb
 *.metallib
+*.out.resolution.txt
 h3
 h3_*test
 h3_*tests

@@ -32,6 +32,19 @@ H3_TOKEN_REDUCTION_SCHEDULE="0:4:50,10:0:0" ./bench/fox-15s-sched.sh
 
 A wider reuse=3 sweep lives in `tools/tr_sweep.sh` (not a scoreboard script).
 
+## On-demand: FastH3
+
+`fox-15s-fasth3.sh` is **opt-in** and not part of the scoreboard above.
+It is the 864×480 fox prompt with the dense 4-step adapter and `--taeh3`.
+FastH3 forces 4 steps, 50 layers, and `--reuse 1`, and rejects token
+reduction. gfx1151 process E2E is **1435.79 s** (TAEH3 decode 19.475 s)
+against **1706.16 s** with the full video VAE.
+[`docs/perf-runs/HALO_FASTH3_2026-10-09.md`](../docs/perf-runs/HALO_FASTH3_2026-10-09.md).
+
+```bash
+./bench/fox-15s-fasth3.sh /path/to/MiniMax-H3
+```
+
 ## Usage
 
 ```bash
