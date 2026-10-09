@@ -126,9 +126,15 @@ combine with `--token-reduction`.
 **`--fasth3-lora`** is a separate opt-in path. It merges the FastH3
 dense 4-step adapter at load and replaces the schedule with timesteps
 999, 749, 500, 250. On MI300X the 832×480 · 5 s INT8 process is
-**30.12 s** versus the 50-step dense **166.87 s**. The picture is a
-different composition, checked by eye; it is not a PSNR row against
-that dense clip. Download:
+**30.12 s** versus the 50-step dense **166.87 s**. On gfx1151 the same
+shape is **350 s** (dense adapter) and **299 s** with `--taeh3`, against
+a 50-step dense **3478 s**. The 864×480 · 15 s fox canvas is **1706 s**
+at a 29.5 GiB peak. `--vsa` on gfx1151 stays on the scalar fine
+kernel and is slower on the 5 s clip (**530 s**, **478 s** with `--taeh3`).
+The picture is a different composition; Halo PSNR against the 50-step
+clip is in
+[`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).
+Download:
 `./tools/download_fasth3_lora.sh`.
 The MI300X 5 s and 15 s tables (dense, token-reduction, `--fbc`, FastH3,
 TAEH3, VSA), with the resolution, step count, and layer count of each

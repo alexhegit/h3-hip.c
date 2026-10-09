@@ -217,7 +217,7 @@ history. v0.9.x is Strix Halo only.
 | `--token-reduction` | ✅ opt-in; off by default; `H3_TOKEN_REDUCTION_SCHEDULE` for per-step control |
 | `--sol-attn` | ✅ opt-in **lossy** long SDPA on **Strix Halo + MI210 + MI300X** (measured) |
 | `--fbc` | ✅ opt-in **lossy** first-block cache on gfx1151 and gfx942 (measured). Best on 50-step reuse-1 clips; small on 15 s reuse-2. Not with `--token-reduction` |
-| `--fasth3-lora` | ✅ opt-in dense 4-step LoRA. MI300X only in v0.15.0. Forces 999/749/500/250, 50 layers, `--reuse 1` |
+| `--fasth3-lora` | ✅ opt-in dense 4-step LoRA. Measured on MI300X and gfx1151. Forces 999/749/500/250, 50 layers, `--reuse 1` |
 | `--taeh3` | ✅ opt-in tiny video decoder. Softer picture. Audio VAE unchanged |
 | `--vsa` | ✅ opt-in sparse video attention. Requires the vsa-datafree `--fasth3-lora`. Not with token reduction, Sol-Attn, `--fbc`, or reuse above 1 |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
