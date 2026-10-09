@@ -161,6 +161,12 @@ other. No PSNR gate was applied.
 Ledger:
 [`perf-runs/MI300X_FASTH3_2026-10-05.md`](perf-runs/MI300X_FASTH3_2026-10-05.md).
 
+On gfx1151 the same 832×480 · 5 s INT8 fixture is **350.38 s** (dense
+adapter) and **299.34 s** with `--taeh3`, against that machine's 50-step
+dense **3477.57 s**. The 864×480 · 15 s fox canvas, 50 layers and reuse 1,
+is **1706.16 s** at a 29.522 GiB peak. Ledger:
+[`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).
+
 ### VSA (`--vsa`)
 
 Off by default. It loads the vsa-datafree adapter (856 tensors, including
@@ -214,6 +220,15 @@ stays one engineer.
 Ledgers:
 [`perf-runs/MI300X_VSA_2026-10-06.md`](perf-runs/MI300X_VSA_2026-10-06.md),
 [`perf-runs/MI300X_FOX15S_FASTH3_2026-10-07.md`](perf-runs/MI300X_FOX15S_FASTH3_2026-10-07.md).
+
+gfx1151 does not launch the CDNA MFMA fine kernel. With `H3_VSA_MFMA`
+unset it uses a wave32 rocWMMA fine kernel; `H3_VSA_MFMA=0` keeps the
+scalar kernel. On the same 832×480 · 5 s fixture the rocWMMA process is
+**293.71 s** (SDPA 37.802 s, denoise 180.586 s) and **247.59 s** with
+`--taeh3` (SDPA 38.509 s). The scalar runs were 529.65 s and 477.89 s.
+Peak stays 23.897 GiB. Versus the matching scalar clip, video is
+19.23 dB / 0.745 and 19.65 dB / 0.757. Ledger:
+[`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).
 
 Prompt 1 at **1344×768 · 5 s** (NVlabs seed 0) is a different fixture.
 MI300X process E2E is dense **668.15 s**, all-opt (`--token-reduction`)
