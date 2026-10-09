@@ -129,8 +129,9 @@ dense 4-step adapter at load and replaces the schedule with timesteps
 **30.12 s** versus the 50-step dense **166.87 s**. On gfx1151 the same
 shape is **350 s** (dense adapter) and **299 s** with `--taeh3`, against
 a 50-step dense **3478 s**. The 864×480 · 15 s fox canvas is **1706 s**
-at a 29.5 GiB peak. `--vsa` on gfx1151 stays on the scalar fine
-kernel and is slower on the 5 s clip (**530 s**, **478 s** with `--taeh3`).
+at a 29.5 GiB peak. `--vsa` on gfx1151 uses the wave32 rocWMMA fine
+kernel (**294 s**, **248 s** with `--taeh3`). `H3_VSA_MFMA=0` keeps the
+scalar kernel (530 s, 478 s with `--taeh3`).
 The picture is a different composition; Halo PSNR against the 50-step
 clip is in
 [`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).

@@ -11,6 +11,7 @@
 #include <rocwmma/rocwmma.hpp>
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -435,6 +436,192 @@ h3_vsa_fine_mfma_kernel(const uint16_t *query, const uint16_t *key,
     }
 }
 
+/* gfx1151 tile kernel. Same selected-tile loop as the CDNA kernel, with the
+ * wave32 rocWMMA fragment map probed for h3_sdpa_bf16_wmma_d128_kernel:
+ * accumulator element i is row 2*i+(lane>>4), column lane&15. */
+__global__ void __launch_bounds__(128)
+h3_vsa_fine_wmma_kernel(const uint16_t *query, const uint16_t *key,
+                        const uint16_t *value, const uint16_t *gate,
+                        const float *coarse, const uint8_t *mask,
+                        const uint32_t *block_sizes, uint16_t *output,
+                        uint32_t n_tiles, float scale) {
+    constexpr uint32_t D = 128u;
+    constexpr uint32_t LD = 136u;
+    constexpr uint32_t TILE = 64u;
+    constexpr uint32_t BK = 32u;
+    constexpr uint32_t WAVES = 4u;
+    constexpr uint32_t QROWS = 16u;
+    constexpr uint32_t THREADS = WAVES * 32u;
+    constexpr uint32_t NT = BK / 16u;
+    constexpr uint32_t SEL_CAP = 2048u;
+    typedef rocwmma::bfloat16_t bf16;
+
+    __shared__ __align__(16) uint16_t sk[BK * LD];
+    __shared__ __align__(16) uint16_t sv[BK * LD];
+    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * BK];
+    __shared__ uint16_t sel[SEL_CAP];
+    __shared__ uint32_t sel_n;
+
+    const uint32_t tid = threadIdx.x;
+    const uint32_t wave = tid >> 5;
+    const uint32_t lane = tid & 31u;
+    const uint32_t col = lane & 15u;
+    const uint32_t rowg = lane >> 4;
+    const uint32_t q_tile = (uint32_t)blockIdx.x;
+    const uint32_t head = (uint32_t)blockIdx.y;
+    if (q_tile >= n_tiles || head >= 56u || n_tiles > SEL_CAP) return;
+    const uint32_t q_count = block_sizes[q_tile];
+    if (!q_count) return;
+    const uint32_t padded = n_tiles * TILE;
+    const uint32_t qbase = wave * QROWS;
+    const uint16_t *qp =
+        query + ((size_t)head * padded + (size_t)q_tile * TILE + qbase) * D;
+
+    rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16, rocwmma::row_major>
+        fq[8];
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        rocwmma::load_matrix_sync(
+            fq[i], reinterpret_cast<const bf16 *>(qp + (uint32_t)i * 16u), D);
+    }
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) rocwmma::fill_fragment(fo[j], 0.0f);
+    float row_max[8], row_sum[8];
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        row_max[i] = -1e30f;
+        row_sum[i] = 0.0f;
+    }
+
+    const uint8_t *row = mask + ((size_t)head * n_tiles + q_tile) * n_tiles;
+    if (tid == 0u) {
+        uint32_t n = 0;
+        for (uint32_t kv = 0; kv < n_tiles; kv++) {
+            if (row[kv] && block_sizes[kv]) sel[n++] = (uint16_t)kv;
+        }
+        sel_n = n;
+    }
+    __syncthreads();
+
+    for (uint32_t si = 0; si < sel_n; si++) {
+        uint32_t kv = sel[si];
+        uint32_t nb = block_sizes[kv];
+        uint32_t chunks = nb > BK ? 2u : 1u;
+        const uint16_t *kbase =
+            key + ((size_t)head * padded + (size_t)kv * TILE) * D;
+        const uint16_t *vbase =
+            value + ((size_t)head * padded + (size_t)kv * TILE) * D;
+        for (uint32_t ch = 0; ch < chunks; ch++) {
+            uint32_t row0 = ch * BK;
+            __syncthreads();
+            for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
+                uint32_t r = idx >> 7;
+                uint32_t d = idx & 127u;
+                uint32_t g = row0 + r;
+                uint2 kk = uint2{0u, 0u};
+                uint2 vv = uint2{0u, 0u};
+                if (g < nb) {
+                    kk = *reinterpret_cast<const uint2 *>(kbase + g * D + d);
+                    vv = *reinterpret_cast<const uint2 *>(vbase + g * D + d);
+                }
+                *reinterpret_cast<uint2 *>(sk + r * LD + d) = kk;
+                *reinterpret_cast<uint2 *>(sv + r * LD + d) = vv;
+            }
+            __syncthreads();
+
+            rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fs[NT];
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                rocwmma::fill_fragment(fs[t], 0.0f);
+#pragma unroll
+                for (int i = 0; i < 8; i++) {
+                    rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                      rocwmma::col_major>
+                        fk;
+                    rocwmma::load_matrix_sync(
+                        fk, reinterpret_cast<const bf16 *>(
+                                sk + t * 16u * LD + (uint32_t)i * 16u),
+                        LD);
+                    rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
+                }
+            }
+            float alpha[8];
+#pragma unroll
+            for (int i = 0; i < 8; i++) {
+                float s[NT];
+                float m = -1e30f;
+#pragma unroll
+                for (uint32_t t = 0; t < NT; t++) {
+                    uint32_t kcol = row0 + t * 16u + col;
+                    s[t] = kcol < nb ? fs[t].x[i] * scale : -1e30f;
+                    m = fmaxf(m, s[t]);
+                }
+#pragma unroll
+                for (int off = 1; off < 16; off <<= 1)
+                    m = fmaxf(m, h3_shfl_xor32(m, off));
+                float new_max = fmaxf(row_max[i], m);
+                alpha[i] = __expf(row_max[i] - new_max);
+                uint32_t prow = 2u * (uint32_t)i + rowg;
+                float ps = 0.0f;
+#pragma unroll
+                for (uint32_t t = 0; t < NT; t++) {
+                    float p = __expf(s[t] - new_max);
+                    ps += p;
+                    sp[wave][prow * BK + t * 16u + col] = vsa_f32(p);
+                }
+#pragma unroll
+                for (int off = 1; off < 16; off <<= 1)
+                    ps += h3_shfl_xor32(ps, off);
+                row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
+                row_max[i] = new_max;
+            }
+#pragma unroll
+            for (int j = 0; j < 8; j++)
+#pragma unroll
+                for (int i = 0; i < 8; i++) fo[j].x[i] *= alpha[i];
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                                  rocwmma::row_major>
+                    fp;
+                rocwmma::load_matrix_sync(
+                    fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), BK);
+#pragma unroll
+                for (int j = 0; j < 8; j++) {
+                    rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                      rocwmma::row_major>
+                        fv;
+                    rocwmma::load_matrix_sync(
+                        fv, reinterpret_cast<const bf16 *>(
+                                sv + t * 16u * LD + (uint32_t)j * 16u),
+                        LD);
+                    rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+                }
+            }
+        }
+    }
+
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
+        uint32_t q_local = qbase + 2u * (uint32_t)i + rowg;
+        if (q_local >= q_count) continue;
+        const uint16_t *grow =
+            gate + ((size_t)head * padded + (size_t)q_tile * TILE + q_local) * D;
+        uint16_t *orow = output + ((size_t)head * padded +
+                                   (size_t)q_tile * TILE + q_local) *
+                                      D;
+        const float *crow = coarse + ((size_t)head * n_tiles + q_tile) * D;
+#pragma unroll
+        for (int j = 0; j < 8; j++) {
+            uint32_t d = (uint32_t)j * 16u + col;
+            float mixed = fmaf(crow[d], vsa_bf16(grow[d]), fo[j].x[i] * inv);
+            orow[d] = vsa_f32(mixed);
+        }
+    }
+}
+
 __global__ void h3_vsa_fine_kernel(const uint16_t *query, const uint16_t *key,
                                    const uint16_t *value, const uint16_t *gate,
                                    const float *coarse, const uint8_t *mask,
@@ -579,24 +766,37 @@ extern "C" int h3_launch_vsa_bf16(
             return 0;
     }
     int mfma = 0;
+    int wmma = 0;
     {
         const char *env = getenv("H3_VSA_MFMA");
-        if (!(env && strcmp(env, "0") == 0)) {
+        if (!(env && strcmp(env, "0") == 0) && n_tiles <= 2048u) {
             int device = 0;
             hipDeviceProp_t props;
-            mfma = n_tiles <= 2048u &&
-                   hipGetDevice(&device) == hipSuccess &&
-                   hipGetDeviceProperties(&props, device) == hipSuccess &&
-                   (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
-                    strncmp(props.gcnArchName, "gfx942", 6) == 0);
+            if (hipGetDevice(&device) == hipSuccess &&
+                hipGetDeviceProperties(&props, device) == hipSuccess) {
+                mfma = strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
+                       strncmp(props.gcnArchName, "gfx942", 6) == 0;
+                wmma = strncmp(props.gcnArchName, "gfx1151", 7) == 0;
+            }
         }
     }
-    if (mfma) {
+    if (mfma || wmma) {
+        static int announced = 0;
+        if (!announced) {
+            announced = 1;
+            fprintf(stderr, "h3: VSA fine kernel %s\n",
+                    wmma ? "gfx1151 wmma" : "cdna mfma");
+        }
         void *args[] = {&tiled_q, &tiled_k, &tiled_v, &tiled_g, &pool_q, &mask,
                         &block_sizes, &tiled_o, &n_tiles, &scale};
-        if (hipLaunchKernel(
-                reinterpret_cast<const void *>(h3_vsa_fine_mfma_kernel),
-                dim3(n_tiles, heads), dim3(256), args, 0, stream) != hipSuccess)
+        const void *kernel = wmma
+                                 ? reinterpret_cast<const void *>(
+                                       h3_vsa_fine_wmma_kernel)
+                                 : reinterpret_cast<const void *>(
+                                       h3_vsa_fine_mfma_kernel);
+        if (hipLaunchKernel(kernel, dim3(n_tiles, heads),
+                            dim3(wmma ? 128u : 256u), args, 0,
+                            stream) != hipSuccess)
             return 0;
     } else {
         void *args[] = {&tiled_q, &tiled_k, &tiled_v, &tiled_g, &pool_q, &mask,

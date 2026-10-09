@@ -35,7 +35,7 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt`](../perf-runs/gfx1151-main-2026-09-03-fox-profile.txt) | gfx1151 fox default / sampler / all-opts `--profile` |
 | [`../perf-runs/HALO_2026-09-12.md`](../perf-runs/HALO_2026-09-12.md) | gfx1151 `bench/` retune on current `main` |
 | [`../perf-runs/HALO_ONDEVICE_2026-10-05.md`](../perf-runs/HALO_ONDEVICE_2026-10-05.md) | gfx1151 H3-OnDevice 832×480 · 5 s · 50-step baseline (carveout 32 GiB) |
-| [`../perf-runs/HALO_FASTH3_2026-10-09.md`](../perf-runs/HALO_FASTH3_2026-10-09.md) | gfx1151 FastH3 / TAEH3 / VSA on the 5 s fixture (350 / 299 / 530 s) and fox 15 s FastH3 (1706 s) |
+| [`../perf-runs/HALO_FASTH3_2026-10-09.md`](../perf-runs/HALO_FASTH3_2026-10-09.md) | gfx1151 FastH3 / TAEH3 / VSA on the 5 s fixture (350 / 299 / 248 s rocWMMA+TAEH3) and fox 15 s FastH3 (1706 s) |
 | [`../perf-runs/MI300X_ONDEVICE_2026-10-05.md`](../perf-runs/MI300X_ONDEVICE_2026-10-05.md) | gfx942 same 5 s fixture plus 15 s `fox-15s` `--fbc` vs TR |
 | [`../perf-runs/MI300X_FASTH3_2026-10-05.md`](../perf-runs/MI300X_FASTH3_2026-10-05.md) | gfx942 FastH3 4-step LoRA vs the 50-step dense fixture (30.12 s INT8) |
 | [`../perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`](../perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md) | gfx942 Prompt 1 1344×768 · 5 s dense / TR / FastH3 / VSA+TAEH3 vs RTX 5090 and 4×H100 |
