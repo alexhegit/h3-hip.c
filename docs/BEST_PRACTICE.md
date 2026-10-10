@@ -129,9 +129,10 @@ dense 4-step adapter at load and replaces the schedule with timesteps
 **30.12 s** versus the 50-step dense **166.87 s**. On gfx1151 the same
 shape is **350 s** (dense adapter) and **299 s** with `--taeh3`, against
 a 50-step dense **3478 s**. The 864×480 · 15 s fox canvas is **1706 s**
-with the full video VAE and **1436 s** with `--taeh3`, both at a 29.5 GiB
-peak. `--vsa` on gfx1151 uses the wave32 rocWMMA fine kernel (**294 s**,
-**227 s** with `--taeh3`). `H3_VSA_MFMA=0` keeps the scalar kernel
+with the full video VAE and **1436 s** with `--taeh3` (−16% E2E, decode
+−92%), both at a 29.5 GiB peak. `--vsa` on gfx1151 uses the wave32 rocWMMA fine
+kernel (**294 s**, **227 s** with `--taeh3`, −8.4% E2E and −76% decode
+versus the per-pixel conv). `H3_VSA_MFMA=0` keeps the scalar kernel
 (530 s, 478 s with `--taeh3`). The TAEH3 conv is a tiled FP32 kernel;
 `H3_TAEH3_NAIVE=1` restores the per-pixel kernel. Reproduce the 15 s
 row with `./bench/fox-15s-fasth3.sh` (not a scoreboard preset).

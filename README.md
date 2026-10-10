@@ -37,6 +37,15 @@ TAEH3 is softer. Ledger:
 | VSA (rocWMMA) | **293.71 s** |
 | VSA + TAEH3 | **226.69 s** |
 
+The tiled TAEH3 conv against the previous gfx1151 run on the same command:
+
+| path | E2E | decode |
+|---|---|---|
+| 5 s VSA + TAEH3 | **226.69 s** (−8.4% vs 247.59 s) | **6.689 s** (−76%, 4.2× vs 28.111 s) |
+| 15 s fox FastH3 + TAEH3 | **1435.79 s** (−16% vs 1706.16 s) | **19.475 s** (−92%, 12.6× vs 245.291 s) |
+
+The 5 s baseline is the same VSA clip with the per-pixel conv. The 15 s baseline is that FastH3 command with the full video VAE. About 44 s of the 270 s E2E gap is denoise variance between the two launches.
+
 v0.15.0 on one MI300X, Prompt 1 at **1344×768 · 5 s** (124 frames, seed 0),
 is dense **668.15 s** and VSA+TAEH3 **62.22 s**. Write-up:
 [11 minutes to 62 seconds](https://github.com/alexhegit/h3-hip.c/wiki/11-minutes-to-62-seconds).

@@ -44,10 +44,14 @@ the v0.16.0 fine kernel. Scalar `--vsa` was 529.65 s and 477.89 s with
 
 Peaks are 22.657 GiB (dense), 21.902 GiB (FastH3), and 23.897 GiB (VSA).
 The 299.34 s FastH3 + TAEH3 row is the 2026-10-09 naive conv (decode
-28.043 s). The tiled conv is measured on the VSA + TAEH3 row above
-(decode 6.689 s) and on the 864×480 · 15 s fox canvas: dense 4-step
-**1706.16 s**, the same command with `--taeh3` **1435.79 s** (decode
-19.475 s), both at 29.522 GiB. Ledger:
+28.043 s). The tiled conv against the previous run on the same command:
+
+| path | E2E | decode |
+|---|---|---|
+| 5 s VSA + TAEH3 | **226.69 s** (−8.4% vs 247.59 s) | **6.689 s** (−76%, 4.2× vs 28.111 s) |
+| 15 s fox FastH3 + TAEH3 | **1435.79 s** (−16% vs 1706.16 s) | **19.475 s** (−92%, 12.6× vs 245.291 s) |
+
+The 5 s baseline is the per-pixel conv. The 15 s baseline is the full video VAE (1706.16 s, decode 245.291 s). Both 15 s launches peak at 29.522 GiB. About 44 s of the 270 s E2E gap is denoise variance. Ledger:
 [`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).
 
 Quality is a visual check, not a PSNR gate against dense. The 4-step
