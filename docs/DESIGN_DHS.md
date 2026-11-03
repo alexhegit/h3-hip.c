@@ -640,3 +640,5 @@ queued → preparing → running → finalizing → done
    队列恢复可用
 4. **配额演练**：输出根灌满后，新任务触发 oldest-first 清理且不触碰
    运行中任务
+
+后续提案：让 `--serve` 覆盖 dense 以外的命令行路径（FastH3、TAEH3、VSA、Pika、token reduction、Sol-Attn、`--fbc`）。尚未实现，不改本协议。见 [`DESIGN_DHS_PATHS.md`](DESIGN_DHS_PATHS.md)。
