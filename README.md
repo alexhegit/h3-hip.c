@@ -12,7 +12,17 @@ were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.16.0** runs `--vsa` on Strix Halo through a wave32 rocWMMA
+Tagged **v0.17.0** adds opt-in Pika H3 Flex (`--pika-lora`,
+`--pika-ref-lora`): a rank-128 LoRA and a fixed 6-step renoise sampler
+on the MiniMax-H3 weights you already have. It stays off unless set,
+keeps all 50 layers, requires `--reuse 1`, and does not combine with
+`--fasth3-lora`, `--token-reduction`, `--sol-attn`, `--fbc`, or `--vsa`.
+On one MI300X, 832×480 · 5 s is **34.97 s** (28.68 s with `--taeh3`).
+1344×768 · 5 s Prompt 1 is **120.10 s** (93.54 s with `--taeh3`).
+Download, commands, and the comparison still:
+[`docs/PIKA.md`](docs/PIKA.md).
+
+v0.16.0 runs `--vsa` on Strix Halo through a wave32 rocWMMA
 fine kernel. The v0.15.0 paths stay opt-in and off by default:
 `--fasth3-lora` merges a dense 4-step LoRA (timesteps 999 / 749 / 500 / 250),
 `--vsa` needs the vsa-datafree adapter, and `--taeh3` replaces the video
@@ -219,8 +229,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.16.0**. `h3 --info` prints `h3-hip 0.16.0`.
-v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
+Current tagged line is **v0.17.0**. `h3 --info` prints `h3-hip 0.17.0`.
+v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
+conv. v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
 `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
 and Sol-Attn past 64k tokens. v0.12.0 was the TR schedule, fused AdaLN, and
 the three-GPU retune. v0.11.x had opt-in INT8. v0.10.x is the dual-ISA
@@ -341,7 +352,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.16.0
+git checkout v0.17.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

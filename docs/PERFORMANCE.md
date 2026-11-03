@@ -14,9 +14,20 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.16.0 (2026-10-09)
+## Current release — v0.17.0 (2026-11-03)
 
-`h3 --info` prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
+`h3 --info` prints `h3-hip 0.17.0`. Opt-in `--pika-lora` and
+`--pika-ref-lora` merge a rank-128 LoRA and run six renoise steps.
+They stay off unless set, and they are not part of the `bench/`
+scoreboard. Measured on one MI300X (gfx942), warm cache, default INT8:
+832×480 · 5 s is **34.97 s** (28.68 s with `--taeh3`); 1344×768 · 5 s
+Prompt 1 is **120.10 s** (93.54 s with `--taeh3`). Commands, the other
+canvases, and the comparison still are in [`PIKA.md`](PIKA.md). The
+v0.16.0 Halo tables below are unchanged.
+
+## v0.16.0 (2026-10-09)
+
+`h3 --info` on that tag prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
 `gfx90a`, or `gfx942`. Three opt-in FastH3 paths stay off unless the
 flag is set: `--fasth3-lora` (dense 4-step LoRA), `--taeh3` (tiny video
 decoder), and `--vsa` (sparse video attention, requires the

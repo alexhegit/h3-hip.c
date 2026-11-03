@@ -12,7 +12,11 @@ the Makefile does **not** probe the GPU.
 Timed scoreboard SKUs are Strix Halo, MI210, and MI300X. MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.16.0** runs `--vsa` on Strix Halo through a wave32 rocWMMA
+Tagged **v0.17.0** adds opt-in Pika H3 Flex. It stays off unless
+`--pika-lora` or `--pika-ref-lora` is set. On one MI300X, 832×480 · 5 s
+is **34.97 s**, or **28.68 s** with `--taeh3`. Commands and the full
+tables are in [`docs/PIKA.md`](../PIKA.md). v0.16.0 runs `--vsa` on
+Strix Halo through a wave32 rocWMMA
 fine kernel, and TAEH3 conv runs as a tiled FP32 kernel. On gfx1151 the
 832×480 · 5 s INT8 fixture is dense
 **3477.57 s** and VSA+TAEH3 **226.69 s**
@@ -35,7 +39,7 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.16.0
+git checkout v0.17.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
