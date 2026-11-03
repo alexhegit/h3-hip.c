@@ -98,6 +98,13 @@ int h3_video_encoder_latent_t(int frame_count);
 h3_temporal_shape h3_temporal(int requested_frames);
 void h3_latent_canvas(int width, int height, int *latent_w, int *latent_h);
 int h3_adapt_canvas(int width, int height, int *adapted_w, int *adapted_h);
+/* Center-crop a keyframe to the canvas aspect at the source resolution.
+ * Crop size uses Python round-half-to-even; the origin is (source-crop)/2.
+ * The caller resizes that crop onto the canvas. */
+int h3_keyframe_center_crop(int source_width, int source_height,
+                            int canvas_width, int canvas_height,
+                            int *crop_width, int *crop_height,
+                            int *left, int *top);
 /* Ref2VA image sizing is down-only and aspect preserving. max_short_edge=0
  * matches the output pixel area; a positive value selects a short-edge cap. */
 int h3_reference_image_canvas(int width, int height,

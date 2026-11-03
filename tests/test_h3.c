@@ -49,6 +49,30 @@ static void test_temporal_and_canvas(void) {
     CHECK(h3_adapt_canvas(864, 480, &width, &height));
     CHECK(width == 1376 && height == 768);
     CHECK(h3_adapt_canvas(32, 32, &width, &height));
+    {
+        int crop_w = 0, crop_h = 0, left = 0, top = 0;
+        /* Wider than 832/480: keep the height, round the width, center it. */
+        CHECK(h3_keyframe_center_crop(1000, 500, 832, 480,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 867 && crop_h == 500 && left == 66 && top == 0);
+        /* Taller than the canvas: keep the width and center the height. */
+        CHECK(h3_keyframe_center_crop(500, 1000, 832, 480,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 500 && crop_h == 288 && left == 0 && top == 356);
+        /* Same aspect is a no-op crop. */
+        CHECK(h3_keyframe_center_crop(832, 480, 832, 480,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 832 && crop_h == 480 && left == 0 && top == 0);
+        /* Python round half to even: round(2.5) == 2, round(3.5) == 4. */
+        CHECK(h3_keyframe_center_crop(10, 1, 5, 2,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 2 && crop_h == 1 && left == 4 && top == 0);
+        CHECK(h3_keyframe_center_crop(10, 1, 7, 2,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 4 && crop_h == 1 && left == 3 && top == 0);
+        CHECK(!h3_keyframe_center_crop(0, 1, 832, 480,
+                                       &crop_w, &crop_h, &left, &top));
+    }
     CHECK(width == 768 && height == 768);
     CHECK(h3_reference_image_canvas(1920, 1080, 512, 512, 0,
                                     &width, &height));

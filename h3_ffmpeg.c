@@ -1,4 +1,5 @@
 #include "h3_ffmpeg.h"
+#include "h3_host.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -157,9 +158,21 @@ int h3_ffmpeg_read_image_f32(const char *path, int width, int height,
     if (error && error_size) error[0] = '\0';
     if (pixels) *pixels = NULL;
     if (!path || !*path || !pixels || width < 1 || height < 1 ||
-        (fit != H3_IMAGE_FIT_STRETCH && fit != H3_IMAGE_FIT_COVER)) {
+        (fit != H3_IMAGE_FIT_STRETCH && fit != H3_IMAGE_FIT_COVER &&
+         fit != H3_IMAGE_FIT_ASPECT_CROP)) {
         fail(error, error_size, "invalid FFmpeg image input arguments");
         return 0;
+    }
+    int crop_w = 0, crop_h = 0, crop_x = 0, crop_y = 0;
+    if (fit == H3_IMAGE_FIT_ASPECT_CROP) {
+        int source_w = 0, source_h = 0;
+        if (!h3_ffprobe_visual_size(path, &source_w, &source_h,
+                                    error, error_size)) return 0;
+        if (!h3_keyframe_center_crop(source_w, source_h, width, height,
+                                     &crop_w, &crop_h, &crop_x, &crop_y)) {
+            fail(error, error_size, "cannot center-crop keyframe");
+            return 0;
+        }
     }
     if ((size_t)width > SIZE_MAX / (size_t)height) {
         fail(error, error_size, "decoded image size overflows");
@@ -181,7 +194,11 @@ int h3_ffmpeg_read_image_f32(const char *path, int width, int height,
         return 0;
     }
     char filter[256];
-    if (fit == H3_IMAGE_FIT_STRETCH) {
+    if (fit == H3_IMAGE_FIT_ASPECT_CROP) {
+        snprintf(filter, sizeof(filter),
+                 "crop=%d:%d:%d:%d,scale=%d:%d:flags=lanczos",
+                 crop_w, crop_h, crop_x, crop_y, width, height);
+    } else if (fit == H3_IMAGE_FIT_STRETCH) {
         snprintf(filter, sizeof(filter), "scale=%d:%d:flags=lanczos",
                  width, height);
     } else {

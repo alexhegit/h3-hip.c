@@ -68,6 +68,12 @@ Faster decode, softer picture. Same latents, tiny video decoder:
 `--taeh3` comes from `./tools/download_taeh3.sh`. Audio still uses the
 full audio VAE.
 
+`--first-frame` and `--last-frame` are center-cropped to the canvas
+aspect at the photo's own resolution, then resized with FFmpeg lanczos.
+The crop box matches the released package, including Python's
+round-half-to-even. Without `--pika-lora`, a first frame is still
+stretched and a last frame is still cover.
+
 References use the Ref2VA transformer, so the FL2VA file is the wrong
 adapter. Pass `--pika-ref-lora` together with a reference:
 
@@ -161,5 +167,7 @@ Still (768p top row, 480p below) and the native-resolution triptych
 This is not a bit match of the official diffusers pipeline. Initial
 latents still use the MiniMax two-generator seed, renoise noise is a
 separate stream from that same seed, and the LoRA is merged in BF16
-under the default INT8 DiT. Keyframe center-crop and the Ref2VA
-resolution buckets are not implemented.
+under the default INT8 DiT. Output size stays whatever `--width` and
+`--height` request; the released 480p/768p bucket table is not an
+allowlist. Ref2VA reference images still use this tree's existing
+sizing rule.

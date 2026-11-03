@@ -6,7 +6,10 @@
 
 typedef enum {
     H3_IMAGE_FIT_STRETCH = 0,
-    H3_IMAGE_FIT_COVER = 1
+    H3_IMAGE_FIT_COVER = 1,
+    /* Crop to the destination aspect at the source resolution, then resize.
+     * Used for Pika FL2VA keyframes. */
+    H3_IMAGE_FIT_ASPECT_CROP = 2
 } h3_image_fit;
 
 /* Inspect the first visual stream without decoding it. H3_FFPROBE may select

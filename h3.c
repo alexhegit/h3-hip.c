@@ -1421,11 +1421,21 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             if (progress.cancelled) goto cleanup;
         }
     } else {
+        h3_image_fit first_fit = H3_IMAGE_FIT_STRETCH;
+        h3_image_fit last_fit = H3_IMAGE_FIT_COVER;
+        if (h3_pika_active_path(params) &&
+            (params->first_frame || params->last_frame)) {
+            first_fit = H3_IMAGE_FIT_ASPECT_CROP;
+            last_fit = H3_IMAGE_FIT_ASPECT_CROP;
+            fprintf(stderr,
+                    "h3: Pika keyframes are center-cropped to the canvas "
+                    "aspect, then resized.\n");
+        }
         if (params->first_frame) {
             keyframes[keyframe_count++] = 0;
             if (!h3_ffmpeg_read_image_f32(
                     params->first_frame, render_width, render_height,
-                    H3_IMAGE_FIT_STRETCH, &condition_pixels[visual_count],
+                    first_fit, &condition_pixels[visual_count],
                     detail, sizeof(detail))) {
                 h3_set_error(ctx, "%s", detail);
                 goto cleanup;
@@ -1439,7 +1449,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             keyframes[keyframe_count++] = temporal.frame_count - 1;
             if (!h3_ffmpeg_read_image_f32(
                     params->last_frame, render_width, render_height,
-                    H3_IMAGE_FIT_COVER, &condition_pixels[visual_count],
+                    last_fit, &condition_pixels[visual_count],
                     detail, sizeof(detail))) {
                 h3_set_error(ctx, "%s", detail);
                 goto cleanup;

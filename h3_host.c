@@ -72,6 +72,44 @@ int h3_adapt_canvas(int width, int height, int *adapted_w, int *adapted_h) {
     return 1;
 }
 
+/* Python 3 round() for a non-negative finite value: ties go to even. */
+static int h3_python_round_nonneg(double value) {
+    double whole = floor(value);
+    double frac = value - whole;
+    long long rounded = (long long)whole;
+    if (frac > 0.5 || (frac == 0.5 && (rounded & 1LL))) rounded++;
+    if (rounded > INT_MAX) rounded = INT_MAX;
+    return (int)rounded;
+}
+
+int h3_keyframe_center_crop(int source_width, int source_height,
+                            int canvas_width, int canvas_height,
+                            int *crop_width, int *crop_height,
+                            int *left, int *top) {
+    if (source_width < 1 || source_height < 1 ||
+        canvas_width < 1 || canvas_height < 1 ||
+        !crop_width || !crop_height || !left || !top) return 0;
+    double aspect = (double)canvas_width / (double)canvas_height;
+    int cropped_w;
+    int cropped_h;
+    if ((double)source_width / (double)source_height > aspect) {
+        cropped_h = source_height;
+        cropped_w = h3_python_round_nonneg((double)source_height * aspect);
+        if (cropped_w < 1) cropped_w = 1;
+        if (cropped_w > source_width) cropped_w = source_width;
+    } else {
+        cropped_w = source_width;
+        cropped_h = h3_python_round_nonneg((double)source_width / aspect);
+        if (cropped_h < 1) cropped_h = 1;
+        if (cropped_h > source_height) cropped_h = source_height;
+    }
+    *crop_width = cropped_w;
+    *crop_height = cropped_h;
+    *left = (source_width - cropped_w) / 2;
+    *top = (source_height - cropped_h) / 2;
+    return 1;
+}
+
 int h3_reference_image_canvas(int width, int height,
                               int target_width, int target_height,
                               int max_short_edge,
