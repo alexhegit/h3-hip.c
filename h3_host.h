@@ -98,6 +98,13 @@ int h3_video_encoder_latent_t(int frame_count);
 h3_temporal_shape h3_temporal(int requested_frames);
 void h3_latent_canvas(int width, int height, int *latent_w, int *latent_h);
 int h3_adapt_canvas(int width, int height, int *adapted_w, int *adapted_h);
+/* Center-crop a keyframe to the canvas aspect at the source resolution.
+ * Crop size uses Python round-half-to-even; the origin is (source-crop)/2.
+ * The caller resizes that crop onto the canvas. */
+int h3_keyframe_center_crop(int source_width, int source_height,
+                            int canvas_width, int canvas_height,
+                            int *crop_width, int *crop_height,
+                            int *left, int *top);
 /* Ref2VA image sizing is down-only and aspect preserving. max_short_edge=0
  * matches the output pixel area; a positive value selects a short-edge cap. */
 int h3_reference_image_canvas(int width, int height,
@@ -117,6 +124,10 @@ int h3_serving_schedule_build(int evaluations, h3_sigma_schedule *schedule);
 /* FastH3 distilled ladder: timesteps 999,749,500,250 and a terminal zero.
  * Four DiT evaluations. Video shift 12, audio shift 3. */
 int h3_fasth3_schedule_build(h3_sigma_schedule *schedule);
+/* Pika H3 Flex knots 1000,750,500,250,100,40,0. Six DiT evaluations.
+ * The base grid is divided by 1000 and shifted in float64, video 12 and
+ * audio 3, then stored as float32. */
+int h3_pika_schedule_build(h3_sigma_schedule *schedule);
 
 int h3_layout_build(const h3_layout_spec *spec, h3_layout *layout,
                     char *error, size_t error_size);
@@ -141,5 +152,11 @@ int h3_res_step(float *output, const float *sample, const float *denoised,
                 const float *sigmas, int step, int total_steps);
 int h3_euler_velocity_step(float *sample, const float *velocity, size_t count,
                            float sigma, float sigma_next);
+/* Data-ward velocity to a clean sample, then fresh noise at sigma_next.
+ * x0 = x + sigma * v; x_next = (1 - sigma_next) * x0 + sigma_next * noise.
+ * sigma_next == 0 writes x0 and ignores noise. */
+int h3_renoise_velocity_step(float *sample, const float *velocity,
+                             const float *noise, size_t count,
+                             float sigma, float sigma_next);
 
 #endif

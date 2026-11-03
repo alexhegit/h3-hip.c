@@ -12,7 +12,17 @@ were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.16.0** runs `--vsa` on Strix Halo through a wave32 rocWMMA
+Tagged **v0.17.0** adds opt-in Pika H3 Flex (`--pika-lora`,
+`--pika-ref-lora`): a rank-128 LoRA and a fixed 6-step renoise sampler
+on the MiniMax-H3 weights you already have. It stays off unless set,
+keeps all 50 layers, requires `--reuse 1`, and does not combine with
+`--fasth3-lora`, `--token-reduction`, `--sol-attn`, `--fbc`, or `--vsa`.
+On one MI300X, 832×480 · 5 s is **34.97 s** (28.68 s with `--taeh3`).
+1344×768 · 5 s Prompt 1 is **120.10 s** (93.54 s with `--taeh3`).
+Download, commands, and the comparison still:
+[`docs/PIKA.md`](docs/PIKA.md).
+
+v0.16.0 runs `--vsa` on Strix Halo through a wave32 rocWMMA
 fine kernel. The v0.15.0 paths stay opt-in and off by default:
 `--fasth3-lora` merges a dense 4-step LoRA (timesteps 999 / 749 / 500 / 250),
 `--vsa` needs the vsa-datafree adapter, and `--taeh3` replaces the video
@@ -127,6 +137,7 @@ labelled left-to-right.
 | **T2VA** — 15 s cinematic office (untitled) | [![15 s long](assets/showcase/long-15s-cinematic.jpg)](assets/showcase/long-15s-cinematic.mp4) [mp4](assets/showcase/long-15s-cinematic.mp4) |
 | **T2VA** — 15 s Halo three-way (dense / TR / Sol-Attn) | [![15 s 3-way](assets/showcase/fox-15s-3way-compare-gfx1151.jpg)](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) [mp4](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) |
 | **T2VA** — 15 s MI300X FastH3 (4-step / 4-step+TAEH3) | [![FastH3 2-way](assets/showcase/fox-15s-fasth3-2way-gfx942.jpg)](assets/showcase/fox-15s-fasth3-2way-gfx942.mp4) [mp4](assets/showcase/fox-15s-fasth3-2way-gfx942.mp4) |
+| **T2VA** — MI300X Pika vs FastH3 vs dense | [![Pika compare](assets/showcase/pika-vs-fasth3-dense-gfx942.jpg)](assets/showcase/pika-vs-fasth3-dense-gfx942.jpg) [still](assets/showcase/pika-vs-fasth3-dense-gfx942.jpg) · [1344×768 triptych](assets/showcase/pika-fasth3-dense-3way-gfx942.mp4) |
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
@@ -218,8 +229,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.16.0**. `h3 --info` prints `h3-hip 0.16.0`.
-v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
+Current tagged line is **v0.17.0**. `h3 --info` prints `h3-hip 0.17.0`.
+v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
+conv. v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
 `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
 and Sol-Attn past 64k tokens. v0.12.0 was the TR schedule, fused AdaLN, and
 the three-GPU retune. v0.11.x had opt-in INT8. v0.10.x is the dual-ISA
@@ -237,6 +249,7 @@ history. v0.9.x is Strix Halo only.
 | `--sol-attn` | ✅ opt-in **lossy** long SDPA on **Strix Halo + MI210 + MI300X** (measured) |
 | `--fbc` | ✅ opt-in **lossy** first-block cache on gfx1151 and gfx942 (measured). Best on 50-step reuse-1 clips; small on 15 s reuse-2. Not with `--token-reduction` |
 | `--fasth3-lora` | ✅ opt-in dense 4-step LoRA. Measured on MI300X and gfx1151. Forces 999/749/500/250, 50 layers, `--reuse 1` |
+| `--pika-lora` / `--pika-ref-lora` | ✅ opt-in Pika H3 Flex. 6-step renoise, 50 layers, `--reuse 1`. Measured on MI300X. See [`docs/PIKA.md`](docs/PIKA.md) |
 | `--taeh3` | ✅ opt-in tiny video decoder. Tiled FP32 conv (`H3_TAEH3_NAIVE=1` restores the per-pixel kernel). Softer picture. Audio VAE unchanged |
 | `--vsa` | ✅ opt-in sparse video attention. gfx1151 uses the wave32 rocWMMA fine kernel (measured). Requires the vsa-datafree `--fasth3-lora`. Not with token reduction, Sol-Attn, `--fbc`, or reuse above 1 |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
@@ -325,6 +338,8 @@ and Long video are under `docs/wiki/`.
   ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
   ./tools/download_fasth3_lora.sh --vsa --dir ./FastH3-4-step-LoRA   # adds the VSA adapter
   ./tools/download_taeh3.sh --dir ./FastH3-4-step-LoRA          # optional tiny video decoder
+  ./tools/download_pika_lora.sh --dir ./Pika-H3-Flex            # optional Pika FL2VA LoRA, ~2.77 GB
+  ./tools/download_pika_lora.sh --both --dir ./Pika-H3-Flex     # also the Ref2VA adapter
   ```
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)
@@ -337,7 +352,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.16.0
+git checkout v0.17.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

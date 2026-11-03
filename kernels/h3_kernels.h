@@ -217,6 +217,14 @@ typedef struct {
 } h3_euler_args;
 
 typedef struct {
+    uint32_t sample_offset;
+    uint32_t elements;
+    float sigma;
+    float sigma_next;
+    uint32_t use_noise;
+} h3_renoise_args;
+
+typedef struct {
     uint32_t input_offset;
     uint32_t original_offset;
     uint32_t baseline_offset;
@@ -525,6 +533,9 @@ int h3_launch_vae_encoder_group_norm_silu_f32(
 int h3_launch_euler_bf16(float *sample, const uint16_t *last,
                          const uint16_t *previous, const h3_euler_args *args,
                          hipStream_t stream);
+int h3_launch_renoise_bf16(float *sample, const uint16_t *velocity,
+                           const float *noise, const h3_renoise_args *args,
+                           hipStream_t stream);
 int h3_launch_rms_inverse_bf16(const uint16_t *input, float *inverse,
                                const h3_norm_args *args, hipStream_t stream);
 int h3_launch_adaln_linear_bf16(const uint16_t *input, const float *inverse,

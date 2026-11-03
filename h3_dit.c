@@ -3432,6 +3432,21 @@ static int ensure_previous_velocities(h3_dit *dit, char *error,
     return 0;
 }
 
+static int pika_requested(void) {
+    const char *value = getenv("H3_PIKA");
+    return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static uint64_t pika_seed(void) {
+    const char *value = getenv("H3_PIKA_SEED");
+    char *end = NULL;
+    unsigned long long parsed;
+    if (!value || !value[0]) return 42;
+    parsed = strtoull(value, &end, 10);
+    if (end == value || *end) return 42;
+    return (uint64_t)parsed;
+}
+
 static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
                              float *audio_latent, int reuse_interval,
                              h3_dit_progress progress, void *progress_opaque,
@@ -3452,8 +3467,13 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
     if (reuse_interval > 1 && getenv("H3_PROFILE"))
         fprintf(stderr, "h3: %s GPU reuse schedule has %d evaluations\n",
                 custom_count > 0 ? "custom" : "selected", selected_count);
+    int pika = pika_requested();
     unsigned window = gpu_sampler_window();
-    int disable_command_split = window == 1 &&
+    /* Pika's six renoise steps stay on one command buffer unless the user
+     * overrides H3_GPU_SAMPLER_WINDOW. Keep the window==1 command-split
+     * disable so each DiT forward stays one encode. */
+    if (pika && getenv("H3_GPU_SAMPLER_WINDOW") == NULL) window = 0;
+    int disable_command_split = (window == 1 || pika) &&
                                 getenv("H3_DIT_COMMAND_BLOCKS") == NULL;
     if (getenv("H3_PROFILE"))
         fprintf(stderr, "h3: GPU sampler encode window is %s; internal split "
@@ -3488,10 +3508,68 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
                                       audio_rows, audio_count);
     if (!ok) fail(error, error_size, "cannot pack/write GPU Euler latents");
 
+    h3_rng pika_rng;
+    float *pika_video_noise = NULL;
+    float *pika_audio_noise = NULL;
+    h3_gpu_tensor *pika_video_noise_gpu = NULL;
+    h3_gpu_tensor *pika_audio_noise_gpu = NULL;
+    int pika_noise_draws = 0;
+    if (ok && pika) {
+        for (int step = 0; step < dit->sigmas.steps; step++) {
+            if (dit->sigmas.video[step + 1] != 0.0f ||
+                dit->sigmas.audio[step + 1] != 0.0f)
+                pika_noise_draws++;
+        }
+        size_t video_noise_count = video_count * (size_t)pika_noise_draws;
+        size_t audio_noise_count = audio_count * (size_t)pika_noise_draws;
+        h3_rng_seed(&pika_rng, pika_seed());
+        pika_video_noise = malloc(video_noise_count * sizeof(*pika_video_noise));
+        pika_audio_noise = malloc(audio_noise_count * sizeof(*pika_audio_noise));
+        pika_video_noise_gpu =
+            h3_gpu_tensor_new_f32_device(dit->gpu, video_noise_count);
+        pika_audio_noise_gpu =
+            h3_gpu_tensor_new_f32_device(dit->gpu, audio_noise_count);
+        if (!pika_video_noise || !pika_audio_noise ||
+            !pika_video_noise_gpu || !pika_audio_noise_gpu) {
+            fail(error, error_size, "out of memory allocating Pika renoise");
+            ok = 0;
+        } else {
+            int draw = 0;
+            for (int step = 0; step < dit->sigmas.steps; step++) {
+                int video_draw = dit->sigmas.video[step + 1] != 0.0f;
+                int audio_draw = dit->sigmas.audio[step + 1] != 0.0f;
+                if (!video_draw && !audio_draw) continue;
+                if (video_draw)
+                    h3_rng_fill_normal(&pika_rng,
+                                       pika_video_noise +
+                                           (size_t)draw * video_count,
+                                       video_count);
+                if (audio_draw)
+                    h3_rng_fill_normal(&pika_rng,
+                                       pika_audio_noise +
+                                           (size_t)draw * audio_count,
+                                       audio_count);
+                draw++;
+            }
+            ok = h3_gpu_tensor_write_f32(pika_video_noise_gpu, pika_video_noise,
+                                         video_noise_count) &&
+                 h3_gpu_tensor_write_f32(pika_audio_noise_gpu, pika_audio_noise,
+                                         audio_noise_count);
+            if (!ok)
+                fail(error, error_size, "cannot upload Pika renoise noise");
+            else
+                fprintf(stderr,
+                        "h3: Pika H3 Flex re-noises the clean prediction; "
+                        "pre-uploaded video then audio noise for %d steps\n",
+                        pika_noise_draws);
+        }
+    }
+
     int last_evaluated = -1;
     int previous_evaluated = -1;
     unsigned pending_evaluations = 0;
     int command_active = 0;
+    int pika_draw = 0;
     for (int step = 0; step < dit->sigmas.steps && ok; step++) {
         report(progress, progress_opaque, "denoise enqueue", step,
                dit->sigmas.steps);
@@ -3538,27 +3616,58 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
             ? dit->previous_video_velocity : dit->video_output_bf16;
         const h3_gpu_tensor *previous_audio = previous_evaluated >= 0
             ? dit->previous_audio_velocity : dit->audio_output_bf16;
-        ok = gpu_op(dit, h3_gpu_euler_bf16(
-                dit->gpu, dit->video_input, video_offset,
-                dit->video_output_bf16, previous_video, (uint32_t)video_count,
-                dit->sigmas.video[step] - dit->sigmas.video[step + 1],
-                video_ratio), error, error_size, "GPU video Euler step") &&
-             gpu_op(dit, h3_gpu_euler_bf16(
-                dit->gpu, dit->audio_input, audio_offset,
-                dit->audio_output_bf16, previous_audio, (uint32_t)audio_count,
-                dit->sigmas.audio[step] - dit->sigmas.audio[step + 1],
-                audio_ratio), error, error_size, "GPU audio Euler step");
+        if (pika) {
+            int video_draw = dit->sigmas.video[step + 1] != 0.0f;
+            int audio_draw = dit->sigmas.audio[step + 1] != 0.0f;
+            size_t noise_index = (size_t)pika_draw;
+            if ((!video_draw && !audio_draw) || pika_draw >= pika_noise_draws) {
+                video_draw = 0;
+                audio_draw = 0;
+                noise_index = 0;
+            } else {
+                pika_draw++;
+            }
+            ok = gpu_op(dit, h3_gpu_renoise_bf16(
+                        dit->gpu, dit->video_input, video_offset,
+                        dit->video_output_bf16,
+                        video_draw ? pika_video_noise_gpu : NULL,
+                        noise_index * video_count, (uint32_t)video_count,
+                        dit->sigmas.video[step], dit->sigmas.video[step + 1]),
+                    error, error_size, "GPU video renoise step") &&
+                 gpu_op(dit, h3_gpu_renoise_bf16(
+                        dit->gpu, dit->audio_input, audio_offset,
+                        dit->audio_output_bf16,
+                        audio_draw ? pika_audio_noise_gpu : NULL,
+                        noise_index * audio_count, (uint32_t)audio_count,
+                        dit->sigmas.audio[step], dit->sigmas.audio[step + 1]),
+                    error, error_size, "GPU audio renoise step");
+        } else {
+            ok = gpu_op(dit, h3_gpu_euler_bf16(
+                    dit->gpu, dit->video_input, video_offset,
+                    dit->video_output_bf16, previous_video, (uint32_t)video_count,
+                    dit->sigmas.video[step] - dit->sigmas.video[step + 1],
+                    video_ratio), error, error_size, "GPU video Euler step") &&
+                 gpu_op(dit, h3_gpu_euler_bf16(
+                    dit->gpu, dit->audio_input, audio_offset,
+                    dit->audio_output_bf16, previous_audio, (uint32_t)audio_count,
+                    dit->sigmas.audio[step] - dit->sigmas.audio[step + 1],
+                    audio_ratio), error, error_size, "GPU audio Euler step");
+        }
         if (ok && (evaluate || preview)) {
             int finish = preview || step + 1 == dit->sigmas.steps ||
                          (window && pending_evaluations >= window);
-            ok = gpu_op(dit, finish ? h3_gpu_submit(dit->gpu)
-                                    : h3_gpu_continue(dit->gpu),
-                        error, error_size,
-                        finish ? "submit GPU Euler window"
-                               : "continue GPU Euler command chain");
-            if (ok && finish) {
-                command_active = 0;
-                pending_evaluations = 0;
+            /* window==0 keeps the whole Euler chain in one command buffer.
+             * continue() would synchronize and reopen; skip it. */
+            if (finish) {
+                ok = gpu_op(dit, h3_gpu_submit(dit->gpu), error, error_size,
+                            "submit GPU Euler window");
+                if (ok) {
+                    command_active = 0;
+                    pending_evaluations = 0;
+                }
+            } else if (window) {
+                ok = gpu_op(dit, h3_gpu_continue(dit->gpu), error, error_size,
+                            "continue GPU Euler command chain");
             }
         }
         if (ok && preview) {
@@ -3600,6 +3709,10 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
         fail(error, error_size, "cannot unpack GPU Euler latents");
     free(video_rows);
     free(audio_rows);
+    free(pika_video_noise);
+    free(pika_audio_noise);
+    free_tensor(&pika_video_noise_gpu);
+    free_tensor(&pika_audio_noise_gpu);
     if (ok) report(progress, progress_opaque, "denoise", dit->sigmas.steps,
                    dit->sigmas.steps);
     h3_gpu_profile_mark(dit->gpu, "GPU Euler denoise");
@@ -3737,6 +3850,27 @@ int h3_dit_denoise_euler_preview(
         free(previous_audio);
         return 0;
     }
+    int pika = pika_requested();
+    h3_rng pika_rng;
+    size_t pika_noise_count = video_count > audio_count ? video_count : audio_count;
+    float *pika_noise = NULL;
+    if (pika) {
+        pika_noise = malloc(pika_noise_count * sizeof(*pika_noise));
+        if (!pika_noise) {
+            fail(error, error_size, "out of memory allocating Pika renoise");
+            free(video_velocity);
+            free(audio_velocity);
+            free(last_video);
+            free(previous_video);
+            free(last_audio);
+            free(previous_audio);
+            return 0;
+        }
+        h3_rng_seed(&pika_rng, pika_seed());
+        fprintf(stderr,
+                "h3: Pika H3 Flex re-noises the clean prediction; "
+                "fresh video noise then audio noise on the first 5 steps\n");
+    }
     int ok = 1;
     int last_evaluated = -1;
     int previous_evaluated = -1;
@@ -3776,14 +3910,38 @@ int h3_dit_denoise_euler_preview(
                 previous_evaluated >= 0);
         }
         if (ok) {
-            ok = h3_euler_velocity_step(
-                     video_latent, video_velocity, video_count,
-                     dit->sigmas.video[step], dit->sigmas.video[step + 1]) &&
-                 h3_euler_velocity_step(
-                     audio_latent, audio_velocity, audio_count,
-                     dit->sigmas.audio[step], dit->sigmas.audio[step + 1]);
-            if (!ok) fail(error, error_size,
-                          "Euler solver rejected step %d", step);
+            if (pika) {
+                float video_sigma_next = dit->sigmas.video[step + 1];
+                float audio_sigma_next = dit->sigmas.audio[step + 1];
+                const float *video_noise = NULL;
+                const float *audio_noise = NULL;
+                if (video_sigma_next != 0.0f) {
+                    h3_rng_fill_normal(&pika_rng, pika_noise, video_count);
+                    video_noise = pika_noise;
+                }
+                ok = h3_renoise_velocity_step(
+                    video_latent, video_velocity, video_noise, video_count,
+                    dit->sigmas.video[step], video_sigma_next);
+                if (ok && audio_sigma_next != 0.0f) {
+                    h3_rng_fill_normal(&pika_rng, pika_noise, audio_count);
+                    audio_noise = pika_noise;
+                }
+                if (ok)
+                    ok = h3_renoise_velocity_step(
+                        audio_latent, audio_velocity, audio_noise, audio_count,
+                        dit->sigmas.audio[step], audio_sigma_next);
+                if (!ok) fail(error, error_size,
+                              "Pika renoise rejected step %d", step);
+            } else {
+                ok = h3_euler_velocity_step(
+                         video_latent, video_velocity, video_count,
+                         dit->sigmas.video[step], dit->sigmas.video[step + 1]) &&
+                     h3_euler_velocity_step(
+                         audio_latent, audio_velocity, audio_count,
+                         dit->sigmas.audio[step], dit->sigmas.audio[step + 1]);
+                if (!ok) fail(error, error_size,
+                              "Euler solver rejected step %d", step);
+            }
         }
         if (ok && preview &&
             preview(step + 1, dit->sigmas.steps, video_latent, video_count,
@@ -3801,6 +3959,7 @@ int h3_dit_denoise_euler_preview(
     free(previous_video);
     free(last_audio);
     free(previous_audio);
+    free(pika_noise);
     h3_gpu_profile_mark(dit->gpu, "Euler denoise");
     return ok;
 }

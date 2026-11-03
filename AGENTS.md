@@ -75,19 +75,21 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
-- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`).
+- `--pika-lora` / `--pika-ref-lora` merge a Pika H3 Flex rank-128 LoRA and force the 6-step renoise schedule (1000, 750, 500, 250, 100, 40), 50 layers, and `--reuse 1`. `--pika-lora` is FL2VA; references need `--pika-ref-lora`. Do not combine with `--fasth3-lora`, token reduction, sol-attn, fbc, VSA, SSD streaming, or core reuse above 1. `--pika-lora` sets `H3_GPU_SAMPLER=1` unless that variable or `H3_CPU_SAMPLER` is already set. Download: `./tools/download_pika_lora.sh`. See `docs/PIKA.md`.
+- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). `--serve` has no Pika flag.
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
 - `linenoise.o` is vendored and compiled with relaxed warnings (`-Wno-conversion`).
 
 ## Model weights
 
-Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). Expected at `./MiniMax-H3/` or set `H3_MODEL`. Partial download: `./tools/download_weights.sh` (`FL2VA/` ~134 GiB for T2VA; `--both` adds `Ref2VA/`). Root `transformer/`, `transformer_ref/`, `text_encoder/`, and `vae/` are unused. The optional 4-step dense LoRA is `./tools/download_fasth3_lora.sh` (`dense-datafree/adapter_model.safetensors`, ~1.4 GiB) and is passed with `--fasth3-lora`. `--vsa` needs the same script's `--vsa` adapter (`vsa-datafree/adapter_model.safetensors`). `--taeh3` takes `./tools/download_taeh3.sh`. All three stay off by default and are not part of the `bench/` scoreboard. MI300X 5 s / 15 s numbers: `docs/perf-runs/MI300X_COMPARE_2026-10-07.md`. The 768p Prompt 1 comparison is `docs/perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`. gfx1151 FastH3 / TAEH3 / VSA, including the wave32 rocWMMA fine kernel and the tiled TAEH3 conv (5 s VSA+TAEH3 226.69 s), is `docs/perf-runs/HALO_FASTH3_2026-10-09.md`.
+Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). Expected at `./MiniMax-H3/` or set `H3_MODEL`. Partial download: `./tools/download_weights.sh` (`FL2VA/` ~134 GiB for T2VA; `--both` adds `Ref2VA/`). Root `transformer/`, `transformer_ref/`, `text_encoder/`, and `vae/` are unused. The optional 4-step dense LoRA is `./tools/download_fasth3_lora.sh` (`dense-datafree/adapter_model.safetensors`, ~1.4 GiB) and is passed with `--fasth3-lora`. The optional Pika H3 Flex LoRAs are `./tools/download_pika_lora.sh` (`fl2va/adapter.safetensors`, ~2.77 GB; `--both` adds Ref2VA) and are passed with `--pika-lora` / `--pika-ref-lora`. Do not download that repo's base-weight copy. `--vsa` needs the same script's `--vsa` adapter (`vsa-datafree/adapter_model.safetensors`). `--taeh3` takes `./tools/download_taeh3.sh`. All three stay off by default and are not part of the `bench/` scoreboard. MI300X 5 s / 15 s numbers: `docs/perf-runs/MI300X_COMPARE_2026-10-07.md`. The 768p Prompt 1 comparison is `docs/perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`. gfx1151 FastH3 / TAEH3 / VSA, including the wave32 rocWMMA fine kernel and the tiled TAEH3 conv (5 s VSA+TAEH3 226.69 s), is `docs/perf-runs/HALO_FASTH3_2026-10-09.md`.
 
 ## Documentation
 
 - `docs/BEST_PRACTICE.md` — quick reference for optimal settings
 - `docs/PERFORMANCE.md` — scoreboard; MI300X process E2E vs DiT total
 - `docs/perf-runs/MI300X_2026-09-18_full.md` — 2026-09-18 MI300X retake
+- `docs/PIKA.md` — opt-in Pika H3 Flex (download, commands, MI300X speed, quality)
 - `docs/SOL_ATTN.md` — opt-in lossy Sol-Attn (speed vs quality vs dense)
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options

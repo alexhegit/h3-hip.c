@@ -14,9 +14,20 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.16.0 (2026-10-09)
+## Current release — v0.17.0 (2026-11-03)
 
-`h3 --info` prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
+`h3 --info` prints `h3-hip 0.17.0`. Opt-in `--pika-lora` and
+`--pika-ref-lora` merge a rank-128 LoRA and run six renoise steps.
+They stay off unless set, and they are not part of the `bench/`
+scoreboard. Measured on one MI300X (gfx942), warm cache, default INT8:
+832×480 · 5 s is **34.97 s** (28.68 s with `--taeh3`); 1344×768 · 5 s
+Prompt 1 is **120.10 s** (93.54 s with `--taeh3`). Commands, the other
+canvases, and the comparison still are in [`PIKA.md`](PIKA.md). The
+v0.16.0 Halo tables below are unchanged.
+
+## v0.16.0 (2026-10-09)
+
+`h3 --info` on that tag prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
 `gfx90a`, or `gfx942`. Three opt-in FastH3 paths stay off unless the
 flag is set: `--fasth3-lora` (dense 4-step LoRA), `--taeh3` (tiny video
 decoder), and `--vsa` (sparse video attention, requires the
@@ -190,6 +201,28 @@ other. No PSNR gate was applied.
 
 Ledger:
 [`perf-runs/MI300X_FASTH3_2026-10-05.md`](perf-runs/MI300X_FASTH3_2026-10-05.md).
+
+### Pika H3 Flex (`--pika-lora`)
+
+Off by default, and not part of the `bench/` scoreboard. How to
+download the adapter and run it is [`PIKA.md`](PIKA.md). The base
+checkpoint stays MiniMax-H3. The flag merges the rank-128 FL2VA LoRA
+and replaces Euler with six renoise steps at 1000, 750, 500, 250, 100,
+40. Layers stay 50 and `--reuse` stays 1. It does not combine with
+`--fasth3-lora`, `--token-reduction`, `--sol-attn`, `--fbc`, `--vsa`,
+SSD streaming, or core reuse above 1. `--pika-ref-lora` is the same
+schedule on the Ref2VA transformer.
+
+One MI300X (gfx942), 2026-11-02, warm cache, default INT8, GPU Euler
+sampler. 832×480 · 5 s, seed 42: Pika process E2E **34.97 s** (denoise
+16.54 s) and Pika+TAEH3 **28.68 s**, next to FastH3 **30.62 s** on that
+machine the same day. 1344×768 · 5 s Prompt 1, seed 0: Pika **120.1 s**,
+Pika+TAEH3 **93.5 s**, denoise 75.3 s for six steps (12.6 s/step).
+864×480 · 15 s fox prompt, 50 layers, reuse 1, no token reduction:
+Pika **137.5 s**, Pika+TAEH3 **119.5 s**. TAEH3 against the full VAE on
+the same Pika latents is 32.01 dB / 0.944 (480p) and 31.58 dB / 0.937
+(768p). Tables and the comparison still:
+[`PIKA.md`](PIKA.md).
 
 On gfx1151 the same 832×480 · 5 s INT8 fixture is **350.38 s** (dense
 adapter) and **299.34 s** with `--taeh3`, against that machine's 50-step

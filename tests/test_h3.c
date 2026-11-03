@@ -49,6 +49,30 @@ static void test_temporal_and_canvas(void) {
     CHECK(h3_adapt_canvas(864, 480, &width, &height));
     CHECK(width == 1376 && height == 768);
     CHECK(h3_adapt_canvas(32, 32, &width, &height));
+    {
+        int crop_w = 0, crop_h = 0, left = 0, top = 0;
+        /* Wider than 832/480: keep the height, round the width, center it. */
+        CHECK(h3_keyframe_center_crop(1000, 500, 832, 480,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 867 && crop_h == 500 && left == 66 && top == 0);
+        /* Taller than the canvas: keep the width and center the height. */
+        CHECK(h3_keyframe_center_crop(500, 1000, 832, 480,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 500 && crop_h == 288 && left == 0 && top == 356);
+        /* Same aspect is a no-op crop. */
+        CHECK(h3_keyframe_center_crop(832, 480, 832, 480,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 832 && crop_h == 480 && left == 0 && top == 0);
+        /* Python round half to even: round(2.5) == 2, round(3.5) == 4. */
+        CHECK(h3_keyframe_center_crop(10, 1, 5, 2,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 2 && crop_h == 1 && left == 4 && top == 0);
+        CHECK(h3_keyframe_center_crop(10, 1, 7, 2,
+                                      &crop_w, &crop_h, &left, &top));
+        CHECK(crop_w == 4 && crop_h == 1 && left == 3 && top == 0);
+        CHECK(!h3_keyframe_center_crop(0, 1, 832, 480,
+                                       &crop_w, &crop_h, &left, &top));
+    }
     CHECK(width == 768 && height == 768);
     CHECK(h3_reference_image_canvas(1920, 1080, 512, 512, 0,
                                     &width, &height));
@@ -117,6 +141,22 @@ static void test_schedule(void) {
     }
     CHECK(!h3_serving_schedule_build(1, &schedule));
     CHECK(!h3_serving_schedule_build(H3_MAX_STEPS + 1, &schedule));
+
+    CHECK(h3_pika_schedule_build(&schedule));
+    CHECK(schedule.steps == 6);
+    CHECK(schedule.video[0] == 1.0f && schedule.audio[0] == 1.0f);
+    CHECK(schedule.video[6] == 0.0f && schedule.audio[6] == 0.0f);
+    {
+        double knot = 0.75;
+        CHECK(close_enough(schedule.video[1],
+            (float)(12.0 * knot / (1.0 + 11.0 * knot)), 1e-6));
+        CHECK(close_enough(schedule.audio[1],
+            (float)(3.0 * knot / (1.0 + 2.0 * knot)), 1e-6));
+    }
+    for (int index = 0; index < schedule.steps; index++) {
+        CHECK(schedule.video[index] > schedule.video[index + 1]);
+        CHECK(schedule.audio[index] > schedule.audio[index + 1]);
+    }
 }
 
 static void test_dit_reuse_schedule(void) {
@@ -323,6 +363,20 @@ static void test_rng_and_solver(void) {
     CHECK(h3_euler_velocity_step(euler, velocity, 2, 0.75f, 0.25f));
     CHECK(euler[0] == 2.0f && euler[1] == 1.0f);
     CHECK(!h3_euler_velocity_step(euler, velocity, 2, 0.25f, 0.25f));
+
+    float renoise_sample[] = {1.0f, 3.0f};
+    float renoise_noise[] = {0.5f, -1.0f};
+    CHECK(h3_renoise_velocity_step(renoise_sample, velocity, renoise_noise, 2,
+                                   0.5f, 0.25f));
+    /* x0 = x + sigma * v; x_next = (1 - sigma_next) * x0 + sigma_next * noise */
+    CHECK(close_enough(renoise_sample[0], 1.625f, 1e-6));
+    CHECK(close_enough(renoise_sample[1], 0.5f, 1e-6));
+    CHECK(h3_renoise_velocity_step(renoise_sample, velocity, NULL, 2,
+                                   0.25f, 0.0f));
+    CHECK(close_enough(renoise_sample[0], 2.125f, 1e-6));
+    CHECK(close_enough(renoise_sample[1], -0.5f, 1e-6));
+    CHECK(!h3_renoise_velocity_step(renoise_sample, velocity, NULL, 2,
+                                    0.5f, 0.25f));
 }
 
 static void test_rgb_resize(void) {

@@ -796,6 +796,13 @@ int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
                       size_t sample_offset, const h3_gpu_tensor *last,
                       const h3_gpu_tensor *previous, uint32_t elements,
                       float delta, float ratio);
+/* Pika step: x0 = sample + sigma * velocity, then
+ * sample = (1 - sigma_next) * x0 + sigma_next * noise.
+ * noise may be NULL when sigma_next is 0. noise_offset indexes into noise. */
+int h3_gpu_renoise_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
+                        size_t sample_offset, const h3_gpu_tensor *velocity,
+                        const h3_gpu_tensor *noise, size_t noise_offset,
+                        uint32_t elements, float sigma, float sigma_next);
 int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          const h3_gpu_tensor *gate,
                          const h3_gpu_tensor *up, uint32_t elements);
