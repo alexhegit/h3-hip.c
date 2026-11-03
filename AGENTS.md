@@ -75,7 +75,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
-- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`).
+- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). The daemon currently runs the dense presets only. Covering FastH3, Pika, and the other CLI paths is an unimplemented proposal: `docs/DESIGN_DHS_PATHS.md`.
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
 - `linenoise.o` is vendored and compiled with relaxed warnings (`-Wno-conversion`).
 
@@ -92,4 +92,5 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/DESIGN_DHS.md` — `--serve` daemon protocol v1alpha and DSH plugin phases
+- `docs/DESIGN_DHS_PATHS.md` — unimplemented proposal: `--serve` fronts every CLI generation path
 - `docs/wiki/` — Getting started, T2VA pipeline, Long video
