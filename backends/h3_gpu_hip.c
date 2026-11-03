@@ -3747,6 +3747,29 @@ int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
         "h3_euler_bf16");
 }
 
+int h3_gpu_renoise_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
+                        size_t sample_offset, const h3_gpu_tensor *velocity,
+                        const h3_gpu_tensor *noise, size_t noise_offset,
+                        uint32_t elements, float sigma, float sigma_next) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    int use_noise = sigma_next != 0.0f;
+    if (!ctx || !elements ||
+        !h3_hip_require_f32(ctx, sample, sample_offset + elements,
+                            "renoise sample") ||
+        !h3_hip_require_bf16(ctx, velocity, elements, "renoise velocity") ||
+        (use_noise && !h3_hip_require_f32(ctx, noise, noise_offset + elements,
+                                          "renoise noise")))
+        return 0;
+    h3_renoise_args args = {(uint32_t)sample_offset, elements, sigma,
+                            sigma_next, use_noise ? 1u : 0u};
+    const float *noise_ptr = use_noise
+        ? (const float *)tensor_ptr(noise)->data + noise_offset : NULL;
+    return h3_hip_launch_ok(ctx, h3_launch_renoise_bf16(
+        (float *)tensor_ptr(sample)->data,
+        (const uint16_t *)tensor_ptr(velocity)->data, noise_ptr, &args,
+        ctx->stream), "h3_renoise_bf16");
+}
+
 int h3_gpu_adaln_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              h3_gpu_tensor *inverse,
                              const h3_gpu_tensor *input, size_t input_offset,

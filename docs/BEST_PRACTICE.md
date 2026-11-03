@@ -141,6 +141,14 @@ clip is in
 [`perf-runs/HALO_FASTH3_2026-10-09.md`](perf-runs/HALO_FASTH3_2026-10-09.md).
 Download:
 `./tools/download_fasth3_lora.sh`.
+
+**`--pika-lora`** is a separate opt-in path. It merges the Pika H3 Flex
+FL2VA adapter and runs six renoise steps (1000, 750, 500, 250, 100, 40).
+On one MI300X the 832×480 · 5 s INT8 process is **35.0 s**, or **28.68 s**
+with `--taeh3`. The 1344×768 · 5 s Prompt 1 row is **120.1 s** and
+**93.5 s** with `--taeh3`. References need `--pika-ref-lora` instead of
+the FL2VA file. Download and the full tables:
+[`PIKA.md`](PIKA.md), `./tools/download_pika_lora.sh`.
 The MI300X 5 s and 15 s tables (dense, token-reduction, `--fbc`, FastH3,
 TAEH3, VSA), with the resolution, step count, and layer count of each
 row, are in

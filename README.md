@@ -127,6 +127,7 @@ labelled left-to-right.
 | **T2VA** — 15 s cinematic office (untitled) | [![15 s long](assets/showcase/long-15s-cinematic.jpg)](assets/showcase/long-15s-cinematic.mp4) [mp4](assets/showcase/long-15s-cinematic.mp4) |
 | **T2VA** — 15 s Halo three-way (dense / TR / Sol-Attn) | [![15 s 3-way](assets/showcase/fox-15s-3way-compare-gfx1151.jpg)](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) [mp4](assets/showcase/fox-15s-3way-compare-gfx1151.mp4) |
 | **T2VA** — 15 s MI300X FastH3 (4-step / 4-step+TAEH3) | [![FastH3 2-way](assets/showcase/fox-15s-fasth3-2way-gfx942.jpg)](assets/showcase/fox-15s-fasth3-2way-gfx942.mp4) [mp4](assets/showcase/fox-15s-fasth3-2way-gfx942.mp4) |
+| **T2VA** — MI300X Pika vs FastH3 vs dense | [![Pika compare](assets/showcase/pika-vs-fasth3-dense-gfx942.jpg)](assets/showcase/pika-vs-fasth3-dense-gfx942.jpg) [still](assets/showcase/pika-vs-fasth3-dense-gfx942.jpg) · [1344×768 triptych](assets/showcase/pika-fasth3-dense-3way-gfx942.mp4) |
 | **T2VA** — 10 s cinematic office (untitled) | [![10 s long](assets/showcase/long-10s-cinematic.jpg)](assets/showcase/long-10s-cinematic.mp4) [mp4](assets/showcase/long-10s-cinematic.mp4) |
 
 Long clips (864×480, `--steps 20 --layers 45 --reuse 2`): **15 s E2E 40 min 4 s**
@@ -237,6 +238,7 @@ history. v0.9.x is Strix Halo only.
 | `--sol-attn` | ✅ opt-in **lossy** long SDPA on **Strix Halo + MI210 + MI300X** (measured) |
 | `--fbc` | ✅ opt-in **lossy** first-block cache on gfx1151 and gfx942 (measured). Best on 50-step reuse-1 clips; small on 15 s reuse-2. Not with `--token-reduction` |
 | `--fasth3-lora` | ✅ opt-in dense 4-step LoRA. Measured on MI300X and gfx1151. Forces 999/749/500/250, 50 layers, `--reuse 1` |
+| `--pika-lora` / `--pika-ref-lora` | ✅ opt-in Pika H3 Flex. 6-step renoise, 50 layers, `--reuse 1`. Measured on MI300X. See [`docs/PIKA.md`](docs/PIKA.md) |
 | `--taeh3` | ✅ opt-in tiny video decoder. Tiled FP32 conv (`H3_TAEH3_NAIVE=1` restores the per-pixel kernel). Softer picture. Audio VAE unchanged |
 | `--vsa` | ✅ opt-in sparse video attention. gfx1151 uses the wave32 rocWMMA fine kernel (measured). Requires the vsa-datafree `--fasth3-lora`. Not with token reduction, Sol-Attn, `--fbc`, or reuse above 1 |
 | `--serve` HTTP daemon (protocol v1alpha) | ⚠️ experimental; loopback only; see [Daemon](#daemon-experimental) |
@@ -325,6 +327,8 @@ and Long video are under `docs/wiki/`.
   ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
   ./tools/download_fasth3_lora.sh --vsa --dir ./FastH3-4-step-LoRA   # adds the VSA adapter
   ./tools/download_taeh3.sh --dir ./FastH3-4-step-LoRA          # optional tiny video decoder
+  ./tools/download_pika_lora.sh --dir ./Pika-H3-Flex            # optional Pika FL2VA LoRA, ~2.77 GB
+  ./tools/download_pika_lora.sh --both --dir ./Pika-H3-Flex     # also the Ref2VA adapter
   ```
 - FFmpeg / FFprobe on `PATH`
 - ICU (`libicu-dev`)

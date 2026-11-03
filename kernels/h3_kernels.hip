@@ -3784,6 +3784,20 @@ __global__ void h3_euler_bf16_kernel(float *sample, const uint16_t *last,
     sample[sample_index] = fmaf(args.delta, velocity, sample[sample_index]);
 }
 
+__global__ void h3_renoise_bf16_kernel(float *sample, const uint16_t *velocity,
+                                     const float *noise,
+                                     h3_renoise_args args) {
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= args.elements) return;
+    uint32_t sample_index = args.sample_offset + gid;
+    float clean = fmaf(args.sigma, h3_bf16_to_f32(velocity[gid]),
+                       sample[sample_index]);
+    float next = clean;
+    if (args.use_noise)
+        next = fmaf(args.sigma_next, noise[gid] - clean, clean);
+    sample[sample_index] = next;
+}
+
 static int h3_launch_1d(uint32_t count, hipStream_t stream,
                         const void *kernel, size_t args_size, void **args) {
     if (!count) return 1;
@@ -4791,5 +4805,16 @@ extern "C" int h3_launch_euler_bf16(float *sample, const uint16_t *last,
     void *kernel_args[] = {&sample, &last, &previous, &host_args};
     return h3_launch_1d(host_args.elements, stream,
                         reinterpret_cast<const void *>(h3_euler_bf16_kernel),
+                        sizeof(kernel_args), kernel_args);
+}
+
+extern "C" int h3_launch_renoise_bf16(float *sample, const uint16_t *velocity,
+                                    const float *noise,
+                                    const h3_renoise_args *args,
+                                    hipStream_t stream) {
+    h3_renoise_args host_args = *args;
+    void *kernel_args[] = {&sample, &velocity, &noise, &host_args};
+    return h3_launch_1d(host_args.elements, stream,
+                        reinterpret_cast<const void *>(h3_renoise_bf16_kernel),
                         sizeof(kernel_args), kernel_args);
 }

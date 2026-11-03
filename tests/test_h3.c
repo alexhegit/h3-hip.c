@@ -117,6 +117,22 @@ static void test_schedule(void) {
     }
     CHECK(!h3_serving_schedule_build(1, &schedule));
     CHECK(!h3_serving_schedule_build(H3_MAX_STEPS + 1, &schedule));
+
+    CHECK(h3_pika_schedule_build(&schedule));
+    CHECK(schedule.steps == 6);
+    CHECK(schedule.video[0] == 1.0f && schedule.audio[0] == 1.0f);
+    CHECK(schedule.video[6] == 0.0f && schedule.audio[6] == 0.0f);
+    {
+        double knot = 0.75;
+        CHECK(close_enough(schedule.video[1],
+            (float)(12.0 * knot / (1.0 + 11.0 * knot)), 1e-6));
+        CHECK(close_enough(schedule.audio[1],
+            (float)(3.0 * knot / (1.0 + 2.0 * knot)), 1e-6));
+    }
+    for (int index = 0; index < schedule.steps; index++) {
+        CHECK(schedule.video[index] > schedule.video[index + 1]);
+        CHECK(schedule.audio[index] > schedule.audio[index + 1]);
+    }
 }
 
 static void test_dit_reuse_schedule(void) {
@@ -323,6 +339,20 @@ static void test_rng_and_solver(void) {
     CHECK(h3_euler_velocity_step(euler, velocity, 2, 0.75f, 0.25f));
     CHECK(euler[0] == 2.0f && euler[1] == 1.0f);
     CHECK(!h3_euler_velocity_step(euler, velocity, 2, 0.25f, 0.25f));
+
+    float renoise_sample[] = {1.0f, 3.0f};
+    float renoise_noise[] = {0.5f, -1.0f};
+    CHECK(h3_renoise_velocity_step(renoise_sample, velocity, renoise_noise, 2,
+                                   0.5f, 0.25f));
+    /* x0 = x + sigma * v; x_next = (1 - sigma_next) * x0 + sigma_next * noise */
+    CHECK(close_enough(renoise_sample[0], 1.625f, 1e-6));
+    CHECK(close_enough(renoise_sample[1], 0.5f, 1e-6));
+    CHECK(h3_renoise_velocity_step(renoise_sample, velocity, NULL, 2,
+                                   0.25f, 0.0f));
+    CHECK(close_enough(renoise_sample[0], 2.125f, 1e-6));
+    CHECK(close_enough(renoise_sample[1], -0.5f, 1e-6));
+    CHECK(!h3_renoise_velocity_step(renoise_sample, velocity, NULL, 2,
+                                    0.5f, 0.25f));
 }
 
 static void test_rgb_resize(void) {

@@ -85,6 +85,21 @@ export H3_MODEL=$PWD/MiniMax-H3
 ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
 ./tools/download_fasth3_lora.sh --vsa --dir ./FastH3-4-step-LoRA   # adds the VSA adapter
 ./tools/download_taeh3.sh --dir ./FastH3-4-step-LoRA          # optional tiny video decoder
+./tools/download_pika_lora.sh --dir ./Pika-H3-Flex            # optional Pika FL2VA LoRA, ~2.77 GB
+./tools/download_pika_lora.sh --both --dir ./Pika-H3-Flex     # also the Ref2VA adapter
+```
+
+Pika H3 Flex keeps this MiniMax-H3 tree and adds a rank-128 LoRA plus a
+6-step renoise sampler. Usage, MI300X timings, and the comparison still
+are in [`docs/PIKA.md`](../PIKA.md).
+
+```bash
+./h3 --profile -d "$H3_MODEL" \
+  --pika-lora ./Pika-H3-Flex/fl2va/adapter.safetensors \
+  -p "A red fox walks through fresh snow." \
+  --width 832 --height 480 --seconds 5 \
+  --layers 50 --reuse 1 --seed 42 \
+  -o outputs/pika.mp4
 ```
 
 Dtypes: [T2VA pipeline](T2VA-pipeline.md). Checkpoint stays BF16/F32; INT8 is

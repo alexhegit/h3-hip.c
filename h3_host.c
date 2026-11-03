@@ -185,6 +185,23 @@ int h3_fasth3_schedule_build(h3_sigma_schedule *schedule) {
     return 1;
 }
 
+int h3_pika_schedule_build(h3_sigma_schedule *schedule) {
+    static const int knots[7] = {1000, 750, 500, 250, 100, 40, 0};
+    if (!schedule) return 0;
+    memset(schedule, 0, sizeof(*schedule));
+    schedule->steps = 6;
+    for (int index = 0; index < 7; index++) {
+        double base = (double)knots[index] / 1000.0;
+        double video = H3_VIDEO_SIGMA_SHIFT * base /
+            (1.0 + (H3_VIDEO_SIGMA_SHIFT - 1.0) * base);
+        double audio = H3_AUDIO_SIGMA_SHIFT * base /
+            (1.0 + (H3_AUDIO_SIGMA_SHIFT - 1.0) * base);
+        schedule->video[index] = (float)video;
+        schedule->audio[index] = (float)audio;
+    }
+    return 1;
+}
+
 typedef struct {
     h3_layout *layout;
     size_t position_capacity;
@@ -684,5 +701,21 @@ int h3_euler_velocity_step(float *sample, const float *velocity, size_t count,
     float delta = sigma - sigma_next;
     for (size_t index = 0; index < count; index++)
         sample[index] += delta * velocity[index];
+    return 1;
+}
+
+int h3_renoise_velocity_step(float *sample, const float *velocity,
+                             const float *noise, size_t count,
+                             float sigma, float sigma_next) {
+    if (!sample || !velocity || !count || !isfinite(sigma) ||
+        !isfinite(sigma_next) || sigma < 0.0f || sigma_next < 0.0f ||
+        sigma_next > sigma) return 0;
+    if (sigma_next != 0.0f && !noise) return 0;
+    for (size_t index = 0; index < count; index++) {
+        float clean = sample[index] + sigma * velocity[index];
+        sample[index] = sigma_next == 0.0f
+            ? clean
+            : (1.0f - sigma_next) * clean + sigma_next * noise[index];
+    }
     return 1;
 }
