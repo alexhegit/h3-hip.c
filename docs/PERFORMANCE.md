@@ -25,6 +25,13 @@ Prompt 1 is **120.10 s** (93.54 s with `--taeh3`). Commands, the other
 canvases, and the comparison still are in [`PIKA.md`](PIKA.md). The
 v0.16.0 Halo tables below are unchanged.
 
+MI210 (gfx90a) was retimed on this tree on 2026-11-05 (`9dc75b1`).
+Warm fox-s2 / fox-fast are **10.76 s** / **18.97 s**. 864×480 · 15 s
+dense is **698 s**, `fox-15s.sh` **476 s**. 1344×768 · 15 s is dense
+**3522 s**, token reduction **2158 s**, Sol-Attn **2837 s**. Ledger:
+[`perf-runs/MI210_2026-11-05.md`](perf-runs/MI210_2026-11-05.md). The
+v0.13 table below keeps the 2026-09-12 MI210 cells.
+
 ## v0.16.0 (2026-10-09)
 
 `h3 --info` on that tag prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
@@ -307,7 +314,8 @@ Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 v0.13.0 vs v0.12.0: quality-path CDNA flash SDPA (K/V prefetch + P-tile
 LDS pad; 864×480 · 15 s dense **215 → 199 s** on MI300X) and Sol-Attn
 past 64k tokens (1344×768 · 15 s). Short-clip process E2E is unchanged
-at the noise floor. Halo / MI210 15 s rows were not re-timed.
+at the noise floor. Halo 15 s rows were not re-timed. MI210 was
+retimed on 2026-11-05; the cells below stay the 2026-09-12 numbers.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|
