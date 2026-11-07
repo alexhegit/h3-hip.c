@@ -28,6 +28,14 @@ __device__ __host__ inline uint16_t h3_f32_to_bf16(float value) {
     return *reinterpret_cast<uint16_t *>(&bf16);
 }
 
+/* Round-to-nearest-even like h3_f32_to_bf16, without the NaN select. Only for
+ * values known to be finite (softmax probabilities). */
+__device__ inline uint16_t h3_f32_to_bf16_finite(float value) {
+    uint32_t bits = __float_as_uint(value);
+    bits += 0x7fffu + ((bits >> 16) & 1u);
+    return (uint16_t)(bits >> 16);
+}
+
 /* Two bf16 in one dword so an LDS tile can be filled with b32 stores. */
 __device__ inline uint32_t h3_pack_bf16x2(float low, float high) {
     return (uint32_t)h3_f32_to_bf16(low) |
@@ -2224,11 +2232,19 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
     constexpr uint32_t THREADS = WAVES * 32u;
     constexpr uint32_t NT = BK / 16u;
+    /* BK=32 bf16 P rows are 64 bytes, so the 16-row matrix_a load maps every
+     * other row onto the same LDS banks; +8 halves skews them. */
+    constexpr uint32_t SP_LD = BK + 8u;
+    /* V is staged transposed, [dim][key], so the P@V matrix_b fragments are
+     * contiguous along key: row_major V fragments lowered to one ds_load_u16
+     * per element plus register packing on gfx11. */
+    constexpr uint32_t VT_LD = BK + 8u;
+    constexpr uint32_t KG = BK / 4u;
     typedef rocwmma::bfloat16_t bf16;
 
-    __shared__ uint16_t sk[BK * LD];
-    __shared__ uint16_t sv[BK * LD];
-    __shared__ uint16_t sp[WAVES][QROWS * BK];
+    __shared__ __align__(16) uint16_t sk[BK * LD];
+    __shared__ __align__(16) uint16_t svt[D * VT_LD];
+    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * SP_LD];
 
     const uint32_t tid = threadIdx.x;
     const uint32_t wave = tid >> 5;
@@ -2248,9 +2264,9 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
     uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
 
+    const uint16_t *qp = query + (size_t)(qbase * args.heads + head) * D;
     rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16, rocwmma::row_major>
         fq[8];
-    const uint16_t *qp = query + (size_t)(qbase * args.heads + head) * D;
 #pragma unroll
     for (int i = 0; i < 8; i++) {
         rocwmma::load_matrix_sync(
@@ -2275,25 +2291,81 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     const uint16_t *kp = key + kv_base;
     const uint16_t *vp = value + kv_base;
 
-    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
-        __syncthreads();
-        /* Coalesced uint2 staging: consecutive threads take consecutive
-         * 8-byte chunks; rows past the sequence end are zero filled. */
-        for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
-            uint32_t r = idx >> 7;
-            uint32_t d = idx & 127u;
-            uint32_t g = k0 + r;
-            uint2 kk = uint2{0u, 0u};
-            uint2 vv = uint2{0u, 0u};
-            if (g < sequence) {
-                size_t off = (size_t)g * kv_stride + d;
-                kk = *reinterpret_cast<const uint2 *>(kp + off);
-                vv = *reinterpret_cast<const uint2 *>(vp + off);
-            }
-            *reinterpret_cast<uint2 *>(sk + r * LD + d) = kk;
-            *reinterpret_cast<uint2 *>(sv + r * LD + d) = vv;
+    /* The next K/V tile is loaded into registers while the current one is in
+     * use, then committed to LDS after PV, so HBM latency overlaps the MMA
+     * instead of stalling every wave at the staging barrier. K chunks are
+     * 4 dims of one key, consecutive threads on consecutive chunks. V items
+     * are 4-key x 4-dim blocks, transposed in registers and written as four
+     * 8-byte rows; key group varies fastest so a wave's stores spread across
+     * banks instead of striding by VT_LD. Rows past the sequence end are
+     * zero filled. */
+    constexpr uint32_t K_CHUNKS = BK * D / 4u;
+    constexpr uint32_t V_ITEMS = KG * (D / 4u);
+    constexpr uint32_t K_PER = (K_CHUNKS + THREADS - 1u) / THREADS;
+    constexpr uint32_t V_PER = (V_ITEMS + THREADS - 1u) / THREADS;
+    uint2 kreg[K_PER];
+    uint2 vreg[V_PER][4];
+    auto load_tile = [&](uint32_t k0) {
+#pragma unroll
+        for (uint32_t u = 0; u < K_PER; u++) {
+            uint32_t c = tid + u * THREADS;
+            uint32_t g = k0 + (c >> 5);
+            kreg[u] = uint2{0u, 0u};
+            if (c < K_CHUNKS && g < sequence)
+                kreg[u] = *reinterpret_cast<const uint2 *>(
+                    kp + (size_t)g * kv_stride + (c & 31u) * 4u);
         }
-        __syncthreads();
+#pragma unroll
+        for (uint32_t u = 0; u < V_PER; u++) {
+            uint32_t it = tid + u * THREADS;
+            uint32_t kg = it % KG;
+            uint32_t d = (it / KG) * 4u;
+#pragma unroll
+            for (int r = 0; r < 4; r++) {
+                uint32_t g = k0 + kg * 4u + (uint32_t)r;
+                vreg[u][r] = uint2{0u, 0u};
+                if (it < V_ITEMS && g < sequence)
+                    vreg[u][r] = *reinterpret_cast<const uint2 *>(
+                        vp + (size_t)g * kv_stride + d);
+            }
+        }
+    };
+    auto store_tile = [&]() {
+#pragma unroll
+        for (uint32_t u = 0; u < K_PER; u++) {
+            uint32_t c = tid + u * THREADS;
+            if (c < K_CHUNKS)
+                *reinterpret_cast<uint2 *>(sk + (c >> 5) * LD +
+                                           (c & 31u) * 4u) = kreg[u];
+        }
+#pragma unroll
+        for (uint32_t u = 0; u < V_PER; u++) {
+            uint32_t it = tid + u * THREADS;
+            if (it >= V_ITEMS) continue;
+            const uint2 *rows = vreg[u];
+            uint16_t *dst = svt + (it / KG) * 4u * VT_LD + (it % KG) * 4u;
+            *reinterpret_cast<uint2 *>(dst) = uint2{
+                __builtin_amdgcn_perm(rows[1].x, rows[0].x, 0x05040100u),
+                __builtin_amdgcn_perm(rows[3].x, rows[2].x, 0x05040100u)};
+            *reinterpret_cast<uint2 *>(dst + VT_LD) = uint2{
+                __builtin_amdgcn_perm(rows[1].x, rows[0].x, 0x07060302u),
+                __builtin_amdgcn_perm(rows[3].x, rows[2].x, 0x07060302u)};
+            *reinterpret_cast<uint2 *>(dst + 2u * VT_LD) = uint2{
+                __builtin_amdgcn_perm(rows[1].y, rows[0].y, 0x05040100u),
+                __builtin_amdgcn_perm(rows[3].y, rows[2].y, 0x05040100u)};
+            *reinterpret_cast<uint2 *>(dst + 3u * VT_LD) = uint2{
+                __builtin_amdgcn_perm(rows[1].y, rows[0].y, 0x07060302u),
+                __builtin_amdgcn_perm(rows[3].y, rows[2].y, 0x07060302u)};
+        }
+    };
+
+    load_tile(0u);
+    store_tile();
+    __syncthreads();
+
+    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
+        const bool has_next = k0 + BK < sequence;
+        if (has_next) load_tile(k0 + BK);
 
         /* S = Q @ K^T. K is row-major [key][dim] in LDS, so reading it as
          * col_major with the same leading dimension yields K^T directly. */
@@ -2325,9 +2397,10 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
                            : -1e30f;
                 m = fmaxf(m, s[t]);
             }
-#pragma unroll
-            for (int off = 1; off < 16; off <<= 1)
-                m = fmaxf(m, h3_shfl_xor32(m, off));
+            m = fmaxf(m, h3_xor16<1>(m));
+            m = fmaxf(m, h3_xor16<2>(m));
+            m = fmaxf(m, h3_xor16<4>(m));
+            m = fmaxf(m, h3_xor16<8>(m));
             float new_max = fmaxf(row_max[i], m);
             alpha[i] = h3_fast_exp(row_max[i] - new_max);
             uint32_t prow = 2u * (uint32_t)i + rowg;
@@ -2336,10 +2409,13 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
             for (uint32_t t = 0; t < NT; t++) {
                 float p = h3_fast_exp(s[t] - new_max);
                 ps += p;
-                sp[wave][prow * BK + t * 16u + col] = h3_f32_to_bf16(p);
+                sp[wave][prow * SP_LD + t * 16u + col] =
+                    h3_f32_to_bf16_finite(p);
             }
-#pragma unroll
-            for (int off = 1; off < 16; off <<= 1) ps += h3_shfl_xor32(ps, off);
+            ps += h3_xor16<1>(ps);
+            ps += h3_xor16<2>(ps);
+            ps += h3_xor16<4>(ps);
+            ps += h3_xor16<8>(ps);
             row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
             row_max[i] = new_max;
         }
@@ -2355,17 +2431,23 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
             rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
                               rocwmma::row_major> fp;
             rocwmma::load_matrix_sync(
-                fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), BK);
+                fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), SP_LD);
 #pragma unroll
             for (int j = 0; j < 8; j++) {
                 rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
-                                  rocwmma::row_major> fv;
+                                  rocwmma::col_major> fv;
                 rocwmma::load_matrix_sync(
                     fv, reinterpret_cast<const bf16 *>(
-                            sv + t * 16u * LD + (uint32_t)j * 16u),
-                    LD);
+                            svt + (uint32_t)j * 16u * VT_LD + t * 16u),
+                    VT_LD);
                 rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
             }
+        }
+
+        if (has_next) {
+            __syncthreads();
+            store_tile();
+            __syncthreads();
         }
     }
 
