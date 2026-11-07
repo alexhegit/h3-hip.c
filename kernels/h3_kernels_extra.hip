@@ -3760,6 +3760,19 @@ static int h3_int8_hipblas_opt_in(int fc1_swiglu) {
     return fc1_swiglu ? fc1 : plain;
 }
 
+/* Row block for the hipBLAS INT8 paths. The epilogues launch one grid row per
+ * output row, and grid.y is capped at 65535; the I32/F32 scratch would also
+ * need ~12 GiB for fc1 at 109k tokens, which does not fit beside the DiT
+ * activations on a 48 GB card. ~1 GiB of scratch keeps each GEMM >= 9k rows. */
+static uint32_t h3_int8_row_chunk(uint32_t rows, size_t row_bytes) {
+    const size_t cap_bytes = (size_t)1 << 30;
+    size_t chunk = row_bytes ? cap_bytes / row_bytes : rows;
+    if (chunk > 32768u) chunk = 32768u;
+    if (chunk >= 256u) chunk &= ~(size_t)255u;
+    if (chunk < 1u) chunk = 1u;
+    return rows < chunk ? rows : (uint32_t)chunk;
+}
+
 static int h3_int8_hipblas_linear(const int8_t *input, const int8_t *weight,
                                   const float *input_scales,
                                   const float *weight_scales, uint16_t *output,
@@ -3771,36 +3784,44 @@ static int h3_int8_hipblas_linear(const int8_t *input, const int8_t *weight,
     if (args->input_dim % 4u || args->input_dim < 32u || gemm_n < 16u)
         return 0;
     if (!h3_int8_ensure_hipblas(stream)) return 0;
-    size_t bytes = (size_t)args->rows * gemm_n * sizeof(int32_t);
-    if (!h3_int8_ensure_i32_scratch(bytes)) return 0;
+    uint32_t chunk = h3_int8_row_chunk(args->rows,
+                                       (size_t)gemm_n * sizeof(int32_t));
+    if (!h3_int8_ensure_i32_scratch((size_t)chunk * gemm_n * sizeof(int32_t)))
+        return 0;
     int32_t alpha = 1, beta = 0;
     int m = (int)gemm_n;
-    int n = (int)args->rows;
     int k = (int)args->input_dim;
     int split = h3_int8_split_on();
     static hipEvent_t gemm_start = NULL, gemm_stop = NULL;
     static hipEvent_t epi_start = NULL, epi_stop = NULL;
-    if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
-    if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
-                      weight, HIP_R_8I, k, input, HIP_R_8I, k, &beta,
-                      h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
-                      HIPBLAS_GEMM_DEFAULT) != HIPBLAS_STATUS_SUCCESS) {
-        return 0;
-    }
-    if (split) h3_int8_split_end(gemm_start, gemm_stop, stream, "gemm");
-    uint32_t rows = args->rows;
     uint32_t cols = hidden;
     dim3 block(256, 1, 1);
-    dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
-    void *ep_host[] = {&h3_int8_i32_scratch, &input_scales, &weight_scales,
-                       &output, &rows, &cols};
     const void *ep = fc1_swiglu ?
         reinterpret_cast<const void *>(h3_i32_swiglu_to_bf16_kernel) :
         reinterpret_cast<const void *>(h3_i32_scale_to_bf16_kernel);
-    if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
-    int ok = hipLaunchKernel(ep, grid, block, ep_host, 0, stream) == hipSuccess;
-    if (split && ok) h3_int8_split_end(epi_start, epi_stop, stream, "epilogue");
-    return ok;
+    for (uint32_t start = 0; start < args->rows; start += chunk) {
+        uint32_t rows = args->rows - start < chunk ? args->rows - start : chunk;
+        const int8_t *chunk_input = input + (size_t)start * k;
+        const float *chunk_scales = input_scales + start;
+        uint16_t *chunk_output = output + (size_t)start * cols;
+        if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+        if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, (int)rows,
+                          k, &alpha, weight, HIP_R_8I, k, chunk_input,
+                          HIP_R_8I, k, &beta, h3_int8_i32_scratch, HIP_R_32I,
+                          m, HIPBLAS_COMPUTE_32I, HIPBLAS_GEMM_DEFAULT) !=
+            HIPBLAS_STATUS_SUCCESS) {
+            return 0;
+        }
+        if (split) h3_int8_split_end(gemm_start, gemm_stop, stream, "gemm");
+        dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
+        void *ep_host[] = {&h3_int8_i32_scratch, &chunk_scales, &weight_scales,
+                           &chunk_output, &rows, &cols};
+        if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+        if (hipLaunchKernel(ep, grid, block, ep_host, 0, stream) != hipSuccess)
+            return 0;
+        if (split) h3_int8_split_end(epi_start, epi_stop, stream, "epilogue");
+    }
+    return 1;
 }
 
 static int h3_int8_grouped_hipblas_on(void) {
@@ -3914,35 +3935,46 @@ static int h3_int8_hipblas_grouped_linear(
         }
     }
 
-    if (!h3_int8_ensure_i32_scratch(plane_bytes)) return 0;
+    uint32_t chunk = h3_int8_row_chunk(rows, (size_t)cols * sizeof(int32_t));
+    if (!h3_int8_ensure_i32_scratch((size_t)chunk * cols * sizeof(int32_t)))
+        return 0;
     int need_partial = groups > 1u;
     if (need_partial &&
-        !h3_int8_ensure_f32_scratch((size_t)rows * cols * sizeof(float)))
+        !h3_int8_ensure_f32_scratch((size_t)chunk * cols * sizeof(float)))
         return 0;
-    for (uint32_t g = 0; g < groups; g++) {
-        if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
-        hipblasStatus_t st = hipblasGemmEx(
-            h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
-            weight + (size_t)g * group_size, HIP_R_8I, lda,
-            input + (size_t)g * group_size, HIP_R_8I, lda, &beta,
-            h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
-            HIPBLAS_GEMM_DEFAULT);
-        if (split) h3_int8_split_end(gemm_start, gemm_stop, stream,
-                                     "grouped-gemm");
-        if (st != HIPBLAS_STATUS_SUCCESS) return 0;
-        uint32_t group = g;
-        int first = (g == 0u);
-        int last = (g + 1u == groups);
-        void *ep[] = {&h3_int8_i32_scratch, &input_scales, &weight_scales,
-                      &h3_int8_f32_scratch, &output, &rows, &cols, &groups,
-                      &group, &first, &last};
-        if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
-        int ok = hipLaunchKernel(
-            reinterpret_cast<const void *>(h3_i32_grouped_scale_epilogue_kernel),
-            grid, block, ep, 0, stream) == hipSuccess;
-        if (split && ok)
-            h3_int8_split_end(epi_start, epi_stop, stream, "grouped-epilogue");
-        if (!ok) return 0;
+    for (uint32_t start = 0; start < rows; start += chunk) {
+        uint32_t chunk_rows = rows - start < chunk ? rows - start : chunk;
+        const int8_t *chunk_input = input + (size_t)start * k_full;
+        const float *chunk_scales = input_scales + (size_t)start * groups;
+        uint16_t *chunk_output = output + (size_t)start * cols;
+        dim3 chunk_grid(((cols + 3u) / 4u + 255u) / 256u, chunk_rows, 1);
+        for (uint32_t g = 0; g < groups; g++) {
+            if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+            hipblasStatus_t st = hipblasGemmEx(
+                h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, (int)chunk_rows, k,
+                &alpha, weight + (size_t)g * group_size, HIP_R_8I, lda,
+                chunk_input + (size_t)g * group_size, HIP_R_8I, lda, &beta,
+                h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
+                HIPBLAS_GEMM_DEFAULT);
+            if (split) h3_int8_split_end(gemm_start, gemm_stop, stream,
+                                         "grouped-gemm");
+            if (st != HIPBLAS_STATUS_SUCCESS) return 0;
+            uint32_t group = g;
+            int first = (g == 0u);
+            int last = (g + 1u == groups);
+            void *ep[] = {&h3_int8_i32_scratch, &chunk_scales, &weight_scales,
+                          &h3_int8_f32_scratch, &chunk_output, &chunk_rows,
+                          &cols, &groups, &group, &first, &last};
+            if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+            int ok = hipLaunchKernel(
+                reinterpret_cast<const void *>(
+                    h3_i32_grouped_scale_epilogue_kernel),
+                chunk_grid, block, ep, 0, stream) == hipSuccess;
+            if (split && ok)
+                h3_int8_split_end(epi_start, epi_stop, stream,
+                                  "grouped-epilogue");
+            if (!ok) return 0;
+        }
     }
     return 1;
 }
