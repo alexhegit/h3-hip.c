@@ -1058,7 +1058,7 @@ int h3_gpu_has_int8_mlp(const h3_gpu *gpu) {
     if (e && strcmp(e, "0") == 0) return 0;
     if (e && strcmp(e, "1") == 0) return 1;
     /* INT8 is default on all ISAs: faster and lower VRAM than BF16 on both
-     * CDNA (gfx90a/gfx942) and RDNA (gfx1151). Set H3_INT8_MLP=0 to opt out. */
+     * CDNA (gfx90a/gfx942) and RDNA (gfx1100/gfx1151). Set H3_INT8_MLP=0 to opt out. */
     return 1;
 }
 
@@ -3117,7 +3117,7 @@ static int h3_hip_sol_supported(void) {
              hipGetDeviceProperties(&props, device) == hipSuccess &&
              (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
               strncmp(props.gcnArchName, "gfx942", 6) == 0 ||
-              strncmp(props.gcnArchName, "gfx1151", 7) == 0);
+              strncmp(props.gcnArchName, "gfx11", 5) == 0);
     return cached;
 }
 
@@ -3139,7 +3139,7 @@ static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
         warned = 1;
         fprintf(stderr,
                 "h3: --sol-attn: unsupported GPU; using dense SDPA "
-                "(supported: gfx90a, gfx942, gfx1151)\n");
+                "(supported: gfx90a, gfx942, gfx1100, gfx1151)\n");
     }
     return 0;
 }

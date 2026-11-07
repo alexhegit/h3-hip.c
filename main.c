@@ -38,7 +38,7 @@ static void usage(const char *program) {
         "      --token-reduction  Pair video tokens in middle DiT blocks\n"
         "                         (faster; visible quality loss — off by default)\n"
         "      --sol-attn         Lossy sparse SDPA for long T2VA (off by\n"
-        "                         default). Supports gfx90a/gfx942/gfx1151.\n"
+        "                         default). Supports gfx90a/gfx942/gfx1100/gfx1151.\n"
         "                         See docs/SOL_ATTN.md\n"
         "      --fbc              First-block cache: skip later DiT blocks\n"
         "                         when block 0's residual is stable (lossy,\n"

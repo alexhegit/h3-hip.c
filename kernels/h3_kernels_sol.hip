@@ -2,14 +2,16 @@
  * kept tiles, pooled K/V in the online softmax for skipped tiles.
  * Included from h3_kernels.hip so it shares the CDNA flash helpers. */
 
-static int h3_hip_gfx1151_sol(void) {
+/* Wave32 rocWMMA Sol-Attn. gfx1100 (W7900) shares the gfx11 fragment layout
+ * probed on gfx1151; CDNA stays on the MFMA kernel. */
+static int h3_hip_rdna_sol(void) {
     static int cached = -1;
     if (cached >= 0) return cached;
     int device = 0;
     hipDeviceProp_t props;
     cached = hipGetDevice(&device) == hipSuccess &&
              hipGetDeviceProperties(&props, device) == hipSuccess &&
-             strncmp(props.gcnArchName, "gfx1151", 7) == 0;
+             strncmp(props.gcnArchName, "gfx11", 5) == 0;
     return cached;
 }
 
@@ -789,7 +791,7 @@ extern "C" int h3_launch_sdpa_bf16_sol(const uint16_t *query,
         return 0;
     }
     const int cdna = h3_hip_gfx90a();
-    const int rdna = h3_hip_gfx1151_sol();
+    const int rdna = h3_hip_rdna_sol();
     if (!cdna && !rdna)
         return h3_launch_sdpa_bf16(query, key, value, output, args, stream);
     h3_sdpa_args host_args = *args;
