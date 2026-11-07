@@ -113,6 +113,10 @@ int h3_gpu_get_stats(const h3_gpu *gpu, h3_gpu_stats *stats);
  * print wall time alongside command-buffer GPU time and allocation counters. */
 void h3_gpu_profile_set_label(h3_gpu *gpu, const char *label);
 void h3_gpu_profile_mark(h3_gpu *gpu, const char *phase);
+/* While on, *_device allocations ignore the VRAM reserve kept for activations
+ * (H3_DEVICE_WEIGHT_RESERVE_GIB) because they are those activations. No-op on
+ * unified-memory backends. */
+void h3_gpu_set_activation_arena(h3_gpu *gpu, int on);
 
 int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                       const h3_gpu_tensor *input, const h3_gpu_tensor *weight,

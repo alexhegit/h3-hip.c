@@ -319,10 +319,15 @@ static size_t h3_hip_device_weight_reserve(void) {
     return cached ? cached : 1;
 }
 
-static int h3_hip_device_weight_fits(size_t request) {
+/* The reserve exists so activations find VRAM after the weights load, so the
+ * activation arena itself only keeps a small allocator margin. Kernels re-read
+ * activations many times per step; a pinned-host fallback costs ~12x on SDPA
+ * and ~60x on INT8 GEMM over PCIe. */
+static int h3_hip_device_weight_fits(size_t request, int activation) {
     size_t free_bytes = 0, total_bytes = 0;
     if (hipMemGetInfo(&free_bytes, &total_bytes) != hipSuccess) return 0;
-    size_t reserve = h3_hip_device_weight_reserve();
+    size_t reserve = activation ? ((size_t)256 << 20)
+                                : h3_hip_device_weight_reserve();
     if (reserve > total_bytes / 2) reserve = total_bytes / 2;
     return request <= free_bytes && free_bytes - request >= reserve;
 }
@@ -591,6 +596,8 @@ struct h3_gpu {
     size_t kv_hm_scratch_bytes;
     /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
     int sdpa_kv_already_hm;
+    /* Device allocations skip the weight reserve (h3_gpu_set_activation_arena). */
+    int activation_arena;
     /* Sol-Attn K-mean / V-sum: 2 * n_kv_blocks * heads * 128 floats. */
     void *sol_scratch;
     size_t sol_scratch_bytes;
@@ -874,7 +881,7 @@ static struct h3_gpu_tensor *h3_hip_tensor_new_ex(struct h3_gpu *gpu,
     double alloc_start = h3_hip_now();
     size_t request = bytes > 0 ? bytes : 1;
     if (weight && h3_hip_device_weights() &&
-        h3_hip_device_weight_fits(request) &&
+        h3_hip_device_weight_fits(request, gpu->activation_arena) &&
         hipMalloc(&tensor->data, request) == hipSuccess) {
         tensor->device = 1;
         /* hipHostMalloc hands back zeroed pages and callers depend on it;
@@ -1418,6 +1425,10 @@ void h3_gpu_profile_set_label(h3_gpu *gpu, const char *label) {
     if (!gpu || !label) return;
     snprintf(gpu_ptr(gpu)->profile_label, sizeof(gpu_ptr(gpu)->profile_label),
              "%s", label);
+}
+
+void h3_gpu_set_activation_arena(h3_gpu *gpu, int on) {
+    if (gpu) gpu_ptr(gpu)->activation_arena = on ? 1 : 0;
 }
 
 void h3_gpu_profile_mark(h3_gpu *gpu, const char *phase) {

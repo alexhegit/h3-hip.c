@@ -978,6 +978,11 @@ void h3_gpu_profile_set_label(h3_gpu *opaque, const char *label) {
     gpu.profileLabel = [NSString stringWithUTF8String:label];
 }
 
+void h3_gpu_set_activation_arena(h3_gpu *opaque, int on) {
+    (void)opaque;
+    (void)on;
+}
+
 void h3_gpu_profile_mark(h3_gpu *opaque, const char *phase) {
     H3GPU *gpu = GPU(opaque);
     if (!gpu || !phase || !*phase || !h3_gpu_profile_enabled()) return;

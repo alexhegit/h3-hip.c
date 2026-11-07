@@ -1929,8 +1929,12 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
         }
     }
     if (dit->int8_qkv || dit->fp8_qkv) {
-        dit->int8_qkv_ws = h3_gpu_tensor_new_bf16_device(
-            dit->gpu, (size_t)sequence * INNER * 3);
+        /* The quantized QKV path never writes dit->qkv as a projection; under
+         * activation aliases it only backs attention_heads and mod_mlp, which
+         * are dead by the next QKV projection. */
+        dit->int8_qkv_ws = dit->activation_aliases ? dit->qkv :
+            h3_gpu_tensor_new_bf16_device(
+                dit->gpu, (size_t)sequence * INNER * 3);
         if (!dit->int8_qkv_ws) {
             fail(error, error_size,
                  "cannot allocate int8 QKV workspace: %s",
@@ -2249,7 +2253,10 @@ static h3_dit *load_dit(const char *weight_directory,
     STAGE("rope and maps");
     if (!load_core(dit, progress, progress_opaque, error, error_size)) goto failed;
     STAGE("transformer core");
-    if (!allocate_activations(dit, error, error_size)) goto failed;
+    h3_gpu_set_activation_arena(dit->gpu, 1);
+    int activations_ok = allocate_activations(dit, error, error_size);
+    h3_gpu_set_activation_arena(dit->gpu, 0);
+    if (!activations_ok) goto failed;
     STAGE("activations");
 #undef STAGE
     if ((wanted_video_condition && !h3_gpu_tensor_write_f32_range(
@@ -4006,6 +4013,7 @@ void h3_dit_free(h3_dit *dit) {
     if (dit->activation_aliases) {
         dit->attention_heads = NULL;
         dit->mod_mlp = NULL;
+        if (dit->int8_qkv_ws == dit->qkv) dit->int8_qkv_ws = NULL;
     }
     FREE(video_input); FREE(audio_input);
     FREE(video_projected_f32); FREE(audio_projected_f32);
