@@ -1,17 +1,20 @@
 # AGENTS.md — h3-hip.c
 
-HIP port of antirez/h3.c for AMD GPUs. One tree, three ISAs.
+HIP port of antirez/h3.c for AMD GPUs. One tree, four ISAs.
 
 ## Build
 
 `HIP_ARCH` is **required** on every build (except `make clean`). The Makefile will error without it.
 
 ```bash
-make HIP_ARCH=gfx1151 -j$(nproc) h3   # Strix Halo (RDNA)
+make HIP_ARCH=gfx1151 -j$(nproc) h3   # Strix Halo (RDNA3.5, wave32)
+make HIP_ARCH=gfx1201 -j$(nproc) h3   # Radeon AI PRO R9700 (RDNA4, wave32)
 make HIP_ARCH=gfx90a  -j$(nproc) h3   # MI210 / MI250X (CDNA2)
 make HIP_ARCH=gfx942  -j$(nproc) h3   # MI300X (CDNA3)
 make clean                              # no HIP_ARCH needed
 ```
+
+`gfx1200` uses the same wave32 path as `gfx1201`. There is no `/opt/rocm` on a TheRock wheel install: put that runtime's `bin` on `PATH` so `hipcc` and `hipconfig` resolve, or pass `ROCM_PATH` as the `_rocm_sdk_devel` prefix.
 
 After changing arch, always `make clean` before rebuilding.
 
@@ -42,13 +45,15 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - **Metal sources** (`h3_gpu.m`, `h3_shaders.metal`, `h3_metal.m`) are reference-only for upstream parity — not compiled on Linux
 - **Major pipelines:** DiT (`h3_dit.c`, `h3_dit_schedule.c`), Video VAE (`h3_video_vae.c`), Audio VAE (`h3_audio_vae.c`), Text encoder (`h3_text_encoder.c`), Vision encoder (`h3_vision_encoder.c`), FFmpeg mux (`h3_ffmpeg.c`)
 - **HTTP daemon (experimental):** `./h3 -d MODEL --serve` → `h3d.c` (loopback JSON+SSE, protocol **v1alpha**). Bind `127.0.0.1:8571` unless `H3D_BIND`/`H3D_PORT` are set. Do not expose the daemon on a public interface. Contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md). Agent plugin lives in a separate repo (`dsh-plugin-h3-hip`).
-- **Wave mode:** gfx1151 uses wave32 (rocWMMA); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
+- **Wave mode:** gfx1151 and gfx1201 use wave32 (rocWMMA; gfx12 accumulator rows differ, see `H3_WMMA_ACC_ROW`); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
 
 ## Key gotchas
 
 - `H3_HIP_DEVICE=N` or `HIP_VISIBLE_DEVICES=N` selects GPU on multi-GPU boxes. Do not run two weight-streaming T2VA jobs simultaneously.
 - Multi-task parallelism is **not supported** on a single GPU (shared kernel state). Use `HIP_VISIBLE_DEVICES` for multi-process isolation. See `docs/DESIGN_MULTI_TASK.md`.
 - `H3_INT8_MLP=1` enables INT8 DiT on all ISAs (default is INT8 on all platforms). Set `H3_INT8_MLP=0` to use BF16.
+- `H3_INT8_HOST=1` keeps those INT8 linears in host RAM and copies one block to the GPU at a time. Same numbers as resident INT8. This is how 1344×768 fits in 32 GiB. It does not combine with `--ssd-streaming`. The copy waits out the previous block.
+- Device tensors that do not fit under `H3_DEVICE_WEIGHT_RESERVE_GIB` (20 GiB on ≥48 GiB cards, 4 GiB below that) silently fall back to pinned host memory, and kernels then read them over PCIe. On a 32 GiB card that made the 15 s video VAE ~20× slower. `H3_HIP_MEMLOG=1` prints every fallback and the free VRAM at each context.
 - `H3_FP8_MLP=1` enables FP8 DiT on gfx942 only (experimental, uses hipBLASLt). FP8 supersedes INT8 when set.
 - `H3_FP8_CLIP=0.95` (default) weight quantization clip factor. Lower values improve PSNR (+1.2 dB at 0.95 vs 1.0).
 - `H3_INT8_VAE=1` enables INT8 Video VAE weights (69% VRAM reduction, ~9% slower).

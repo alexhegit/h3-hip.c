@@ -1,7 +1,7 @@
 # Performance
 
 Headline numbers. Timed SKUs: **Strix Halo (gfx1151)**, **MI210 (gfx90a)**,
-**MI300X (gfx942)**. Build with an explicit `HIP_ARCH`
+**MI300X (gfx942)**, **Radeon AI PRO R9700 (gfx1201)**. Build with an explicit `HIP_ARCH`
 ([Getting started](wiki/Getting-started.md)). MI250 / MI250X share `gfx90a`
 with MI210 but are not these numbers. Wall time moves with page-cache state. **Process E2E** is
 `/usr/bin/time` until `h3: wrote` the muxed MP4. **DiT total** is
@@ -31,6 +31,50 @@ dense is **698 s**, `fox-15s.sh` **476 s**. 1344×768 · 15 s is dense
 **3522 s**, token reduction **2158 s**, Sol-Attn **2837 s**. Ledger:
 [`perf-runs/MI210_2026-11-05.md`](perf-runs/MI210_2026-11-05.md). The
 v0.13 table below keeps the 2026-09-12 MI210 cells.
+
+## Radeon AI PRO R9700 (gfx1201) — branch `r9700`, 2026-11-06
+
+One R9700 (RDNA4, 64 CUs, 29.86 GiB), `make HIP_ARCH=gfx1201`, default INT8
+DiT, one job at a time. Every cell is R9700 process E2E in seconds with the
+MI300X ledger number in parentheses. A bare number means MI300X has no
+cell; a dash means the case is not in the matrix. Steps / layers / reuse per
+canvas follow the MI300X matrix: 50 / 50 / 1 on the 5 s canvases, 20 / 45 / 2
+on the 15 s canvases; FastH3, VSA and Pika force their own schedule with
+50 layers, `--reuse 1`. Denoise / SDPA / linear splits, peaks, md5s and
+PSNR / SSIM versus dense:
+[`perf-runs/R9700_2026-11-06.md`](perf-runs/R9700_2026-11-06.md).
+
+| path | 512×512 · 22 frames | 832×480 · 5 s | 864×480 · 15 s | 1344×768 · 5 s ¹ | 1344×768 · 15 s ¹ |
+|---|---:|---:|---:|---:|---:|
+| `bench/fox-s2.sh` (warm) | 35.9 (10.6) | — | — | — | — |
+| `bench/fox-fast.sh` | 46.1 (9.8) | — | — | — | — |
+| dense ² | — | **470.9** (166.9) | **600.9** (213.3) | **2204.7** (668.2) | **2787.6** (947.0) |
+| `--token-reduction` | — | 357.7 (127.6) | 433.1 (149.0) | 1556.3 (439.6) | 1745.7 (611.7) ² |
+| TR, `--reuse 3` (`fox-15s-fast.sh`) | — | — | 342.3 (117.9) | — | — |
+| TR schedule (`fox-15s-sched.sh`) | — | — | 337.7 | — | — |
+| `--fbc` | — | 148.6 (53.3) | 399.6 (136.4) | 491.3 | 1643.2 ² |
+| `--sol-attn` | — | 423.2 (145.6) | 478.2 (216.5) ³ | 1743.2 | 1913.9 (719.2) ² |
+| FastH3 4-step | — | 101.5 (30.1) | 419.3 (108.7) | 278.7 (96.5) | 1254.1 ² |
+| FastH3 + TAEH3 | — | 78.9 (27.7) | 368.0 (89.1) | — | — |
+| VSA | — | 104.8 (32.6) | 282.1 (95.1) ⁴ | — | — |
+| VSA + TAEH3 | — | 76.8 (26.0) | 225.6 (76.7) ⁴ | 188.0 (62.2) | does not fit ⁵ |
+| Pika 6-step | — | 115.7 (35.0) | 577.1 (137.5) | 371.7 (120.1) | 1768.4 ² |
+| Pika + TAEH3 | — | 97.2 (28.7) | 525.3 (119.5) | 316.9 (93.5) | — |
+
+¹ `H3_INT8_HOST=1`; resident INT8 does not fit at 1344×768.
+² Measured with the row-chunked grouped INT8 change. The other cells predate
+it; their outputs are bit-identical with it and only their linear time
+drops (dense: −1 % to −8 % E2E). At 1344×768 · 15 s the change also replaces
+a silent fallback above 65535 rows, so those outputs differ.
+³ MI300X cell is the older-binary A/B in [`SOL_ATTN.md`](SOL_ATTN.md).
+⁴ Needs `H3_INT8_HOST=1` on this canvas too.
+⁵ VSA tile buffers need 11.63 GiB on top of the 24 GiB DiT working set;
+see [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) KI-006.
+
+Dense is 2.8–3.3× MI300X. fox-s2 and fox-fast are bound by reading ~98 GiB
+of weights on a 59 GiB host. The published RTX 5090 numbers for the
+1344×768 · 5 s job are 1045.4 s baseline, 708.3 s with Sol-Attn, and
+231.2 s full opt.
 
 ## v0.16.0 (2026-10-09)
 

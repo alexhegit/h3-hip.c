@@ -5745,6 +5745,17 @@ static int bench_sdpa(h3_gpu *gpu) {
     printf("sdpa bf16 seq=%d heads=%d dim=%d: %.1f ms%s%s\n", sequence, heads,
            HEAD_DIM, ms, getenv("H3_SDPA_LEGACY") ? " (legacy)" : "",
            kv_hm ? " (kv-hm)" : "");
+    if (getenv("H3_BENCH_SDPA_HASH")) {
+        uint16_t *result = calloc(count, sizeof(*result));
+        CHECK(result && h3_gpu_tensor_read_bf16(output, result, count));
+        uint64_t hash = 1469598103934665603ull;
+        for (size_t i = 0; i < count; i++) {
+            hash ^= result[i];
+            hash *= 1099511628211ull;
+        }
+        printf("sdpa bf16 output hash %016llx\n", (unsigned long long)hash);
+        free(result);
+    }
     if (getenv("H3_BENCH_SDPA_SOL")) {
         uint16_t *dense = calloc(count, sizeof(*dense));
         CHECK(dense && h3_gpu_tensor_read_bf16(output, dense, count));
@@ -5928,10 +5939,24 @@ static int bench_int8_linear(h3_gpu *gpu) {
     uint16_t *input = calloc(input_elems, sizeof(*input));
     uint16_t *weight_bf16 = calloc(weight_elems, sizeof(*weight_bf16));
     CHECK(input && weight_bf16);
-    for (size_t i = 0; i < input_elems; i += 17)
-        input[i] = f32_to_bf16((float)((int)(i % 17) - 8) * 0.03125f);
-    for (size_t i = 0; i < weight_elems; i += 13)
-        weight_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.015625f);
+    if (getenv("H3_BENCH_INT8_HASH")) {
+        /* Dense, irregular values: the sparse pattern below sums exactly and
+         * cannot tell two float accumulation orders apart. */
+        uint32_t state = 12345u;
+        for (size_t i = 0; i < input_elems; i++) {
+            state = state * 1664525u + 1013904223u;
+            input[i] = f32_to_bf16((float)(int32_t)(state >> 8) * 1.0e-7f);
+        }
+        for (size_t i = 0; i < weight_elems; i++) {
+            state = state * 1664525u + 1013904223u;
+            weight_bf16[i] = f32_to_bf16((float)(int32_t)(state >> 8) * 3.0e-9f);
+        }
+    } else {
+        for (size_t i = 0; i < input_elems; i += 17)
+            input[i] = f32_to_bf16((float)((int)(i % 17) - 8) * 0.03125f);
+        for (size_t i = 0; i < weight_elems; i += 13)
+            weight_bf16[i] = f32_to_bf16((float)((int)(i % 13) - 6) * 0.015625f);
+    }
     h3_gpu_tensor *gpu_input = h3_gpu_tensor_new_bf16_device(gpu, input_elems);
     h3_gpu_tensor *gpu_weight_bf16 =
         h3_gpu_tensor_new_bf16_device(gpu, weight_elems);
@@ -6022,6 +6047,19 @@ static int bench_int8_linear(h3_gpu *gpu) {
         printf("int8 grouped %s M=%d K=%d N=%d g=%d: %.1f ms (%.1f TFLOP/s)\n",
                labels[mode], ROWS, INPUT_DIM, OUTPUT_DIM, GROUP_SIZE, ms,
                flops / (ms * 1e9));
+        if (mode == 0 && getenv("H3_BENCH_INT8_HASH")) {
+            uint16_t *result = calloc(output_elems, sizeof(*result));
+            CHECK(result && h3_gpu_tensor_read_bf16(output, result,
+                                                    output_elems));
+            uint64_t hash = 1469598103934665603ull;
+            for (size_t i = 0; i < output_elems; i++) {
+                hash ^= result[i];
+                hash *= 1099511628211ull;
+            }
+            printf("int8 grouped output hash %016llx\n",
+                   (unsigned long long)hash);
+            free(result);
+        }
     }
     unsetenv("H3_INT8_LEGACY");
     h3_gpu_tensor_free(gpu_input);
@@ -6121,12 +6159,16 @@ static int bench_linear_f32(h3_gpu *gpu) {
             input[i] = (float)((int)(i % 11) - 5) * 0.03125f;
         for (size_t i = 0; i < weight_elems; i += 13)
             weight[i] = (float)((int)(i % 9) - 4) * 0.015625f;
+        /* The video VAE keeps these in device memory; pinned host operands
+         * would time PCIe instead of the GEMM on a discrete GPU. */
         h3_gpu_tensor *gpu_input =
-            h3_gpu_tensor_from_f32(gpu, input, input_elems);
+            h3_gpu_tensor_new_f32_device(gpu, input_elems);
         h3_gpu_tensor *gpu_weight =
-            h3_gpu_tensor_from_f32(gpu, weight, weight_elems);
-        h3_gpu_tensor *output = h3_gpu_tensor_new_f32(gpu, output_elems);
+            h3_gpu_tensor_new_f32_device(gpu, weight_elems);
+        h3_gpu_tensor *output = h3_gpu_tensor_new_f32_device(gpu, output_elems);
         CHECK(gpu_input && gpu_weight && output);
+        CHECK(h3_gpu_tensor_write_f32(gpu_input, input, input_elems));
+        CHECK(h3_gpu_tensor_write_f32(gpu_weight, weight, weight_elems));
         double flops =
             2.0 * (double)rows * (double)output_dim * (double)input_dim;
         const char *modes[] = { NULL, "1" };

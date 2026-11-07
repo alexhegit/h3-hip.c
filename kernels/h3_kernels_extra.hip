@@ -880,7 +880,7 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
     __syncthreads();
     compute();
 
-    /* Accumulator element i of every fragment belongs to row 2*i + (lane>>4),
+    /* Accumulator element i belongs to row H3_WMMA_ACC_ROW(i, lane>>4).
      * lane&15 picks the column. */
     uint32_t lane = tid & 31u;
     uint32_t frag_col = lane & 15u, row_half = lane >> 4;
@@ -895,7 +895,7 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
 #pragma unroll
             for (int e = 0; e < 8; e++) {
                 uint32_t row = block_row + wm * (uint32_t)WM +
-                               (uint32_t)i * 16u + 2u * (uint32_t)e + row_half;
+                               (uint32_t)i * 16u + H3_WMMA_ACC_ROW(e, row_half);
                 if (row < rows)
                     output[(size_t)row * cols + col] = acc[i][j].x[e] + b;
             }
@@ -2052,6 +2052,18 @@ extern "C" int h3_launch_quantize_bf16_int8_groups(
 #include <hip/hip_fp8.h>
 #endif
 
+/* E4M3 FNUZ is the gfx942 format. The converting constructor is not available
+ * when this file is compiled for RDNA, and FP8 DiT is not launched there. */
+__device__ inline uint8_t h3_fp8_e4m3_fnuz_bits(float val) {
+#if defined(__gfx942__)
+    __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
+    return fp8_val.__x;
+#else
+    (void)val;
+    return 0;
+#endif
+}
+
 __global__ void h3_quantize_bf16_fp8_rows_kernel(
     const uint16_t *input, void *output, float *scales,
     h3_int8_quant_args args) {
@@ -2139,8 +2151,7 @@ __global__ void h3_quantize_bf16_fp8_rows_kernel(
                 float val = h3_bf16_to_f32(vals[i]) * inverse;
                 if (val > FP8_MAX) val = FP8_MAX;
                 if (val < -FP8_MAX) val = -FP8_MAX;
-                __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
-                qpack |= (uint32_t)(fp8_val.__x) << (8 * i);
+                qpack |= (uint32_t)h3_fp8_e4m3_fnuz_bits(val) << (8 * i);
             }
             *reinterpret_cast<uint32_t *>((uint8_t *)output + base + column) = qpack;
         }
@@ -2149,8 +2160,7 @@ __global__ void h3_quantize_bf16_fp8_rows_kernel(
             float val = h3_bf16_to_f32(input[base + column]) * inverse;
             if (val > FP8_MAX) val = FP8_MAX;
             if (val < -FP8_MAX) val = -FP8_MAX;
-            __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
-            ((uint8_t *)output)[base + column] = fp8_val.__x;
+            ((uint8_t *)output)[base + column] = h3_fp8_e4m3_fnuz_bits(val);
         }
     }
 }
@@ -2282,7 +2292,8 @@ __device__ inline int32_t h3_i8dot4_scalar(int32_t a, int32_t b, int32_t acc) {
 /* gfx11/1151: packed signed int8 dot. CDNA: sdot4. Scalar fallback otherwise. */
 __device__ inline int32_t h3_i8dot4(int32_t a, int32_t b, int32_t acc) {
 #if defined(__gfx1151__) || defined(__gfx1150__) || defined(__gfx1100__) || \
-    defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__)
+    defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1200__) || defined(__gfx1201__)
     return __builtin_amdgcn_sudot4(true, a, true, b, acc, false);
 #elif defined(__has_builtin) && __has_builtin(__builtin_amdgcn_sdot4)
     return __builtin_amdgcn_sdot4(a, b, acc, false);
@@ -3536,8 +3547,44 @@ static int h3_int8_ensure_f32_scratch(size_t bytes) {
     return 1;
 }
 
+/* Cap on the int32 GEMM product per hipBLAS call. H3_INT8_I32_CHUNK_MIB=0
+ * removes the cap. */
+static size_t h3_int8_i32_chunk_bytes(void) {
+    static size_t cached = (size_t)-1;
+    if (cached == (size_t)-1) {
+        const char *e = getenv("H3_INT8_I32_CHUNK_MIB");
+        unsigned long mib = e && *e ? strtoul(e, NULL, 10) : 1024ul;
+        cached = (size_t)mib << 20;
+    }
+    return cached;
+}
+
 static int8_t *h3_int8_pack_scratch = NULL;
 static size_t h3_int8_pack_scratch_bytes = 0;
+
+/* Pipeline phases run one after another in separate contexts. Scratch sized
+ * by the DiT sequence would otherwise stay allocated through the VAE. */
+extern "C" void h3_kernels_release_scratch(void) {
+    (void)hipDeviceSynchronize();
+    (void)hipFree(h3_sdpa_scratch);
+    h3_sdpa_scratch = NULL;
+    h3_sdpa_scratch_bytes = 0;
+    (void)hipFree(h3_sdpa_bf16_scratch);
+    h3_sdpa_bf16_scratch = NULL;
+    h3_sdpa_bf16_scratch_bytes = 0;
+    (void)hipFree(h3_sdpa_bf16_direct_scratch);
+    h3_sdpa_bf16_direct_scratch = NULL;
+    h3_sdpa_bf16_direct_scratch_bytes = 0;
+    (void)hipFree(h3_int8_i32_scratch);
+    h3_int8_i32_scratch = NULL;
+    h3_int8_i32_scratch_bytes = 0;
+    (void)hipFree(h3_int8_f32_scratch);
+    h3_int8_f32_scratch = NULL;
+    h3_int8_f32_scratch_bytes = 0;
+    (void)hipFree(h3_int8_pack_scratch);
+    h3_int8_pack_scratch = NULL;
+    h3_int8_pack_scratch_bytes = 0;
+}
 
 static int h3_int8_ensure_i8_scratch(size_t bytes) {
     if (bytes <= h3_int8_pack_scratch_bytes) return 1;
@@ -3741,6 +3788,68 @@ h3_i32_grouped_reduce_to_bf16_kernel(const int32_t *acc, const float *sa,
     }
 }
 
+/* Same planes, but the arithmetic of the per-group loop epilogue
+ * (h3_i32_grouped_scale_epilogue_kernel): t = v * sa * sb, then t += partial
+ * for every group after the first. Rows past the batched cap use this so the
+ * result matches the loop path bit for bit. */
+__global__ void __launch_bounds__(256)
+h3_i32_grouped_reduce_seq_to_bf16_kernel(const int32_t *acc, const float *sa,
+                                         const float *sb, uint16_t *out,
+                                         uint32_t rows, uint32_t cols,
+                                         uint32_t groups) {
+    /* The loop epilogue compiles to mul, mul, add; a fused v_fmac here
+     * rounds differently. */
+#pragma clang fp contract(off)
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= cols) return;
+    size_t plane = (size_t)rows * cols;
+    uint16_t *dst = out + (size_t)row * cols + col;
+    if (col + 3u < cols) {
+        float p0 = 0.0f, p1 = 0.0f, p2 = 0.0f, p3 = 0.0f;
+        for (uint32_t g = 0; g < groups; g++) {
+            float srow = sa[(size_t)row * groups + g];
+            const int32_t *in =
+                acc + (size_t)g * plane + (size_t)row * cols + col;
+            int4 v = *reinterpret_cast<const int4 *>(in);
+            float t0 = (float)v.x * srow * sb[col];
+            float t1 = (float)v.y * srow * sb[col + 1u];
+            float t2 = (float)v.z * srow * sb[col + 2u];
+            float t3 = (float)v.w * srow * sb[col + 3u];
+            if (g) {
+                t0 += p0;
+                t1 += p1;
+                t2 += p2;
+                t3 += p3;
+            }
+            p0 = t0;
+            p1 = t1;
+            p2 = t2;
+            p3 = t3;
+        }
+        uint16_t o0 = h3_f32_to_bf16(p0);
+        uint16_t o1 = h3_f32_to_bf16(p1);
+        uint16_t o2 = h3_f32_to_bf16(p2);
+        uint16_t o3 = h3_f32_to_bf16(p3);
+        uint2 packed;
+        packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+        packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < cols; j++) {
+            float p = 0.0f;
+            for (uint32_t g = 0; g < groups; g++) {
+                float srow = sa[(size_t)row * groups + g];
+                int32_t v = acc[(size_t)g * plane + (size_t)row * cols + col + j];
+                float t = (float)v * srow * sb[col + j];
+                if (g) t += p;
+                p = t;
+            }
+            dst[j] = h3_f32_to_bf16(p);
+        }
+    }
+}
+
 static int h3_int8_hipblas_opt_in(int fc1_swiglu) {
     static int plain = -1;
     static int fc1 = -1;
@@ -3771,36 +3880,56 @@ static int h3_int8_hipblas_linear(const int8_t *input, const int8_t *weight,
     if (args->input_dim % 4u || args->input_dim < 32u || gemm_n < 16u)
         return 0;
     if (!h3_int8_ensure_hipblas(stream)) return 0;
-    size_t bytes = (size_t)args->rows * gemm_n * sizeof(int32_t);
+    /* The int32 product is untracked device memory. Unchunked it is
+     * rows x gemm_n x 4 bytes (12.5 GiB for 1344x768 15 s fc1), which on a
+     * 32 GiB card pushes tracked tensors into pinned host memory. Integer
+     * GEMM rows are independent, so chunking does not change the result. */
+    uint32_t chunk_rows = args->rows;
+    const size_t chunk_cap = h3_int8_i32_chunk_bytes();
+    if (chunk_cap && (size_t)chunk_rows * gemm_n * sizeof(int32_t) > chunk_cap) {
+        size_t fit = chunk_cap / ((size_t)gemm_n * sizeof(int32_t));
+        fit &= ~(size_t)255;
+        if (fit < 256u) fit = 256u;
+        if (fit < chunk_rows) chunk_rows = (uint32_t)fit;
+    }
+    size_t bytes = (size_t)chunk_rows * gemm_n * sizeof(int32_t);
     if (!h3_int8_ensure_i32_scratch(bytes)) return 0;
     int32_t alpha = 1, beta = 0;
     int m = (int)gemm_n;
-    int n = (int)args->rows;
     int k = (int)args->input_dim;
+    uint32_t cols = hidden;
+    uint32_t out_stride = hidden;
     int split = h3_int8_split_on();
     static hipEvent_t gemm_start = NULL, gemm_stop = NULL;
     static hipEvent_t epi_start = NULL, epi_stop = NULL;
-    if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
-    if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
-                      weight, HIP_R_8I, k, input, HIP_R_8I, k, &beta,
-                      h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
-                      HIPBLAS_GEMM_DEFAULT) != HIPBLAS_STATUS_SUCCESS) {
-        return 0;
-    }
-    if (split) h3_int8_split_end(gemm_start, gemm_stop, stream, "gemm");
-    uint32_t rows = args->rows;
-    uint32_t cols = hidden;
-    dim3 block(256, 1, 1);
-    dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
-    void *ep_host[] = {&h3_int8_i32_scratch, &input_scales, &weight_scales,
-                       &output, &rows, &cols};
     const void *ep = fc1_swiglu ?
         reinterpret_cast<const void *>(h3_i32_swiglu_to_bf16_kernel) :
         reinterpret_cast<const void *>(h3_i32_scale_to_bf16_kernel);
-    if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
-    int ok = hipLaunchKernel(ep, grid, block, ep_host, 0, stream) == hipSuccess;
-    if (split && ok) h3_int8_split_end(epi_start, epi_stop, stream, "epilogue");
-    return ok;
+    for (uint32_t row0 = 0; row0 < args->rows; row0 += chunk_rows) {
+        uint32_t rows = args->rows - row0;
+        if (rows > chunk_rows) rows = chunk_rows;
+        const int8_t *chunk_input = input + (size_t)row0 * args->input_dim;
+        const float *chunk_scales = input_scales + row0;
+        uint16_t *chunk_output = output + (size_t)row0 * out_stride;
+        if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+        if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, (int)rows,
+                          k, &alpha, weight, HIP_R_8I, k, chunk_input,
+                          HIP_R_8I, k, &beta, h3_int8_i32_scratch, HIP_R_32I,
+                          m, HIPBLAS_COMPUTE_32I,
+                          HIPBLAS_GEMM_DEFAULT) != HIPBLAS_STATUS_SUCCESS) {
+            return 0;
+        }
+        if (split) h3_int8_split_end(gemm_start, gemm_stop, stream, "gemm");
+        dim3 block(256, 1, 1);
+        dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
+        void *ep_host[] = {&h3_int8_i32_scratch, &chunk_scales, &weight_scales,
+                           &chunk_output, &rows, &cols};
+        if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+        if (hipLaunchKernel(ep, grid, block, ep_host, 0, stream) != hipSuccess)
+            return 0;
+        if (split) h3_int8_split_end(epi_start, epi_stop, stream, "epilogue");
+    }
+    return 1;
 }
 
 static int h3_int8_grouped_hipblas_on(void) {
@@ -3912,6 +4041,53 @@ static int h3_int8_hipblas_grouped_linear(
                 h3_int8_split_end(epi_start, epi_stop, stream, "grouped-reduce");
             return ok;
         }
+    }
+
+    /* Too many rows for one batched call: run it per row chunk and reduce
+     * with the loop epilogue's arithmetic, so the output matches the
+     * per-group loop below bit for bit at ~3x its speed (14 K=1024 GEMMs
+     * and 14 plane round trips per call otherwise). H3_INT8_GROUPED_CHUNK=0
+     * keeps the loop. */
+    const char *chunk_env = getenv("H3_INT8_GROUPED_CHUNK");
+    int want_chunk = !want_loop && groups > 1u &&
+                     (!chunk_env || strcmp(chunk_env, "0") != 0);
+    size_t chunk_cap = h3_int8_i32_chunk_bytes();
+    if (!chunk_cap) chunk_cap = batched_cap;
+    size_t chunk_rows = chunk_cap / ((size_t)cols * groups * sizeof(int32_t));
+    chunk_rows &= ~(size_t)255;
+    if (want_chunk && chunk_rows >= 256u &&
+        h3_int8_ensure_i32_scratch(chunk_rows * cols * groups *
+                                   sizeof(int32_t))) {
+        for (uint32_t r0 = 0; r0 < rows; r0 += (uint32_t)chunk_rows) {
+            uint32_t rc = rows - r0;
+            if (rc > chunk_rows) rc = (uint32_t)chunk_rows;
+            const int8_t *chunk_in = input + (size_t)r0 * k_full;
+            const float *chunk_sa = input_scales + (size_t)r0 * groups;
+            uint16_t *chunk_out = output + (size_t)r0 * cols;
+            if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+            hipblasStatus_t st = hipblasGemmStridedBatchedEx(
+                h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, (int)rc, k, &alpha,
+                weight, HIP_R_8I, lda, (hipblasStride)group_size, chunk_in,
+                HIP_R_8I, lda, (hipblasStride)group_size, &beta,
+                h3_int8_i32_scratch, HIP_R_32I, m,
+                (hipblasStride)((size_t)m * rc), (int)groups,
+                HIPBLAS_COMPUTE_32I, HIPBLAS_GEMM_DEFAULT);
+            if (split) h3_int8_split_end(gemm_start, gemm_stop, stream,
+                                         "grouped-gemm-chunk");
+            if (st != HIPBLAS_STATUS_SUCCESS) return 0;
+            dim3 chunk_grid(((cols + 3u) / 4u + 255u) / 256u, rc, 1);
+            void *red[] = {&h3_int8_i32_scratch, &chunk_sa, &weight_scales,
+                           &chunk_out, &rc, &cols, &groups};
+            if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+            if (hipLaunchKernel(
+                    reinterpret_cast<const void *>(
+                        h3_i32_grouped_reduce_seq_to_bf16_kernel),
+                    chunk_grid, block, red, 0, stream) != hipSuccess)
+                return 0;
+            if (split) h3_int8_split_end(epi_start, epi_stop, stream,
+                                         "grouped-reduce-seq");
+        }
+        return 1;
     }
 
     if (!h3_int8_ensure_i32_scratch(plane_bytes)) return 0;

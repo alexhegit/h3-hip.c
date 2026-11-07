@@ -75,6 +75,19 @@ typedef struct {
     h3_dit_stream_source sources[STREAM_MATRICES];
 } h3_dit_stream_layer;
 
+typedef struct {
+    int8_t *qkv;
+    int8_t *out;
+    int8_t *fc1;
+    int8_t *fc2;
+    int8_t *gate;
+    size_t qkv_n;
+    size_t out_n;
+    size_t fc1_n;
+    size_t fc2_n;
+    size_t gate_n;
+} h3_dit_int8_host;
+
 struct h3_dit {
     h3_gpu *gpu;
     h3_weight_store *weights;
@@ -98,6 +111,13 @@ struct h3_dit {
     int use_slower_grouped_quantizer;
     int use_int8_row_fc2;
     int ssd_streaming;
+    /* H3_INT8_HOST=1: INT8 linears live in host RAM and one block is copied
+     * back to a single device slot before that block runs. Scales stay on
+     * device. The copy waits for the previous block, so it is not overlapped. */
+    int int8_host;
+    int int8_slot_used;
+    h3_dit_int8_host int8_host_blocks[H3_DIT_BLOCKS];
+    h3_dit_block int8_device_slot;
     int keep_bf16_mlp;
     int activation_aliases;
     int fused_patch_projection;
@@ -1529,6 +1549,126 @@ static void configure_gate_ranked_blocks(h3_dit *dit) {
  * measure identical (core stage 19.20s serial versus 19.23s pipelined over two
  * interleaved pairs at 16 pread streams). The read concurrency that does matter
  * is per tensor, inside h3_hip_pread_all. */
+static int park_i8_tensor(h3_gpu_tensor **tensor, int8_t **host, size_t *count,
+                          char *error, size_t error_size, const char *what) {
+    if (!*tensor) return 1;
+    size_t elements = h3_gpu_tensor_elements(*tensor);
+    int8_t *copy = malloc(elements ? elements : 1);
+    if (!copy || !h3_gpu_tensor_read_i8(*tensor, copy, elements)) {
+        free(copy);
+        fail(error, error_size, "cannot park %s in host RAM", what);
+        return 0;
+    }
+    *host = copy;
+    *count = elements;
+    h3_gpu_tensor_free(*tensor);
+    *tensor = NULL;
+    return 1;
+}
+
+static int alloc_i8_slot(h3_dit *dit, h3_gpu_tensor **slot, size_t elements,
+                         char *error, size_t error_size, const char *what) {
+    if (!elements) return 1;
+    *slot = h3_gpu_tensor_new_i8_device(dit->gpu, elements);
+    if (*slot) return 1;
+    fail(error, error_size, "cannot allocate INT8 device slot for %s: %s",
+         what, h3_gpu_error(dit->gpu));
+    return 0;
+}
+
+/* Move every resident INT8 linear off the device. One slot of each shape is
+ * enough for the forward, which copies a block in before running it. */
+static int park_int8_weights(h3_dit *dit, char *error, size_t error_size) {
+    if (!dit->int8_mlp && !dit->int8_qkv && !dit->int8_attention_out) {
+        fail(error, error_size,
+             "H3_INT8_HOST=1 needs the INT8 DiT (leave H3_INT8_MLP unset)");
+        return 0;
+    }
+    size_t parked = 0;
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
+        if (!dit->block_active[block]) continue;
+        h3_dit_block *weights = &dit->blocks[block];
+        h3_dit_int8_host *host = &dit->int8_host_blocks[block];
+        if (!park_i8_tensor(&weights->qkv_int8, &host->qkv, &host->qkv_n,
+                            error, error_size, "QKV") ||
+            !park_i8_tensor(&weights->out_int8, &host->out, &host->out_n,
+                            error, error_size, "attention out") ||
+            !park_i8_tensor(&weights->fc1_int8, &host->fc1, &host->fc1_n,
+                            error, error_size, "FC1") ||
+            !park_i8_tensor(&weights->fc2_int8, &host->fc2, &host->fc2_n,
+                            error, error_size, "FC2") ||
+            !park_i8_tensor(&weights->gate_int8, &host->gate, &host->gate_n,
+                            error, error_size, "VSA gate"))
+            return 0;
+        parked += host->qkv_n + host->out_n + host->fc1_n + host->fc2_n +
+                  host->gate_n;
+    }
+    size_t qkv_n = 0, out_n = 0, fc1_n = 0, fc2_n = 0, gate_n = 0;
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
+        h3_dit_int8_host *host = &dit->int8_host_blocks[block];
+        if (host->qkv_n > qkv_n) qkv_n = host->qkv_n;
+        if (host->out_n > out_n) out_n = host->out_n;
+        if (host->fc1_n > fc1_n) fc1_n = host->fc1_n;
+        if (host->fc2_n > fc2_n) fc2_n = host->fc2_n;
+        if (host->gate_n > gate_n) gate_n = host->gate_n;
+    }
+    if (!alloc_i8_slot(dit, &dit->int8_device_slot.qkv_int8, qkv_n, error,
+                       error_size, "QKV") ||
+        !alloc_i8_slot(dit, &dit->int8_device_slot.out_int8, out_n, error,
+                       error_size, "attention out") ||
+        !alloc_i8_slot(dit, &dit->int8_device_slot.fc1_int8, fc1_n, error,
+                       error_size, "FC1") ||
+        !alloc_i8_slot(dit, &dit->int8_device_slot.fc2_int8, fc2_n, error,
+                       error_size, "FC2") ||
+        !alloc_i8_slot(dit, &dit->int8_device_slot.gate_int8, gate_n, error,
+                       error_size, "VSA gate"))
+        return 0;
+    fprintf(stderr,
+            "h3: INT8 DiT weights parked in host RAM, %.2f GiB "
+            "(H3_INT8_HOST=1)\n",
+            (double)parked / (1024.0 * 1024.0 * 1024.0));
+    return 1;
+}
+
+static int upload_i8(h3_gpu_tensor *slot, const int8_t *host, size_t count,
+                     unsigned block, const char *what, char *error,
+                     size_t error_size) {
+    if (!count) return 1;
+    if (slot && h3_gpu_tensor_write_i8(slot, host, count)) return 1;
+    fail(error, error_size, "cannot upload INT8 %s for block %u", what, block);
+    return 0;
+}
+
+static int stage_int8_host_block(h3_dit *dit, unsigned block,
+                                 h3_dit_block *staged, char *error,
+                                 size_t error_size) {
+    if (dit->int8_slot_used &&
+        !gpu_op(dit, h3_gpu_continue(dit->gpu), error, error_size,
+                "sync before INT8 host upload"))
+        return 0;
+    h3_dit_int8_host *host = &dit->int8_host_blocks[block];
+    h3_dit_block *slot = &dit->int8_device_slot;
+    if (!upload_i8(slot->qkv_int8, host->qkv, host->qkv_n, block, "QKV",
+                   error, error_size) ||
+        !upload_i8(slot->out_int8, host->out, host->out_n, block,
+                   "attention out", error, error_size) ||
+        !upload_i8(slot->fc1_int8, host->fc1, host->fc1_n, block, "FC1",
+                   error, error_size) ||
+        !upload_i8(slot->fc2_int8, host->fc2, host->fc2_n, block, "FC2",
+                   error, error_size) ||
+        !upload_i8(slot->gate_int8, host->gate, host->gate_n, block, "VSA gate",
+                   error, error_size))
+        return 0;
+    *staged = dit->blocks[block];
+    if (host->qkv_n) staged->qkv_int8 = slot->qkv_int8;
+    if (host->out_n) staged->out_int8 = slot->out_int8;
+    if (host->fc1_n) staged->fc1_int8 = slot->fc1_int8;
+    if (host->fc2_n) staged->fc2_int8 = slot->fc2_int8;
+    if (host->gate_n) staged->gate_int8 = slot->gate_int8;
+    dit->int8_slot_used = 1;
+    return 1;
+}
+
 static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
                      char *error, size_t error_size) {
     /* Default batch=4: ~4GB BF16 peak, overlaps I/O with prior quantize.
@@ -1633,6 +1773,8 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
     if (stage_timing)
         fprintf(stderr, "h3 profile: H3 DiT core split   block-io=%7.3fs "
                         "quantize=%7.3fs\n", wait_io, wait_quant);
+    if (dit->int8_host && !park_int8_weights(dit, error, error_size))
+        goto core_failed;
     if (dit->ssd_streaming) {
         if (!allocate_stream_slot(dit, &dit->stream_slots[0],
                                   error, error_size) ||
@@ -1918,6 +2060,8 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             }
         }
     }
+#ifndef H3_HIP
+    /* HIP allocates this only if fused FC1+SwiGLU is unavailable. */
     if (dit->int8_mlp || dit->fp8_mlp) {
         dit->int8_mlp_ws = h3_gpu_tensor_new_bf16_device(
             dit->gpu, (size_t)sequence * FFN * 2);
@@ -1928,6 +2072,7 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
             return 0;
         }
     }
+#endif
     if (dit->int8_qkv || dit->fp8_qkv) {
         dit->int8_qkv_ws = h3_gpu_tensor_new_bf16_device(
             dit->gpu, (size_t)sequence * INNER * 3);
@@ -2147,6 +2292,15 @@ static h3_dit *load_dit(const char *weight_directory,
         goto failed;
     }
     dit->ssd_streaming = ssd_streaming;
+    {
+        const char *host_env = getenv("H3_INT8_HOST");
+        dit->int8_host = host_env && host_env[0] && strcmp(host_env, "0") != 0;
+    }
+    if (dit->int8_host && dit->ssd_streaming) {
+        fail(error, error_size,
+             "H3_INT8_HOST cannot combine with SSD streaming");
+        goto failed;
+    }
     dit->spatial_rope_scale = spatial_rope_scale;
     configure_active_blocks(dit, active_blocks);
     if (!copy_layout(dit, layout, error, error_size) ||
@@ -2222,8 +2376,11 @@ static h3_dit *load_dit(const char *weight_directory,
 #define STAGE(name) do {                                                       \
     if (stage_timing) {                                                        \
         double mark = stream_now();                                        \
-        fprintf(stderr, "h3 profile: H3 DiT load stage %-18s %7.3fs\n",        \
-                (name), mark - stage);                                         \
+        h3_gpu_stats live_stats = {0};                                         \
+        (void)h3_gpu_get_stats(dit->gpu, &live_stats);                         \
+        fprintf(stderr, "h3 profile: H3 DiT load stage %-18s %7.3fs "         \
+                "live=%7.3fGiB\n", (name), mark - stage,                       \
+                (double)live_stats.live_bytes / 1073741824.0);                 \
         stage = mark;                                                          \
     }                                                                          \
 } while (0)
@@ -3014,6 +3171,12 @@ static int encode_forward(h3_dit *dit, int step, int begin, int submit,
             }
             h3_dit_block streamed_weight;
             h3_dit_block *weight = &dit->blocks[block];
+            if (dit->int8_host) {
+                if (!stage_int8_host_block(dit, block, &streamed_weight,
+                                           error, error_size))
+                    return 0;
+                weight = &streamed_weight;
+            }
             h3_dit_stream_job stream_job;
             pthread_t stream_thread;
             int stream_started = 0;
@@ -3995,8 +4158,15 @@ void h3_dit_free(h3_dit *dit) {
     free_tensor(&dit->reduced_rope_sin);
     free_tensor(&dit->video_patch_w); free_tensor(&dit->video_patch_b);
     free_tensor(&dit->audio_patch_w); free_tensor(&dit->audio_patch_b);
-    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++)
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
+        free(dit->int8_host_blocks[block].qkv);
+        free(dit->int8_host_blocks[block].out);
+        free(dit->int8_host_blocks[block].fc1);
+        free(dit->int8_host_blocks[block].fc2);
+        free(dit->int8_host_blocks[block].gate);
         free_block(&dit->blocks[block]);
+    }
+    free_block(&dit->int8_device_slot);
     free_block(&dit->stream_slots[0]);
     free_block(&dit->stream_slots[1]);
     free_tensor(&dit->final_norm);
