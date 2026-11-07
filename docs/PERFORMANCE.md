@@ -1,7 +1,7 @@
 # Performance
 
 Headline numbers. Timed SKUs: **Strix Halo (gfx1151)**, **MI210 (gfx90a)**,
-**MI300X (gfx942)**. Build with an explicit `HIP_ARCH`
+**MI300X (gfx942)**, **Radeon AI PRO R9700 (gfx1201)**. Build with an explicit `HIP_ARCH`
 ([Getting started](wiki/Getting-started.md)). MI250 / MI250X share `gfx90a`
 with MI210 but are not these numbers. Wall time moves with page-cache state. **Process E2E** is
 `/usr/bin/time` until `h3: wrote` the muxed MP4. **DiT total** is
@@ -31,6 +31,30 @@ dense is **698 s**, `fox-15s.sh` **476 s**. 1344×768 · 15 s is dense
 **3522 s**, token reduction **2158 s**, Sol-Attn **2837 s**. Ledger:
 [`perf-runs/MI210_2026-11-05.md`](perf-runs/MI210_2026-11-05.md). The
 v0.13 table below keeps the 2026-09-12 MI210 cells.
+
+## Radeon AI PRO R9700 (gfx1201) — branch `r9700`, 2026-11-06
+
+One R9700 (RDNA4, 64 CUs, 29.86 GiB), `make HIP_ARCH=gfx1201`, default INT8
+DiT, one job at a time. Each cell is R9700 process E2E with the MI300X
+ledger number in parentheses; a dash means MI300X has no cell. 1344×768
+rows need `H3_INT8_HOST=1`. Dense rows and the 1344×768 · 15 s row include
+the row-chunked grouped INT8 change; the other rows predate it, and their
+outputs are bit-identical with it (only linear time drops). Every case, denoise / SDPA /
+linear splits, peaks, md5s, and PSNR / SSIM versus dense:
+[`perf-runs/R9700_2026-11-06.md`](perf-runs/R9700_2026-11-06.md).
+
+| canvas | dense | TR | `--fbc` | `--sol-attn` | FastH3 | VSA + TAEH3 | Pika |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 832×480 · 5 s, 50 step | **470.9 s** (166.9) | 357.7 (127.6) | 148.6 (53.3) | 423.2 (145.6) | 101.5 (30.1) | 76.8 (26.0) | 115.7 (35.0) |
+| 864×480 · 15 s, `fox-15s.sh` | **600.9 s** (213.3) | 433.1 (149.0) | 399.6 (136.4) | 478.2 | 419.3 (108.7) | 225.6 (76.7) | 577.1 (137.5) |
+| 1344×768 · 5 s, Prompt 1 | **2204.7 s** (668.2) | 1556.3 (439.6) | 491.3 | 1743.2 | 278.7 (96.5) | 188.0 (62.2) | 371.7 (120.1) |
+| 1344×768 · 15 s, `fox-15s.sh` | **2787.6 s** (947.0) | 1745.7 (611.7) | — | 1913.9 (719.2) | — | — | — |
+
+Dense is 2.8–3.3× MI300X. fox-s2 is 35.9 s (10.6) and fox-fast 46.1 s
+(9.8), both bound by reading ~98 GiB of weights on a 59 GiB host.
+`fox-15s-fast.sh` is 342.3 s (117.9). The published RTX 5090 numbers for
+the 1344×768 · 5 s job are 1045.4 s baseline, 708.3 s with Sol-Attn, and
+231.2 s full opt.
 
 ## v0.16.0 (2026-10-09)
 

@@ -63,6 +63,7 @@ quota drills, land. CLI `./h3 -o` is unchanged.
 |----|-------|--------|
 | P | Remaining E2E vs Metal | gfx1151 fox-s2 wall is mostly NVMe I/O. gfx90a long T2VA is still DiT SDPA. Headlines: [`PERFORMANCE.md`](PERFORMANCE.md) |
 | V | `--ref-video-audio VIDEO AUDIO` E2E clip | Same kernels as `--ref-video`; not separately showcased |
+| R | gfx1201 (R9700) `hip-functional` Ref2VA smoke | Open. Every FL2VA sub-test passes; `test_hip_ref2va_smoke` needs `Ref2VA/` (`./tools/download_weights.sh --both`), not downloaded on the R9700 box |
 
 ### Profiling notes (HIP)
 
