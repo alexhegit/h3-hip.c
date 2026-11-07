@@ -1079,7 +1079,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         fprintf(stderr,
                 "h3: --sol-attn is on: faster long SDPA, visible quality "
                 "loss (off by default). Supported on gfx90a, gfx942, "
-                "gfx1151, and gfx1201. See docs/SOL_ATTN.md.\n");
+                "gfx1100, gfx1151, and gfx1201. See docs/SOL_ATTN.md.\n");
     }
     setenv("H3_FBC", params->fbc ? "1" : "0", 1);
     {

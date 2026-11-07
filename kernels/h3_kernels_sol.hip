@@ -9,7 +9,7 @@ static int h3_hip_gfx1151_sol(void) {
     hipDeviceProp_t props;
     cached = hipGetDevice(&device) == hipSuccess &&
              hipGetDeviceProperties(&props, device) == hipSuccess &&
-             (strncmp(props.gcnArchName, "gfx1151", 7) == 0 ||
+             (strncmp(props.gcnArchName, "gfx11", 5) == 0 ||
               strncmp(props.gcnArchName, "gfx120", 6) == 0);
     return cached;
 }

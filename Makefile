@@ -14,29 +14,60 @@ ifeq ($(H3_BACKEND),hip)
   HIPCC := hipcc
   ROCM_PATH ?= /opt/rocm
   # No hardware probe. Pass HIP_ARCH to match the GPU you are building for:
+  #   gfx1100  Radeon Pro W7900 (RDNA3, wave32)
   #   gfx1151  Strix Halo (RDNA3.5, wave32)
   #   gfx1201  Radeon AI PRO R9700 (RDNA4, wave32); gfx1200 is the same path
   #   gfx90a   MI210 / MI250X (CDNA2, wave64)
   #   gfx942   MI300X (CDNA3, wave64)
+  # A ROCm install with runtimes but no -dev packages (the W7900 box: ROCm
+  # 7.14, read-only /opt/rocm) can use a sibling extract of
+  # amdrocm-runtime-dev / amdrocm-blas-dev in ../rocm-7.14-dev for hip/ and
+  # hipblas/ while linking the installed libraries.
+  ROCM_DEV_INC :=
   ifneq ($(MAKECMDGOALS),clean)
     ifeq ($(wildcard $(ROCM_PATH)/include/hip/hip_runtime.h),)
-      ROCM_PATH := $(shell hipconfig --rocmpath 2>/dev/null)
+      ROCM_FOUND := $(shell hipconfig --rocmpath 2>/dev/null)
+      ifneq ($(wildcard $(ROCM_FOUND)/include/hip/hip_runtime.h),)
+        ROCM_PATH := $(ROCM_FOUND)
+      else
+        ROCM_DEV_INC := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../rocm-7.14-dev/opt/rocm/core-7.14/include)
+      endif
     endif
-    ifeq ($(wildcard $(ROCM_PATH)/include/hip/hip_runtime.h),)
-      $(error ROCM_PATH ($(ROCM_PATH)) has no hip/hip_runtime.h. Install ROCm or put hipconfig on PATH (TheRock wheels: the runtime bin directory).)
+    ifeq ($(wildcard $(ROCM_PATH)/include/hip/hip_runtime.h)$(wildcard $(ROCM_DEV_INC)/hip/hip_runtime.h),)
+      $(error ROCM_PATH ($(ROCM_PATH)) has no hip/hip_runtime.h. Install ROCm or put hipconfig on PATH (TheRock wheels: the runtime bin directory), or extract amdrocm-runtime-dev into ../rocm-7.14-dev.)
     endif
     ifndef HIP_ARCH
-      $(error HIP_ARCH is required. Supported: gfx1151 (Strix Halo), gfx1201 (Radeon AI PRO R9700), gfx90a (MI210/MI250X), gfx942 (MI300X). Example: make HIP_ARCH=gfx1201)
+      $(error HIP_ARCH is required. Supported: gfx1100 (Radeon Pro W7900), gfx1151 (Strix Halo), gfx1201 (Radeon AI PRO R9700), gfx90a (MI210/MI250X), gfx942 (MI300X). Example: make HIP_ARCH=gfx1201)
     endif
   endif
   CFLAGS := -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow \
 	-Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE \
 	-D__HIP_PLATFORM_AMD__ -I. -Ikernels \
 	-I$(ROCM_PATH)/include
+  # rocWMMA is header-only. gfx1100 ROCm 7.14 packages omit it; a sibling
+  # checkout of ROCm/rocWMMA (tag rocm-7.2.4) is the fallback. Override with
+  # ROCWMMA_DIR set to the directory that contains rocwmma/rocwmma.hpp.
+  ifndef ROCWMMA_DIR
+    ifneq ($(wildcard $(ROCM_PATH)/include/rocwmma/rocwmma.hpp),)
+      ROCWMMA_DIR := $(ROCM_PATH)/include
+    else
+      ROCWMMA_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../rocWMMA/library/include)
+    endif
+  endif
+  ifneq ($(MAKECMDGOALS),clean)
+    ifeq ($(wildcard $(ROCWMMA_DIR)/rocwmma/rocwmma.hpp),)
+      $(error rocWMMA headers not found at $(ROCWMMA_DIR). Set ROCWMMA_DIR to the directory that contains rocwmma/rocwmma.hpp)
+    endif
+  endif
   HIPCFLAGS := -std=c++17 -O3 -DH3_HIP -I. -Ikernels \
-	-I$(ROCM_PATH)/include --offload-arch=$(HIP_ARCH)
+	-I$(ROCM_PATH)/include -I$(ROCWMMA_DIR) --offload-arch=$(HIP_ARCH)
   HIPCFLAGS_C := -std=c11 -O3 -DH3_HIP -I. -Ikernels \
 	-I$(ROCM_PATH)/include
+  ifneq ($(ROCM_DEV_INC),)
+    CFLAGS += -I$(ROCM_DEV_INC)
+    HIPCFLAGS += -I$(ROCM_DEV_INC)
+    HIPCFLAGS_C += -I$(ROCM_DEV_INC)
+  endif
   LDLIBS := -L$(ROCM_PATH)/lib -Wl,-rpath,$(ROCM_PATH)/lib \
 	-lamdhip64 -lhipblas -lhipblaslt -lm -pthread
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \

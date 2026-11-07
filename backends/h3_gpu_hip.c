@@ -3378,7 +3378,7 @@ static int h3_hip_sol_supported(void) {
              hipGetDeviceProperties(&props, device) == hipSuccess &&
              (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
               strncmp(props.gcnArchName, "gfx942", 6) == 0 ||
-              strncmp(props.gcnArchName, "gfx1151", 7) == 0 ||
+              strncmp(props.gcnArchName, "gfx11", 5) == 0 ||
               strncmp(props.gcnArchName, "gfx120", 6) == 0);
     return cached;
 }
@@ -3401,7 +3401,7 @@ static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
         warned = 1;
         fprintf(stderr,
                 "h3: --sol-attn: unsupported GPU; using dense SDPA "
-                "(supported: gfx90a, gfx942, gfx1151, gfx1201)\n");
+                "(supported: gfx90a, gfx942, gfx1100, gfx1151, gfx1201)\n");
     }
     return 0;
 }
