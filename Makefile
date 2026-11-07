@@ -27,11 +27,44 @@ ifeq ($(H3_BACKEND),hip)
 	-Wconversion -Wno-sign-conversion -DH3_HIP -D_GNU_SOURCE \
 	-D__HIP_PLATFORM_AMD__ -I. -Ikernels \
 	-I$(ROCM_PATH)/include
+  # rocWMMA is header-only. gfx1100 ROCm 7.14 packages omit it; a sibling
+  # checkout of ROCm/rocWMMA (tag rocm-7.2.4) is the fallback. Override with
+  # ROCWMMA_DIR set to the directory that contains rocwmma/rocwmma.hpp.
+  ifndef ROCWMMA_DIR
+    ifneq ($(wildcard $(ROCM_PATH)/include/rocwmma/rocwmma.hpp),)
+      ROCWMMA_DIR := $(ROCM_PATH)/include
+    else
+      ROCWMMA_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../rocWMMA/library/include)
+    endif
+  endif
+  ifneq ($(MAKECMDGOALS),clean)
+    ifeq ($(wildcard $(ROCWMMA_DIR)/rocwmma/rocwmma.hpp),)
+      $(error rocWMMA headers not found at $(ROCWMMA_DIR). Set ROCWMMA_DIR to the directory that contains rocwmma/rocwmma.hpp)
+    endif
+  endif
   HIPCFLAGS := -std=c++17 -O3 -DH3_HIP -I. -Ikernels \
-	-I$(ROCM_PATH)/include --offload-arch=$(HIP_ARCH)
+	-I$(ROCM_PATH)/include -I$(ROCWMMA_DIR) --offload-arch=$(HIP_ARCH)
   HIPCFLAGS_C := -std=c11 -O3 -DH3_HIP -I. -Ikernels \
 	-I$(ROCM_PATH)/include
-  LDLIBS := -L$(ROCM_PATH)/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread
+  # This gfx1100 image has the HIP runtime libraries but not the -dev
+  # packages, and /opt/rocm is not writable. A sibling extract of
+  # amdrocm-runtime-dev7.14 and amdrocm-blas-dev7.14 supplies hip/ and hipblas/.
+  ROCM_DEV_INC :=
+  ifeq ($(wildcard $(ROCM_PATH)/include/hip/hip_runtime.h),)
+    ROCM_DEV_INC := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../rocm-7.14-dev/opt/rocm/core-7.14/include)
+    ifneq ($(MAKECMDGOALS),clean)
+      ifeq ($(wildcard $(ROCM_DEV_INC)/hip/hip_runtime.h),)
+        $(error HIP headers not found. Install amdrocm-runtime-dev or extract it into ../rocm-7.14-dev)
+      endif
+    endif
+  endif
+  ifneq ($(ROCM_DEV_INC),)
+    CFLAGS += -I$(ROCM_DEV_INC)
+    HIPCFLAGS += -I$(ROCM_DEV_INC)
+    HIPCFLAGS_C += -I$(ROCM_DEV_INC)
+  endif
+  LDLIBS := -L$(ROCM_PATH)/lib -Wl,-rpath,$(ROCM_PATH)/lib \
+	-lamdhip64 -lhipblas -lhipblaslt -lm -pthread
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \
 	backends/h3_hip_probe.o backends/h3_device.o \
 	backends/h3_tokenizer.o kernels/h3_kernels.o \
