@@ -10,6 +10,11 @@ extern "C" {
 
 /* 1 on gfx11/gfx12 (RDNA rocWMMA layouts). 0 on CDNA (gfx90a / gfx942). */
 int h3_hip_rdna_wmma_default(void);
+/* 1 on gfx1200 / gfx1201 (RDNA4). */
+int h3_hip_is_gfx12(void);
+
+/* Free the shared kernel scratch buffers; they are re-created on demand. */
+void h3_kernels_release_scratch(void);
 
 typedef struct {
     uint32_t rows;

@@ -436,9 +436,9 @@ h3_vsa_fine_mfma_kernel(const uint16_t *query, const uint16_t *key,
     }
 }
 
-/* gfx1151 tile kernel. Same selected-tile loop as the CDNA kernel, with the
- * wave32 rocWMMA fragment map probed for h3_sdpa_bf16_wmma_d128_kernel:
- * accumulator element i is row 2*i+(lane>>4), column lane&15. */
+/* gfx1151/gfx120x tile kernel. Same selected-tile loop as the CDNA kernel, with
+ * the wave32 rocWMMA fragment map of h3_sdpa_bf16_wmma_d128_kernel:
+ * accumulator element i is row H3_WMMA_ACC_ROW(i, lane>>4), column lane&15. */
 __global__ void __launch_bounds__(128)
 h3_vsa_fine_wmma_kernel(const uint16_t *query, const uint16_t *key,
                         const uint16_t *value, const uint16_t *gate,
@@ -562,7 +562,7 @@ h3_vsa_fine_wmma_kernel(const uint16_t *query, const uint16_t *key,
                     m = fmaxf(m, h3_shfl_xor32(m, off));
                 float new_max = fmaxf(row_max[i], m);
                 alpha[i] = __expf(row_max[i] - new_max);
-                uint32_t prow = 2u * (uint32_t)i + rowg;
+                uint32_t prow = H3_WMMA_ACC_ROW(i, rowg);
                 float ps = 0.0f;
 #pragma unroll
                 for (uint32_t t = 0; t < NT; t++) {
@@ -605,7 +605,7 @@ h3_vsa_fine_wmma_kernel(const uint16_t *query, const uint16_t *key,
 #pragma unroll
     for (int i = 0; i < 8; i++) {
         float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
-        uint32_t q_local = qbase + 2u * (uint32_t)i + rowg;
+        uint32_t q_local = qbase + H3_WMMA_ACC_ROW(i, rowg);
         if (q_local >= q_count) continue;
         const uint16_t *grow =
             gate + ((size_t)head * padded + (size_t)q_tile * TILE + q_local) * D;
@@ -776,7 +776,8 @@ extern "C" int h3_launch_vsa_bf16(
                 hipGetDeviceProperties(&props, device) == hipSuccess) {
                 mfma = strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
                        strncmp(props.gcnArchName, "gfx942", 6) == 0;
-                wmma = strncmp(props.gcnArchName, "gfx1151", 7) == 0;
+                wmma = strncmp(props.gcnArchName, "gfx1151", 7) == 0 ||
+                       strncmp(props.gcnArchName, "gfx120", 6) == 0;
             }
         }
     }
@@ -785,7 +786,7 @@ extern "C" int h3_launch_vsa_bf16(
         if (!announced) {
             announced = 1;
             fprintf(stderr, "h3: VSA fine kernel %s\n",
-                    wmma ? "gfx1151 wmma" : "cdna mfma");
+                    wmma ? "wave32 wmma" : "cdna mfma");
         }
         void *args[] = {&tiled_q, &tiled_k, &tiled_v, &tiled_g, &pool_q, &mask,
                         &block_sizes, &tiled_o, &n_tiles, &scale};
