@@ -3401,6 +3401,14 @@ static int h3_vsa_prepare(struct h3_gpu *ctx, uint32_t sequence, uint32_t t,
     free(slot);
     free(blocks);
     if (!ok) {
+        size_t free_bytes = 0, total_bytes = 0;
+        (void)hipMemGetInfo(&free_bytes, &total_bytes);
+        h3_hip_set_error(ctx,
+                         "cannot allocate VSA buffers: %.2f GiB for %u tokens, "
+                         "%.2f GiB free",
+                         (double)(5u * tiled_bytes + 3u * pool_bytes +
+                                  score_bytes + acc_bytes) / 1073741824.0,
+                         sequence, (double)free_bytes / 1073741824.0);
         h3_vsa_release(ctx);
         return 0;
     }
