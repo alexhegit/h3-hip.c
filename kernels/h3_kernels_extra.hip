@@ -3694,6 +3694,67 @@ h3_i32_grouped_scale_epilogue_kernel(
     }
 }
 
+/* Same reduction in h3_i32_grouped_scale_epilogue_kernel's arithmetic: each
+ * group term is acc * sa * sb, added to the running sum in group order. Long
+ * sequences used that per-group loop, so DiT outputs (and the md5 gates) do
+ * not move when they switch to one batched GEMM plus this reduce. */
+__global__ void __launch_bounds__(256)
+h3_i32_grouped_reduce_loop_order_kernel(const int32_t *acc, const float *sa,
+                                        const float *sb, uint16_t *out,
+                                        uint32_t rows, uint32_t cols,
+                                        uint32_t groups) {
+    /* The per-group epilogue rounds the product and the running add
+     * separately (the partial goes through memory); fusing them here into
+     * fma would change ~0.007% of the bf16 outputs. */
+#pragma clang fp contract(off)
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= cols) return;
+    size_t plane = (size_t)rows * cols;
+    uint16_t *dst = out + (size_t)row * cols + col;
+    if (col + 3u < cols) {
+        float t0 = 0.0f, t1 = 0.0f, t2 = 0.0f, t3 = 0.0f;
+        for (uint32_t g = 0; g < groups; g++) {
+            float srow = sa[(size_t)row * groups + g];
+            int4 v = *reinterpret_cast<const int4 *>(
+                acc + (size_t)g * plane + (size_t)row * cols + col);
+            float x0 = (float)v.x * srow * sb[col];
+            float x1 = (float)v.y * srow * sb[col + 1u];
+            float x2 = (float)v.z * srow * sb[col + 2u];
+            float x3 = (float)v.w * srow * sb[col + 3u];
+            if (g) {
+                x0 += t0;
+                x1 += t1;
+                x2 += t2;
+                x3 += t3;
+            }
+            t0 = x0;
+            t1 = x1;
+            t2 = x2;
+            t3 = x3;
+        }
+        uint2 packed;
+        packed.x = (uint32_t)h3_f32_to_bf16(t0) |
+                   ((uint32_t)h3_f32_to_bf16(t1) << 16);
+        packed.y = (uint32_t)h3_f32_to_bf16(t2) |
+                   ((uint32_t)h3_f32_to_bf16(t3) << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < cols; j++) {
+            float total = 0.0f;
+            for (uint32_t g = 0; g < groups; g++) {
+                float srow = sa[(size_t)row * groups + g];
+                float x = (float)acc[(size_t)g * plane + (size_t)row * cols +
+                                     col + j] *
+                          srow * sb[col + j];
+                if (g) x += total;
+                total = x;
+            }
+            dst[j] = h3_f32_to_bf16(total);
+        }
+    }
+}
+
 /* Reduce batched i32 planes[g][row, col] * sa[row, g] * sb[col] -> bf16. */
 __global__ void __launch_bounds__(256)
 h3_i32_grouped_reduce_to_bf16_kernel(const int32_t *acc, const float *sa,
@@ -3933,6 +3994,47 @@ static int h3_int8_hipblas_grouped_linear(
                 h3_int8_split_end(epi_start, epi_stop, stream, "grouped-reduce");
             return ok;
         }
+    }
+
+    /* Long sequences: one strided-batched GEMM over all groups per row block,
+     * then a single reduce. The per-group loop below rereads the I32 plane
+     * and read-modify-writes an F32 partial once per group, which was a third
+     * of fc2 time at 109k tokens. */
+    uint32_t batch_chunk = h3_int8_row_chunk(
+        rows, (size_t)groups * cols * sizeof(int32_t));
+    if (!want_loop && groups > 1u && batch_chunk >= 256u &&
+        h3_int8_ensure_i32_scratch((size_t)groups * batch_chunk * cols *
+                                   sizeof(int32_t))) {
+        for (uint32_t start = 0; start < rows; start += batch_chunk) {
+            uint32_t chunk_rows = rows - start < batch_chunk ? rows - start : batch_chunk;
+            const int8_t *chunk_input = input + (size_t)start * k_full;
+            const float *chunk_scales = input_scales + (size_t)start * groups;
+            uint16_t *chunk_output = output + (size_t)start * cols;
+            if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+            hipblasStatus_t st = hipblasGemmStridedBatchedEx(
+                h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, (int)chunk_rows, k,
+                &alpha, weight, HIP_R_8I, lda, (hipblasStride)group_size,
+                chunk_input, HIP_R_8I, lda, (hipblasStride)group_size, &beta,
+                h3_int8_i32_scratch, HIP_R_32I, m,
+                (hipblasStride)((size_t)m * chunk_rows), (int)groups,
+                HIPBLAS_COMPUTE_32I, HIPBLAS_GEMM_DEFAULT);
+            if (split) h3_int8_split_end(gemm_start, gemm_stop, stream,
+                                         "grouped-gemm-chunked");
+            if (st != HIPBLAS_STATUS_SUCCESS) return 0;
+            dim3 chunk_grid(((cols + 3u) / 4u + 255u) / 256u, chunk_rows, 1);
+            void *red[] = {&h3_int8_i32_scratch, &chunk_scales, &weight_scales,
+                           &chunk_output, &chunk_rows, &cols, &groups};
+            if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+            int ok = hipLaunchKernel(
+                reinterpret_cast<const void *>(
+                    h3_i32_grouped_reduce_loop_order_kernel),
+                chunk_grid, block, red, 0, stream) == hipSuccess;
+            if (split && ok)
+                h3_int8_split_end(epi_start, epi_stop, stream,
+                                  "grouped-reduce-chunked");
+            if (!ok) return 0;
+        }
+        return 1;
     }
 
     uint32_t chunk = h3_int8_row_chunk(rows, (size_t)cols * sizeof(int32_t));
