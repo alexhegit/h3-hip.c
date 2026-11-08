@@ -14,25 +14,18 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.17.0 (2026-11-03)
+## Current release — v0.18.0 (2026-11-08)
 
-`h3 --info` prints `h3-hip 0.17.0`. Opt-in `--pika-lora` and
-`--pika-ref-lora` merge a rank-128 LoRA and run six renoise steps.
-They stay off unless set, and they are not part of the `bench/`
-scoreboard. Measured on one MI300X (gfx942), warm cache, default INT8:
-832×480 · 5 s is **34.97 s** (28.68 s with `--taeh3`); 1344×768 · 5 s
-Prompt 1 is **120.10 s** (93.54 s with `--taeh3`). Commands, the other
-canvases, and the comparison still are in [`PIKA.md`](PIKA.md). The
-v0.16.0 Halo tables below are unchanged.
+`h3 --info` prints `h3-hip 0.18.0`. Adds the Radeon AI PRO R9700
+(`make HIP_ARCH=gfx1201`). On its 32 GiB, DiT and VAE tensors now stay in
+VRAM, the INT8 int32 scratch is row-chunked, and 1344×768 runs with
+`H3_INT8_HOST=1`. Grouped INT8 no longer falls back to the slow `r64`
+kernel above 65535 tokens, so 1344×768 · 15 s outputs differ from v0.17.0
+on every ISA. Only gfx1201 was run for this tag; gfx1151, gfx90a and gfx942
+were compile-checked ([`KNOWN_ISSUES.md`](KNOWN_ISSUES.md), item X). The
+v0.17.0 Pika and MI210 numbers below are unchanged.
 
-MI210 (gfx90a) was retimed on this tree on 2026-11-05 (`9dc75b1`).
-Warm fox-s2 / fox-fast are **10.76 s** / **18.97 s**. 864×480 · 15 s
-dense is **698 s**, `fox-15s.sh` **476 s**. 1344×768 · 15 s is dense
-**3522 s**, token reduction **2158 s**, Sol-Attn **2837 s**. Ledger:
-[`perf-runs/MI210_2026-11-05.md`](perf-runs/MI210_2026-11-05.md). The
-v0.13 table below keeps the 2026-09-12 MI210 cells.
-
-## Radeon AI PRO R9700 (gfx1201) — branch `r9700`, 2026-11-06
+### Radeon AI PRO R9700 (gfx1201), 2026-11-06
 
 One R9700 (RDNA4, 64 CUs, 29.86 GiB), `make HIP_ARCH=gfx1201`, default INT8
 DiT, one job at a time. Every cell is R9700 process E2E in seconds with the
@@ -75,6 +68,24 @@ Dense is 2.8–3.3× MI300X. fox-s2 and fox-fast are bound by reading ~98 GiB
 of weights on a 59 GiB host. The published RTX 5090 numbers for the
 1344×768 · 5 s job are 1045.4 s baseline, 708.3 s with Sol-Attn, and
 231.2 s full opt.
+
+## v0.17.0 (2026-11-03)
+
+`h3 --info` on that tag prints `h3-hip 0.17.0`. Opt-in `--pika-lora` and
+`--pika-ref-lora` merge a rank-128 LoRA and run six renoise steps.
+They stay off unless set, and they are not part of the `bench/`
+scoreboard. Measured on one MI300X (gfx942), warm cache, default INT8:
+832×480 · 5 s is **34.97 s** (28.68 s with `--taeh3`); 1344×768 · 5 s
+Prompt 1 is **120.10 s** (93.54 s with `--taeh3`). Commands, the other
+canvases, and the comparison still are in [`PIKA.md`](PIKA.md). The
+v0.16.0 Halo tables below are unchanged.
+
+MI210 (gfx90a) was retimed on this tree on 2026-11-05 (`9dc75b1`).
+Warm fox-s2 / fox-fast are **10.76 s** / **18.97 s**. 864×480 · 15 s
+dense is **698 s**, `fox-15s.sh` **476 s**. 1344×768 · 15 s is dense
+**3522 s**, token reduction **2158 s**, Sol-Attn **2837 s**. Ledger:
+[`perf-runs/MI210_2026-11-05.md`](perf-runs/MI210_2026-11-05.md). The
+v0.13 table below keeps the 2026-09-12 MI210 cells.
 
 ## v0.16.0 (2026-10-09)
 

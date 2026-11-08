@@ -1,18 +1,29 @@
 # h3-hip.c
 
 HIP port of [antirez/h3.c](https://github.com/antirez/h3.c) for **AMD GPUs**.
-One tree, three supported products — pass `HIP_ARCH` to match the GPU you
+One tree, four supported products — pass `HIP_ARCH` to match the GPU you
 compile for. Timed scoreboard SKUs are **Strix Halo (gfx1151)**, **MI210
-(gfx90a)**, and **MI300X (gfx942)**. MI250 / MI250X also use `gfx90a` but
-were not timed.
+(gfx90a)**, **MI300X (gfx942)**, and **Radeon AI PRO R9700 (gfx1201)**.
+MI250 / MI250X also use `gfx90a` but were not timed.
 
 | Product | `HIP_ARCH` | Default DiT | SDPA |
 |---------|------------|-------------|------|
 | **Strix Halo** (RDNA) | `gfx1151` | INT8 + BF16 activations | wave32 rocWMMA |
+| **Radeon AI PRO R9700** (RDNA4) | `gfx1201` | INT8 + BF16 activations | wave32 rocWMMA (gfx12 prefetch / transposed-V) |
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.17.0** adds opt-in Pika H3 Flex (`--pika-lora`,
+Tagged **v0.18.0** adds the Radeon AI PRO R9700 (`gfx1201`, 32 GiB).
+1344×768 needs `H3_INT8_HOST=1`, which keeps the INT8 DiT linears in host
+RAM. On one R9700, 1344×768 · 15 s, 20 steps, dense is **2787.6 s**
+(MI300X 947.0 s); 832×480 · 5 s, 50 steps, dense is **470.9 s**. The same
+release keeps DiT and VAE tensors in VRAM on 32 GiB cards, row-chunks the
+INT8 GEMM scratch, and fixes a silent grouped-INT8 fallback above 65535
+tokens. Only gfx1201 was run for this tag; gfx1151, gfx90a and gfx942 were
+compile-checked ([`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md), item X).
+Every case: [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
+v0.17.0 adds opt-in Pika H3 Flex (`--pika-lora`,
 `--pika-ref-lora`): a rank-128 LoRA and a fixed 6-step renoise sampler
 on the MiniMax-H3 weights you already have. It stays off unless set,
 keeps all 50 layers, requires `--reuse 1`, and does not combine with
@@ -229,8 +240,8 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.17.0**. `h3 --info` prints `h3-hip 0.17.0`.
-v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
+Current tagged line is **v0.18.0**. `h3 --info` prints `h3-hip 0.18.0`.
+v0.17.0 remains opt-in Pika H3 Flex. v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
 conv. v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
 `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
 and Sol-Attn past 64k tokens. v0.12.0 was the TR schedule, fused AdaLN, and
@@ -350,9 +361,9 @@ Pick the ISA that matches `rocminfo` / `hipGetDeviceProperties` on **this**
 machine. The Makefile does not probe the GPU.
 
 ```bash
-git clone https://github.com/alexhegit/h3-hip.c.git
-cd h3-hip.c
-git checkout v0.17.0
+git clone git@github.com:alexhegit/minimax-h3-hip.c.git
+cd minimax-h3-hip.c
+git checkout v0.18.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
