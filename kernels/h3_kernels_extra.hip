@@ -778,14 +778,17 @@ h3_linear_f32_r128_kernel(const float *input, const float *weight,
 
 /* WT = uint16_t takes weights already rounded to BF16 with h3_f32_to_bf16,
  * the same rounding the F32 variant applies on the way into LDS, so the
- * matrix operands and the result are bit-identical while weight reads halve. */
+ * matrix operands and the result are bit-identical while weight reads halve.
+ * AT = uint16_t does the same for activations written by a BF16-output
+ * producer. */
 template <int BM, int BN, int BK, int WM, int WN, int PAD,
-          typename WT = float>
+          typename WT = float, typename AT = float>
 __global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32)
-h3_linear_f32_wmma_kernel(const float *input, const WT *weight,
+h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
                           const float *bias, float *output,
                           h3_linear_args args) {
     constexpr bool WB16 = sizeof(WT) == 2;
+    constexpr bool AB16 = sizeof(AT) == 2;
     using bf16 = rocwmma::bfloat16_t;
     constexpr int LD = BK + PAD;
     constexpr int WAVES_N = BN / WN;
@@ -816,15 +819,21 @@ h3_linear_f32_wmma_kernel(const float *input, const WT *weight,
     const bf16 *pA = reinterpret_cast<const bf16 *>(As);
     const bf16 *pB = reinterpret_cast<const bf16 *>(Bs);
 
-    float4 a_next[AI], b_next[WB16 ? 1 : BI];
-    uint2 b16_next[WB16 ? BI : 1];
+    float4 a_next[AB16 ? 1 : AI], b_next[WB16 ? 1 : BI];
+    uint2 a16_next[AB16 ? AI : 1], b16_next[WB16 ? BI : 1];
     auto fetch = [&](uint32_t k0) {
 #pragma unroll
         for (int it = 0; it < AI; it++) {
             uint32_t r = block_row + (uint32_t)(row0 + it * ROW_STEP);
-            a_next[it] = r < rows ? *reinterpret_cast<const float4 *>(
-                                        input + (size_t)r * K + k0 + kq0)
-                                  : make_float4(0.f, 0.f, 0.f, 0.f);
+            if constexpr (AB16) {
+                a16_next[it] = r < rows ? *reinterpret_cast<const uint2 *>(
+                                              input + (size_t)r * K + k0 + kq0)
+                                        : uint2{0u, 0u};
+            } else {
+                a_next[it] = r < rows ? *reinterpret_cast<const float4 *>(
+                                            input + (size_t)r * K + k0 + kq0)
+                                      : make_float4(0.f, 0.f, 0.f, 0.f);
+            }
         }
 #pragma unroll
         for (int it = 0; it < BI; it++) {
@@ -845,8 +854,13 @@ h3_linear_f32_wmma_kernel(const float *input, const WT *weight,
         for (int it = 0; it < AI; it++) {
             uint32_t *d = reinterpret_cast<uint32_t *>(
                 As + (row0 + it * ROW_STEP) * LD + kq0);
-            d[0] = h3_pack_bf16x2(a_next[it].x, a_next[it].y);
-            d[1] = h3_pack_bf16x2(a_next[it].z, a_next[it].w);
+            if constexpr (AB16) {
+                d[0] = a16_next[it].x;
+                d[1] = a16_next[it].y;
+            } else {
+                d[0] = h3_pack_bf16x2(a_next[it].x, a_next[it].y);
+                d[1] = h3_pack_bf16x2(a_next[it].z, a_next[it].w);
+            }
         }
 #pragma unroll
         for (int it = 0; it < BI; it++) {
@@ -925,7 +939,8 @@ h3_linear_f32_wmma_kernel(const float *input, const WT *weight,
  * with H3_F32_WMMA_CFG; see docs/perf-day9/STATUS.md for the sweep. */
 static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
                                       uint32_t *threads,
-                                      bool bf16_weight = false) {
+                                      bool bf16_weight = false,
+                                      bool bf16_input = false) {
     const char *cfg = getenv("H3_F32_WMMA_CFG");
     unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10) : 3u;
 #define H3_WMMA_CASE(BM, BN, WM, WN)                                           \
@@ -933,6 +948,10 @@ static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
         *bm = BM;                                                              \
         *bn = BN;                                                              \
         *threads = (BM / WM) * (BN / WN) * 32u;                                 \
+        if (bf16_input)                                                        \
+            return reinterpret_cast<const void *>(                             \
+                h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8, uint16_t,     \
+                                          uint16_t>);                          \
         return bf16_weight                                                     \
             ? reinterpret_cast<const void *>(                                  \
                   h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8, uint16_t>)  \
@@ -1483,6 +1502,25 @@ extern "C" int h3_launch_linear_f32_wbf16(const float *input,
     dim3 grid((host_args.output_dim + bn - 1u) / bn,
               (host_args.rows + bm - 1u) / bm, 1);
     h3_f32_stats_add("wmma-bf16w", &host_args);
+    return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, 0,
+                           stream) == hipSuccess;
+}
+
+/* Both operands already BF16; only for weights that passed
+ * h3_linear_f32_takes_bf16_weight, with rows >= 256 as there. */
+extern "C" int h3_launch_linear_bf16a_wbf16(const uint16_t *input,
+                                            const uint16_t *weight,
+                                            const float *bias, float *output,
+                                            const h3_linear_args *args,
+                                            hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    if (host_args.input_dim % 32u) return 0;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    uint32_t bm = 0, bn = 0, threads = 0;
+    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true, true);
+    dim3 grid((host_args.output_dim + bn - 1u) / bn,
+              (host_args.rows + bm - 1u) / bm, 1);
+    h3_f32_stats_add("wmma-bf16aw", &host_args);
     return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, 0,
                            stream) == hipSuccess;
 }

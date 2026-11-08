@@ -178,7 +178,19 @@ __global__ void h3_swiglu_bf16_kernel(const uint16_t *fused, uint16_t *output,
         h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
 }
 
-__global__ void h3_swiglu_f32_kernel(const float *fused, float *output,
+/* F32 math, F32 or BF16 store. The BF16 store is the h3_f32_to_bf16 rounding
+ * the F32-input WMMA linear applies on load, so a linear fed the BF16 copy
+ * sees the same operands. */
+__device__ inline void h3_store_act(float *output, float value) {
+    *output = value;
+}
+
+__device__ inline void h3_store_act(uint16_t *output, float value) {
+    *output = h3_f32_to_bf16(value);
+}
+
+template <typename OT>
+__global__ void h3_swiglu_f32_kernel(const float *fused, OT *output,
                                      h3_swiglu_args args) {
     uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
     uint32_t row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -186,8 +198,8 @@ __global__ void h3_swiglu_f32_kernel(const float *fused, float *output,
     uint32_t base = row * args.width * 2;
     float gate = fused[base + column];
     float up = fused[base + args.width + column];
-    output[row * args.width + column] =
-        gate / (1.0f + expf(-gate)) * up;
+    h3_store_act(output + row * args.width + column,
+                 gate / (1.0f + expf(-gate)) * up);
 }
 
 __global__ void h3_clip_f32_kernel(const float *input, float *output,
@@ -464,9 +476,10 @@ __global__ void h3_scale_add_f32_kernel(const float *residual,
  * output. Both results are live: residual carries the block's attention output
  * to the next residual add, output feeds the MLP. Saves one full read+write of
  * the hidden tensor per block. */
+template <typename OT>
 __global__ void h3_scale_add_rms_norm_f32_kernel(
     float *residual, const float *branch, const float *scale,
-    const float *norm_weight, float *output, h3_norm_args args) {
+    const float *norm_weight, OT *output, h3_norm_args args) {
     uint32_t row = blockIdx.x;
     uint32_t tid = threadIdx.x;
     uint32_t threads = blockDim.x;
@@ -488,8 +501,8 @@ __global__ void h3_scale_add_rms_norm_f32_kernel(
     }
     float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
     for (uint32_t column = tid; column < args.width; column += threads) {
-        output[row * args.width + column] =
-            r[column] * inverse * norm_weight[column];
+        h3_store_act(output + row * args.width + column,
+                     r[column] * inverse * norm_weight[column]);
     }
 }
 
@@ -521,8 +534,9 @@ __global__ void h3_geglu_f32_kernel(const float *gate, const float *linear,
     output[gid] = gelu * linear[gid];
 }
 
+template <typename OT>
 __global__ void h3_rms_norm_f32_kernel(const float *input, const float *weight,
-                                       float *output, h3_norm_args args) {
+                                       OT *output, h3_norm_args args) {
     uint32_t row = blockIdx.x;
     uint32_t tid = threadIdx.x;
     uint32_t threads = blockDim.x;
@@ -541,8 +555,8 @@ __global__ void h3_rms_norm_f32_kernel(const float *input, const float *weight,
     }
     float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
     for (uint32_t column = tid; column < args.width; column += threads) {
-        output[row * args.width + column] =
-            x[column] * inverse * weight[column];
+        h3_store_act(output + row * args.width + column,
+                     x[column] * inverse * weight[column]);
     }
 }
 
@@ -4085,8 +4099,22 @@ extern "C" int h3_launch_swiglu_f32(const float *fused, float *output,
     dim3 block(16, 16, 1);
     dim3 grid((host_args.width + 15) / 16, (host_args.rows + 15) / 16, 1);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_swiglu_f32_kernel), grid,
-               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+               reinterpret_cast<const void *>(h3_swiglu_f32_kernel<float>),
+               grid, block, kernel_args, sizeof(kernel_args),
+               stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_swiglu_f32_bf16(const float *fused, uint16_t *output,
+                                         const h3_swiglu_args *args,
+                                         hipStream_t stream) {
+    h3_swiglu_args host_args = *args;
+    void *kernel_args[] = {&fused, &output, &host_args};
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.width + 15) / 16, (host_args.rows + 15) / 16, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_swiglu_f32_kernel<uint16_t>),
+               grid, block, kernel_args, sizeof(kernel_args),
+               stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_clip_f32(const float *input, float *output,
@@ -4247,7 +4275,23 @@ extern "C" int h3_launch_scale_add_rms_norm_f32(
                            &host_args};
     uint32_t threads = h3_row_threads(host_args.width);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_scale_add_rms_norm_f32_kernel),
+               reinterpret_cast<const void *>(
+                   h3_scale_add_rms_norm_f32_kernel<float>),
+               dim3(host_args.rows), dim3(threads), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_scale_add_rms_norm_f32_bf16(
+    float *residual, const float *branch, const float *scale,
+    const float *norm_weight, uint16_t *output, const h3_norm_args *args,
+    hipStream_t stream) {
+    h3_norm_args host_args = *args;
+    void *kernel_args[] = {&residual, &branch, &scale, &norm_weight, &output,
+                           &host_args};
+    uint32_t threads = h3_row_threads(host_args.width);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_scale_add_rms_norm_f32_kernel<uint16_t>),
                dim3(host_args.rows), dim3(threads), kernel_args,
                sizeof(kernel_args), stream) == hipSuccess;
 }
@@ -4292,7 +4336,22 @@ extern "C" int h3_launch_rms_norm_f32(const float *input, const float *weight,
     void *kernel_args[] = {&input, &weight, &output, &host_args};
     uint32_t threads = h3_row_threads(host_args.width);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_rms_norm_f32_kernel),
+               reinterpret_cast<const void *>(h3_rms_norm_f32_kernel<float>),
+               dim3(host_args.rows), dim3(threads), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_rms_norm_f32_bf16(const float *input,
+                                           const float *weight,
+                                           uint16_t *output,
+                                           const h3_norm_args *args,
+                                           hipStream_t stream) {
+    h3_norm_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &output, &host_args};
+    uint32_t threads = h3_row_threads(host_args.width);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_rms_norm_f32_kernel<uint16_t>),
                dim3(host_args.rows), dim3(threads), kernel_args,
                sizeof(kernel_args), stream) == hipSuccess;
 }
