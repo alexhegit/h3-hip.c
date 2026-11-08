@@ -64,6 +64,12 @@ a silent fallback above 65535 rows, so those outputs differ.
 ⁵ VSA tile buffers need 11.63 GiB on top of the 24 GiB DiT working set;
 see [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) KI-006.
 
+After v0.18.0, on branch `r9700`: overlapped `H3_INT8_HOST` copies, a leaner
+gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
+**1985.1 s** (from 2204.7 s) with the same MP4, and the video VAE peak from
+9.5 to 5.3 GiB
+([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
+
 Dense is 2.8–3.3× MI300X. fox-s2 and fox-fast are bound by reading ~98 GiB
 of weights on a 59 GiB host. The published RTX 5090 numbers for the
 1344×768 · 5 s job are 1045.4 s baseline, 708.3 s with Sol-Attn, and
