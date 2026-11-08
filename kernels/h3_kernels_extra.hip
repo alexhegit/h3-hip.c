@@ -1141,6 +1141,120 @@ __global__ void h3_conv3d_f32_kernel(const float *input, const float *weight,
     output[output_batch + spatial * args.output_channels + out] = sum;
 }
 
+/* Weight [out][in][kd][kh][kw] -> [kd][kh][kw][in][out], so the tiled kernel
+ * reads consecutive output channels from consecutive addresses. */
+__global__ void h3_conv3d_weight_transpose_kernel(const float *weight,
+                                                  float *transposed,
+                                                  uint32_t out_channels,
+                                                  uint32_t in_channels,
+                                                  uint32_t taps) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t total = (size_t)out_channels * in_channels * taps;
+    if (index >= total) return;
+    uint32_t out = (uint32_t)(index % out_channels);
+    size_t rest = index / out_channels;
+    uint32_t in = (uint32_t)(rest % in_channels);
+    uint32_t tap = (uint32_t)(rest / in_channels);
+    transposed[index] =
+        weight[((size_t)out * in_channels + in) * taps + tap];
+}
+
+/* Same per-output sum as h3_conv3d_f32_kernel: bias, then fmaf over
+ * kd, kh, kw, input channel in that order, so results are bit-identical.
+ * A 256-thread block owns OC_T output channels x SP_T spatial outputs; each
+ * thread keeps (OC_T/16) x (SP_T/16) sums and shares IC_T-channel slices of
+ * input and weight through LDS. */
+template <int OC_T, int SP_T, int IC_T>
+__global__ __launch_bounds__(256) void h3_conv3d_f32_tiled_kernel(
+    const float *input, const float *weight_t, const float *bias,
+    float *output, h3_conv3d_args args) {
+    constexpr int OJ = OC_T / 16, SK = SP_T / 16;
+    __shared__ float ws[IC_T][OC_T];
+    __shared__ float xs[IC_T][SP_T + 1];
+    __shared__ size_t base[SP_T];
+    const uint32_t tid = threadIdx.x;
+    const uint32_t tx = tid % 16u, ty = tid / 16u;
+    const uint32_t out0 = blockIdx.y * OC_T;
+    const uint64_t sp0 = (uint64_t)blockIdx.x * SP_T;
+    const uint32_t batch = blockIdx.z;
+    const uint32_t C = args.input_channels, O = args.output_channels;
+    const uint64_t spatial_count = (uint64_t)args.output_depth *
+                                   args.output_height * args.output_width;
+    const size_t input_batch = ((size_t)batch * args.input_depth *
+                                args.input_height * args.input_width) * C;
+    for (uint32_t s = tid; s < (uint32_t)SP_T; s += 256u) {
+        uint64_t spatial = sp0 + s;
+        size_t b = 0;
+        if (spatial < spatial_count) {
+            uint32_t x = (uint32_t)(spatial % args.output_width);
+            uint64_t plane = spatial / args.output_width;
+            uint32_t y = (uint32_t)(plane % args.output_height);
+            uint32_t t = (uint32_t)(plane / args.output_height);
+            b = input_batch +
+                (((size_t)(t * args.stride_depth) * args.input_height +
+                  y * args.stride_height) * args.input_width +
+                 x * args.stride_width) * C;
+        }
+        base[s] = b;
+    }
+    float acc[SK][OJ];
+#pragma unroll
+    for (int j = 0; j < OJ; j++) {
+        uint32_t out = out0 + tx + 16u * j;
+        float init = (args.has_bias && out < O) ? bias[out] : 0.0f;
+#pragma unroll
+        for (int k = 0; k < SK; k++) acc[k][j] = init;
+    }
+    __syncthreads();
+    uint32_t tap = 0;
+    for (uint32_t kd = 0; kd < args.kernel_depth; kd++)
+    for (uint32_t kh = 0; kh < args.kernel_height; kh++)
+    for (uint32_t kw = 0; kw < args.kernel_width; kw++, tap++) {
+        const size_t tap_offset =
+            (((size_t)kd * args.input_height + kh) * args.input_width + kw) *
+            C;
+        for (uint32_t ic0 = 0; ic0 < C; ic0 += IC_T) {
+            const uint32_t icn = C - ic0 < (uint32_t)IC_T ? C - ic0 : IC_T;
+            for (uint32_t e = tid; e < (uint32_t)(IC_T * OC_T); e += 256u) {
+                uint32_t i = e / OC_T, o = e % OC_T;
+                ws[i][o] = (i < icn && out0 + o < O) ?
+                    weight_t[((size_t)tap * C + ic0 + i) * O + out0 + o] :
+                    0.0f;
+            }
+            for (uint32_t e = tid; e < (uint32_t)(IC_T * SP_T); e += 256u) {
+                uint32_t i = e % IC_T, s = e / IC_T;
+                xs[i][s] = (i < icn && sp0 + s < spatial_count) ?
+                    input[base[s] + tap_offset + ic0 + i] : 0.0f;
+            }
+            __syncthreads();
+            for (uint32_t i = 0; i < icn; i++) {
+                float w[OJ], x[SK];
+#pragma unroll
+                for (int j = 0; j < OJ; j++) w[j] = ws[i][tx + 16u * j];
+#pragma unroll
+                for (int k = 0; k < SK; k++) x[k] = xs[i][ty + 16u * k];
+#pragma unroll
+                for (int k = 0; k < SK; k++)
+#pragma unroll
+                    for (int j = 0; j < OJ; j++)
+                        acc[k][j] = fmaf(x[k], w[j], acc[k][j]);
+            }
+            __syncthreads();
+        }
+    }
+    const size_t output_batch = ((size_t)batch * spatial_count) * O;
+#pragma unroll
+    for (int k = 0; k < SK; k++) {
+        uint64_t spatial = sp0 + ty + 16u * k;
+        if (spatial >= spatial_count) continue;
+#pragma unroll
+        for (int j = 0; j < OJ; j++) {
+            uint32_t out = out0 + tx + 16u * j;
+            if (out < O) output[output_batch + spatial * O + out] = acc[k][j];
+        }
+    }
+}
+
 /* HIP/CUDA grid.y and grid.z are limited to 65535. A 22-frame 256px encoder
  * tile has T*H*W = 1,441,792, and a single huge launch wedged gfx1151
  * (amdgpu GPU reset). Chunk the grid so each packet stays in limits.
@@ -1160,6 +1274,19 @@ static int h3_conv1d_tiled_on(void) {
     }
     return cached;
 }
+
+/* H3_CONV3D_TILED=0 restores the one-thread-per-output Conv3d kernel. */
+static int h3_conv3d_tiled_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_CONV3D_TILED");
+        cached = (!e || strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+static float *h3_conv3d_weight_scratch = NULL;
+static size_t h3_conv3d_weight_scratch_bytes = 0;
 
 static int h3_hip_launch(const void *kernel, dim3 grid, dim3 block,
                          void **kernel_args, hipStream_t stream) {
@@ -1274,6 +1401,36 @@ extern "C" int h3_launch_conv3d_f32(const float *input, const float *weight,
         return 1;
     }
     if (spatial_count > UINT32_MAX) return 0;
+    if (h3_conv3d_tiled_on()) {
+        uint32_t taps = host_args.kernel_depth * host_args.kernel_height *
+                        host_args.kernel_width;
+        size_t weight_count = (size_t)host_args.output_channels *
+                              host_args.input_channels * taps;
+        if (weight_count * sizeof(float) > h3_conv3d_weight_scratch_bytes) {
+            float *next = NULL;
+            if (hipMalloc(&next, weight_count * sizeof(float)) != hipSuccess)
+                return 0;
+            if (h3_conv3d_weight_scratch)
+                (void)hipFree(h3_conv3d_weight_scratch);
+            h3_conv3d_weight_scratch = next;
+            h3_conv3d_weight_scratch_bytes = weight_count * sizeof(float);
+        }
+        float *weight_t = h3_conv3d_weight_scratch;
+        hipLaunchKernelGGL(h3_conv3d_weight_transpose_kernel,
+                           dim3((unsigned)((weight_count + 255u) / 256u)),
+                           dim3(256), 0, stream, weight, weight_t,
+                           host_args.output_channels,
+                           host_args.input_channels, taps);
+        if (hipGetLastError() != hipSuccess) return 0;
+        constexpr int OC_T = 64, SP_T = 64, IC_T = 16;
+        dim3 grid((unsigned)((spatial_count + SP_T - 1) / SP_T),
+                  (host_args.output_channels + OC_T - 1) / OC_T,
+                  host_args.batch);
+        hipLaunchKernelGGL((h3_conv3d_f32_tiled_kernel<OC_T, SP_T, IC_T>),
+                           grid, dim3(256), 0, stream, input,
+                           (const float *)weight_t, bias, output, host_args);
+        return hipGetLastError() == hipSuccess;
+    }
     dim3 block(256, 1, 1);
     uint32_t total_spatial = (uint32_t)spatial_count;
     uint32_t chunk = H3_HIP_CONV3D_SPATIAL_CHUNK;
@@ -3638,6 +3795,9 @@ extern "C" void h3_kernels_release_scratch(void) {
     (void)hipFree(h3_int8_pack_scratch);
     h3_int8_pack_scratch = NULL;
     h3_int8_pack_scratch_bytes = 0;
+    (void)hipFree(h3_conv3d_weight_scratch);
+    h3_conv3d_weight_scratch = NULL;
+    h3_conv3d_weight_scratch_bytes = 0;
 }
 
 static int h3_int8_ensure_i8_scratch(size_t bytes) {
