@@ -776,11 +776,16 @@ h3_linear_f32_r128_kernel(const float *input, const float *weight,
  * into registers so the global loads overlap the mma chain. Opt out with
  * H3_F32_WMMA=0. */
 
-template <int BM, int BN, int BK, int WM, int WN, int PAD>
+/* WT = uint16_t takes weights already rounded to BF16 with h3_f32_to_bf16,
+ * the same rounding the F32 variant applies on the way into LDS, so the
+ * matrix operands and the result are bit-identical while weight reads halve. */
+template <int BM, int BN, int BK, int WM, int WN, int PAD,
+          typename WT = float>
 __global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32)
-h3_linear_f32_wmma_kernel(const float *input, const float *weight,
+h3_linear_f32_wmma_kernel(const float *input, const WT *weight,
                           const float *bias, float *output,
                           h3_linear_args args) {
+    constexpr bool WB16 = sizeof(WT) == 2;
     using bf16 = rocwmma::bfloat16_t;
     constexpr int LD = BK + PAD;
     constexpr int WAVES_N = BN / WN;
@@ -811,7 +816,8 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
     const bf16 *pA = reinterpret_cast<const bf16 *>(As);
     const bf16 *pB = reinterpret_cast<const bf16 *>(Bs);
 
-    float4 a_next[AI], b_next[BI];
+    float4 a_next[AI], b_next[WB16 ? 1 : BI];
+    uint2 b16_next[WB16 ? BI : 1];
     auto fetch = [&](uint32_t k0) {
 #pragma unroll
         for (int it = 0; it < AI; it++) {
@@ -823,9 +829,15 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
 #pragma unroll
         for (int it = 0; it < BI; it++) {
             uint32_t r = block_col + (uint32_t)(row0 + it * ROW_STEP);
-            b_next[it] = r < cols ? *reinterpret_cast<const float4 *>(
-                                        weight + (size_t)r * K + k0 + kq0)
-                                  : make_float4(0.f, 0.f, 0.f, 0.f);
+            if constexpr (WB16) {
+                b16_next[it] = r < cols ? *reinterpret_cast<const uint2 *>(
+                                              weight + (size_t)r * K + k0 + kq0)
+                                        : uint2{0u, 0u};
+            } else {
+                b_next[it] = r < cols ? *reinterpret_cast<const float4 *>(
+                                            weight + (size_t)r * K + k0 + kq0)
+                                      : make_float4(0.f, 0.f, 0.f, 0.f);
+            }
         }
     };
     auto stash = [&]() {
@@ -840,8 +852,13 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
         for (int it = 0; it < BI; it++) {
             uint32_t *d = reinterpret_cast<uint32_t *>(
                 Bs + (row0 + it * ROW_STEP) * LD + kq0);
-            d[0] = h3_pack_bf16x2(b_next[it].x, b_next[it].y);
-            d[1] = h3_pack_bf16x2(b_next[it].z, b_next[it].w);
+            if constexpr (WB16) {
+                d[0] = b16_next[it].x;
+                d[1] = b16_next[it].y;
+            } else {
+                d[0] = h3_pack_bf16x2(b_next[it].x, b_next[it].y);
+                d[1] = h3_pack_bf16x2(b_next[it].z, b_next[it].w);
+            }
         }
     };
     auto compute = [&]() {
@@ -907,7 +924,8 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
  * 16 accumulator fragments (128 VGPRs) and spills, while 32x64 needs 8. Pick
  * with H3_F32_WMMA_CFG; see docs/perf-day9/STATUS.md for the sweep. */
 static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
-                                      uint32_t *threads) {
+                                      uint32_t *threads,
+                                      bool bf16_weight = false) {
     const char *cfg = getenv("H3_F32_WMMA_CFG");
     unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10) : 3u;
 #define H3_WMMA_CASE(BM, BN, WM, WN)                                           \
@@ -915,8 +933,11 @@ static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
         *bm = BM;                                                              \
         *bn = BN;                                                              \
         *threads = (BM / WM) * (BN / WN) * 32u;                                 \
-        return reinterpret_cast<const void *>(                                 \
-            h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8>);                  \
+        return bf16_weight                                                     \
+            ? reinterpret_cast<const void *>(                                  \
+                  h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8, uint16_t>)  \
+            : reinterpret_cast<const void *>(                                  \
+                  h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8>);           \
     } while (0)
     switch (choice) {
     case 1: H3_WMMA_CASE(256, 128, 64, 64);
@@ -1274,6 +1295,39 @@ extern "C" int h3_launch_conv3d_f32(const float *input, const float *weight,
         offset += span;
     }
     return 1;
+}
+
+/* True when h3_launch_linear_f32 sends an input_dim x output_dim weight to the
+ * BF16 WMMA kernel, which rounds it to BF16 anyway; such a weight can then be
+ * stored as BF16 once. Rows are not known at load time: below 256 rows the
+ * F32 path would use r128, so callers only convert weights whose activations
+ * always have more. H3_F32_BF16_WEIGHT=0 keeps F32 weights. */
+extern "C" int h3_linear_f32_takes_bf16_weight(uint32_t input_dim,
+                                               uint32_t output_dim) {
+    const char *e = getenv("H3_F32_BF16_WEIGHT");
+    if (e && strcmp(e, "0") == 0) return 0;
+    if (getenv("H3_F32_LEGACY")) return 0;
+    if (getenv("H3_F32_R64") && strcmp(getenv("H3_F32_R64"), "0") != 0)
+        return 0;
+    return input_dim % 32u == 0 && input_dim >= 512u && output_dim >= 512u &&
+           !h3_f32_hipblas_on() && h3_f32_wmma_on();
+}
+
+extern "C" int h3_launch_linear_f32_wbf16(const float *input,
+                                          const uint16_t *weight,
+                                          const float *bias, float *output,
+                                          const h3_linear_args *args,
+                                          hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    if (host_args.input_dim % 32u) return 0;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    uint32_t bm = 0, bn = 0, threads = 0;
+    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true);
+    dim3 grid((host_args.output_dim + bn - 1u) / bn,
+              (host_args.rows + bm - 1u) / bm, 1);
+    h3_f32_stats_add("wmma-bf16w", &host_args);
+    return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, 0,
+                           stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_linear_f32(const float *input, const float *weight,

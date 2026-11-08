@@ -596,6 +596,8 @@ struct h3_gpu {
     void *kv_hm_scratch;
     size_t kv_hm_scratch_bytes;
     int kv_hm_device;
+    /* Created on first use by the h3_gpu_copy_* calls. */
+    hipStream_t copy_stream;
     /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
     int sdpa_kv_already_hm;
     /* Sol-Attn K-mean / V-sum: 2 * n_kv_blocks * heads * 128 floats. */
@@ -1101,6 +1103,10 @@ void h3_gpu_free(h3_gpu *gpu) {
     hipFree(ctx->vsa_scores);
     hipFree(ctx->vsa_acc);
     hipFree(ctx->vsa_mask);
+    if (ctx->copy_stream) {
+        hipStreamSynchronize(ctx->copy_stream);
+        hipStreamDestroy(ctx->copy_stream);
+    }
     hipStreamDestroy(ctx->stream);
     free(ctx);
     h3_kernels_release_scratch();
@@ -1479,6 +1485,110 @@ int h3_gpu_submit(h3_gpu *gpu) {
     return 1;
 }
 
+void *h3_gpu_host_pinned_alloc(size_t bytes) {
+    void *host = NULL;
+    if (!bytes || !h3_hip_bind_thread_device() ||
+        hipHostMalloc(&host, bytes, hipHostMallocDefault) != hipSuccess)
+        return NULL;
+    return host;
+}
+
+void h3_gpu_host_pinned_free(void *host) {
+    if (host) hipHostFree(host);
+}
+
+struct h3_gpu_event {
+    hipEvent_t event;
+};
+
+static hipStream_t h3_hip_copy_stream(struct h3_gpu *ctx) {
+    if (!ctx->copy_stream &&
+        hipStreamCreateWithFlags(&ctx->copy_stream, hipStreamNonBlocking) !=
+            hipSuccess) {
+        ctx->copy_stream = NULL;
+        h3_hip_set_error(ctx, "cannot create HIP copy stream");
+    }
+    return ctx->copy_stream;
+}
+
+h3_gpu_event *h3_gpu_event_new(h3_gpu *gpu) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    h3_gpu_event *event = calloc(1, sizeof(*event));
+    if (!ctx || !event) {
+        free(event);
+        return NULL;
+    }
+    if (hipEventCreateWithFlags(&event->event, hipEventDisableTiming) !=
+        hipSuccess) {
+        free(event);
+        h3_hip_set_error(ctx, "cannot create HIP event");
+        return NULL;
+    }
+    return event;
+}
+
+void h3_gpu_event_free(h3_gpu_event *event) {
+    if (!event) return;
+    hipEventDestroy(event->event);
+    free(event);
+}
+
+int h3_gpu_record_compute(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    return ctx && event &&
+           hipEventRecord(event->event, ctx->stream) == hipSuccess;
+}
+
+int h3_gpu_compute_wait(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    return ctx && event &&
+           hipStreamWaitEvent(ctx->stream, event->event, 0) == hipSuccess;
+}
+
+int h3_gpu_record_copy(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    hipStream_t stream = ctx ? h3_hip_copy_stream(ctx) : NULL;
+    return stream && event &&
+           hipEventRecord(event->event, stream) == hipSuccess;
+}
+
+int h3_gpu_copy_wait(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    hipStream_t stream = ctx ? h3_hip_copy_stream(ctx) : NULL;
+    return stream && event &&
+           hipStreamWaitEvent(stream, event->event, 0) == hipSuccess;
+}
+
+int h3_gpu_copy_to_device_async(h3_gpu *gpu, h3_gpu_tensor *destination,
+                                const void *pinned_source, size_t bytes) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    struct h3_gpu_tensor *obj = tensor_ptr(destination);
+    hipStream_t stream = ctx ? h3_hip_copy_stream(ctx) : NULL;
+    if (!stream || !obj || !obj->device || !pinned_source ||
+        bytes > obj->bytes) {
+        if (ctx) h3_hip_set_error(ctx, "invalid async device copy");
+        return 0;
+    }
+    if (!bytes) return 1;
+    if (hipMemcpyAsync(obj->data, pinned_source, bytes, hipMemcpyHostToDevice,
+                       stream) != hipSuccess) {
+        h3_hip_set_error(ctx, "async host-to-device copy failed");
+        return 0;
+    }
+    return 1;
+}
+
+int h3_gpu_copy_sync(h3_gpu *gpu) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx) return 0;
+    if (!ctx->copy_stream) return 1;
+    if (hipStreamSynchronize(ctx->copy_stream) != hipSuccess) {
+        h3_hip_set_error(ctx, "HIP copy stream synchronization failed");
+        return 0;
+    }
+    return 1;
+}
+
 const char *h3_gpu_error(const h3_gpu *gpu) {
     return gpu ? gpu_ptr(gpu)->last_error : "invalid HIP context";
 }
@@ -1733,6 +1843,32 @@ int h3_gpu_patch_linear_bf16_offset(h3_gpu *gpu, h3_gpu_tensor *output,
         ctx->stream), "h3_linear_f32_tiled_bf16");
 }
 
+h3_gpu_tensor *h3_gpu_linear_f32_bf16_weight(h3_gpu *gpu,
+                                             const h3_gpu_tensor *weight,
+                                             uint32_t input_dim,
+                                             uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)output_dim * input_dim;
+    if (!ctx || !weight || tensor_ptr(weight)->dtype != H3_GPU_F32 ||
+        h3_gpu_tensor_elements(weight) != count || count > UINT32_MAX ||
+        !h3_linear_f32_takes_bf16_weight(input_dim, output_dim))
+        return NULL;
+    h3_gpu_tensor *bf16 = h3_gpu_tensor_new_bf16_device(gpu, count);
+    if (!bf16) return NULL;
+    /* Weight loaders call this from worker threads: run on the upload stream
+     * they already use, outside the per-context profiler. */
+    hipStream_t stream = h3_hip_upload();
+    if (!tensor_ptr(bf16)->device || !stream ||
+        !h3_launch_cast_f32_to_bf16((const float *)tensor_ptr(weight)->data,
+                                    (uint16_t *)tensor_ptr(bf16)->data,
+                                    (uint32_t)count, stream) ||
+        hipStreamSynchronize(stream) != hipSuccess) {
+        h3_gpu_tensor_free(bf16);
+        return NULL;
+    }
+    return bf16;
+}
+
 int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                       const h3_gpu_tensor *input, const h3_gpu_tensor *weight,
                       const h3_gpu_tensor *bias, uint32_t rows,
@@ -1741,9 +1877,13 @@ int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
     size_t input_count = (size_t)rows * input_dim;
     size_t weight_count = (size_t)output_dim * input_dim;
     size_t output_count = (size_t)rows * output_dim;
+    int bf16_weight = weight && tensor_ptr(weight)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !input_dim || !output_dim ||
         !h3_hip_require_f32(ctx, input, input_count, "linear input") ||
-        !h3_hip_require_f32(ctx, weight, weight_count, "linear weight") ||
+        (bf16_weight
+             ? !h3_hip_require_bf16(ctx, weight, weight_count, "linear weight")
+             : !h3_hip_require_f32(ctx, weight, weight_count,
+                                   "linear weight")) ||
         !h3_hip_require_f32(ctx, output, output_count, "linear output") ||
         (bias && !h3_hip_require_f32(ctx, bias, output_dim, "linear bias"))) {
         return 0;
@@ -1752,6 +1892,13 @@ int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         (const float *)tensor_ptr(bias)->data :
         (const float *)tensor_ptr(input)->data;
     h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
+    if (bf16_weight)
+        return h3_hip_launch_linear(ctx, h3_launch_linear_f32_wbf16(
+            (const float *)tensor_ptr(input)->data,
+            (const uint16_t *)tensor_ptr(weight)->data, bias_ptr,
+            (float *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_linear_f32_wbf16",
+            h3_hip_mps_linear_f32(rows, input_dim, output_dim));
     return h3_hip_launch_linear(ctx, h3_launch_linear_f32(
         (const float *)tensor_ptr(input)->data,
         (const float *)tensor_ptr(weight)->data, bias_ptr,

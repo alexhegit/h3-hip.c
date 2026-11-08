@@ -429,6 +429,10 @@ int h3_launch_f32_axpy_bf16(float *weight, const uint16_t *delta, size_t count,
 int h3_launch_linear_f32(const float *input, const float *weight,
                          const float *bias, float *output,
                          const h3_linear_args *args, hipStream_t stream);
+int h3_linear_f32_takes_bf16_weight(uint32_t input_dim, uint32_t output_dim);
+int h3_launch_linear_f32_wbf16(const float *input, const uint16_t *weight,
+                               const float *bias, float *output,
+                               const h3_linear_args *args, hipStream_t stream);
 int h3_launch_gate_bf16(const uint16_t *residual, const uint16_t *branch,
                         const uint16_t *modulation, const uint32_t *row_map,
                         uint16_t *output, const h3_gate_args *args,

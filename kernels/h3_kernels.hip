@@ -28,6 +28,13 @@ __device__ __host__ inline uint16_t h3_f32_to_bf16(float value) {
     return *reinterpret_cast<uint16_t *>(&bf16);
 }
 
+/* Round-to-nearest-even like __float2bfloat16 for every non-NaN input, without
+ * its NaN test. Only for values that cannot be NaN (softmax P). */
+__device__ inline uint16_t h3_f32_to_bf16_finite(float value) {
+    uint32_t bits = __float_as_uint(value);
+    return (uint16_t)((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
+}
+
 /* Two bf16 in one dword so an LDS tile can be filled with b32 stores. */
 __device__ inline uint32_t h3_pack_bf16x2(float low, float high) {
     return (uint32_t)h3_f32_to_bf16(low) |
@@ -2413,17 +2420,27 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
             }
         }
 
+        /* Only the last key tile can run past the sequence. */
+        const bool full_tile = PF && k0 + BK <= sequence;
         float alpha[8];
 #pragma unroll
         for (int i = 0; i < 8; i++) {
             float s[NT];
             float m = -1e30f;
+            if (full_tile) {
 #pragma unroll
-            for (uint32_t t = 0; t < NT; t++) {
-                s[t] = k0 + t * 16u + col < sequence
-                           ? fs[t].x[i] * args.scale
-                           : -1e30f;
-                m = fmaxf(m, s[t]);
+                for (uint32_t t = 0; t < NT; t++) {
+                    s[t] = fs[t].x[i] * args.scale;
+                    m = fmaxf(m, s[t]);
+                }
+            } else {
+#pragma unroll
+                for (uint32_t t = 0; t < NT; t++) {
+                    s[t] = k0 + t * 16u + col < sequence
+                               ? fs[t].x[i] * args.scale
+                               : -1e30f;
+                    m = fmaxf(m, s[t]);
+                }
             }
             if constexpr (PF) {
                 m = fmaxf(m, h3_row16_xor<1>(m));
@@ -2443,7 +2460,8 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
             for (uint32_t t = 0; t < NT; t++) {
                 float p = h3_fast_exp(s[t] - new_max);
                 ps += p;
-                sp[wave][prow * SP_LD + t * 16u + col] = h3_f32_to_bf16(p);
+                sp[wave][prow * SP_LD + t * 16u + col] =
+                    PF ? h3_f32_to_bf16_finite(p) : h3_f32_to_bf16(p);
             }
             if constexpr (PF) {
                 ps += h3_row16_xor<1>(ps);

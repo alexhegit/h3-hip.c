@@ -201,6 +201,18 @@ static void *vae_f2_worker(void *arg) {
     *job->dst = f2(job->vae, job->name, job->rows, job->columns, job->error,
                    sizeof(job->error));
     job->ok = *job->dst != NULL;
+    /* The INT8 VAE quantizes from the F32 weight; otherwise store the BF16
+     * the WMMA linear would round to anyway. VAE tiles are well over the
+     * 256 rows that keep that path. */
+    if (job->ok && !job->vae->int8_vae) {
+        h3_gpu_tensor *bf16 = h3_gpu_linear_f32_bf16_weight(
+            job->vae->gpu, *job->dst, (uint32_t)job->columns,
+            (uint32_t)job->rows);
+        if (bf16) {
+            h3_gpu_tensor_free(*job->dst);
+            *job->dst = bf16;
+        }
+    }
     return NULL;
 }
 
