@@ -1,18 +1,42 @@
 # h3-hip.c
 
 HIP port of [antirez/h3.c](https://github.com/antirez/h3.c) for **AMD GPUs**.
-One tree, three supported products — pass `HIP_ARCH` to match the GPU you
+One tree, four supported products — pass `HIP_ARCH` to match the GPU you
 compile for. Timed scoreboard SKUs are **Strix Halo (gfx1151)**, **MI210
-(gfx90a)**, and **MI300X (gfx942)**. MI250 / MI250X also use `gfx90a` but
-were not timed.
+(gfx90a)**, **MI300X (gfx942)**, and **Radeon AI PRO R9700 (gfx1201)**.
+MI250 / MI250X also use `gfx90a` but were not timed.
 
 | Product | `HIP_ARCH` | Default DiT | SDPA |
 |---------|------------|-------------|------|
 | **Strix Halo** (RDNA) | `gfx1151` | INT8 + BF16 activations | wave32 rocWMMA |
+| **Radeon AI PRO R9700** (RDNA4) | `gfx1201` | INT8 + BF16 activations | wave32 rocWMMA (gfx12 prefetch / transposed-V) |
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.17.0** adds opt-in Pika H3 Flex (`--pika-lora`,
+Tagged **v0.19.0** is the first public release with the Radeon AI PRO R9700
+work below, and adds a ComfyUI node: `integrations/comfyui/` renders through
+a local `h3 --serve` ([setup](docs/wiki/ComfyUI.md)). The daemon can now
+give its cache back to other GPU programs (`POST /v1/cache/release`,
+`options.release_after`, `H3D_IDLE_RELEASE_SEC`), takes `options.fasth3`,
+stops a cancelled job before its next denoise step, and is gated against
+the CLI fox-s2 md5 by `make serve-regression`. On one R9700, h3-hip is
+1.34× faster end to end than ComfyUI's native MiniMax-H3 at 864×480 ·
+20 steps ([comparison](docs/perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md)),
+and 1344×768 · 5 s dense is **1985.1 s** (2204.7 s at v0.18.0, same MP4).
+Only gfx1201 was run for this tag.
+
+v0.18.0 (tagged in the R9700 tree, not released separately) added the
+Radeon AI PRO R9700 (`gfx1201`, 32 GiB).
+1344×768 needs `H3_INT8_HOST=1`, which keeps the INT8 DiT linears in host
+RAM. On one R9700, 1344×768 · 15 s, 20 steps, dense is **2787.6 s**
+(MI300X 947.0 s); 832×480 · 5 s, 50 steps, dense is **470.9 s**. The same
+release keeps DiT and VAE tensors in VRAM on 32 GiB cards, row-chunks the
+INT8 GEMM scratch, and fixes a silent grouped-INT8 fallback above 65535
+tokens. Only gfx1201 was run for this tag; gfx1151, gfx90a and gfx942 were
+compile-checked ([`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md), item X).
+Every case: [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+
+v0.17.0 adds opt-in Pika H3 Flex (`--pika-lora`,
 `--pika-ref-lora`): a rank-128 LoRA and a fixed 6-step renoise sampler
 on the MiniMax-H3 weights you already have. It stays off unless set,
 keeps all 50 layers, requires `--reuse 1`, and does not combine with
@@ -229,8 +253,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.17.0**. `h3 --info` prints `h3-hip 0.17.0`.
-v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
+Current tagged line is **v0.19.0**. `h3 --info` prints `h3-hip 0.19.0`.
+v0.19.0 adds the ComfyUI node and the daemon changes behind it; v0.18.0
+added the R9700. v0.17.0 remains opt-in Pika H3 Flex. v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
 conv. v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
 `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
 and Sol-Attn past 64k tokens. v0.12.0 was the TR schedule, fused AdaLN, and
@@ -270,8 +295,12 @@ MODEL=/path/to/MiniMax-H3
 
 Useful env: `H3D_BIND` / `H3D_PORT` (default `127.0.0.1:8571`),
 `H3D_MODEL_PATH` (or `H3D_MODEL_PATH_FL2VA` / `H3D_MODEL_PATH_REF2VA`),
-`H3D_OUTPUT_ROOT`, `H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_QUOTA_BYTES`.
+`H3D_OUTPUT_ROOT`, `H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_QUOTA_BYTES`,
+`H3D_FASTH3_LORA`, `H3D_IDLE_RELEASE_SEC`.
 Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
+
+**ComfyUI:** `integrations/comfyui/` is a ComfyUI node that renders through
+this daemon. Setup: [ComfyUI](docs/wiki/ComfyUI.md).
 
 ## Documentation
 
@@ -279,7 +308,8 @@ Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
 - **Wiki sources** (also published to the GitHub wiki):
   [Getting started](docs/wiki/Getting-started.md),
   [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
-  [Long video](docs/wiki/Long-video.md)
+  [Long video](docs/wiki/Long-video.md),
+  [ComfyUI](docs/wiki/ComfyUI.md)
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
 - **`--sol-attn`** (lossy long SDPA; off by default): [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md)
@@ -352,7 +382,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.17.0
+git checkout v0.19.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

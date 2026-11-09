@@ -10,6 +10,11 @@ extern "C" {
 
 /* 1 on gfx11/gfx12 (RDNA rocWMMA layouts). 0 on CDNA (gfx90a / gfx942). */
 int h3_hip_rdna_wmma_default(void);
+/* 1 on gfx1200 / gfx1201 (RDNA4). */
+int h3_hip_is_gfx12(void);
+
+/* Free the shared kernel scratch buffers; they are re-created on demand. */
+void h3_kernels_release_scratch(void);
 
 typedef struct {
     uint32_t rows;
@@ -374,6 +379,8 @@ int h3_launch_swiglu_bf16(const uint16_t *fused, uint16_t *output,
                           const h3_swiglu_args *args, hipStream_t stream);
 int h3_launch_swiglu_f32(const float *fused, float *output,
                          const h3_swiglu_args *args, hipStream_t stream);
+int h3_launch_swiglu_f32_bf16(const float *fused, uint16_t *output,
+                              const h3_swiglu_args *args, hipStream_t stream);
 int h3_launch_clip_f32(const float *input, float *output,
                        const h3_clip_f32_args *args, hipStream_t stream);
 int h3_launch_add_scaled_f32(const float *left, const float *right,
@@ -386,6 +393,12 @@ int h3_launch_scale_add_rms_norm_f32(float *residual, const float *branch,
                                      const float *scale, const float *norm_weight,
                                      float *output, const h3_norm_args *args,
                                      hipStream_t stream);
+int h3_launch_scale_add_rms_norm_f32_bf16(float *residual, const float *branch,
+                                          const float *scale,
+                                          const float *norm_weight,
+                                          uint16_t *output,
+                                          const h3_norm_args *args,
+                                          hipStream_t stream);
 int h3_launch_weight_norm_f32(const float *vector, const float *magnitude,
                               float *output, const h3_weight_norm_args *args,
                               hipStream_t stream);
@@ -397,6 +410,9 @@ int h3_launch_rms_norm_bf16(const uint16_t *input, const uint16_t *weight,
 int h3_launch_rms_norm_f32(const float *input, const float *weight,
                            float *output, const h3_norm_args *args,
                            hipStream_t stream);
+int h3_launch_rms_norm_f32_bf16(const float *input, const float *weight,
+                                uint16_t *output, const h3_norm_args *args,
+                                hipStream_t stream);
 int h3_launch_layer_norm_bf16(const uint16_t *input, const uint16_t *weight,
                               const uint16_t *bias, uint16_t *output,
                               const h3_norm_args *args, hipStream_t stream);
@@ -424,6 +440,14 @@ int h3_launch_f32_axpy_bf16(float *weight, const uint16_t *delta, size_t count,
 int h3_launch_linear_f32(const float *input, const float *weight,
                          const float *bias, float *output,
                          const h3_linear_args *args, hipStream_t stream);
+int h3_linear_f32_takes_bf16_weight(uint32_t input_dim, uint32_t output_dim);
+int h3_launch_linear_f32_wbf16(const float *input, const uint16_t *weight,
+                               const float *bias, float *output,
+                               const h3_linear_args *args, hipStream_t stream);
+int h3_launch_linear_bf16a_wbf16(const uint16_t *input, const uint16_t *weight,
+                                 const float *bias, float *output,
+                                 const h3_linear_args *args,
+                                 hipStream_t stream);
 int h3_launch_gate_bf16(const uint16_t *residual, const uint16_t *branch,
                         const uint16_t *modulation, const uint32_t *row_map,
                         uint16_t *output, const h3_gate_args *args,

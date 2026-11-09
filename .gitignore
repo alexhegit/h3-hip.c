@@ -42,3 +42,7 @@ h3_hip_text_smoke
 h3_hip_multimodal_smoke
 h3_hip_ref2va_smoke
 h3_hip_sdpa_long
+
+# Python bytecode (ComfyUI imports integrations/comfyui in place)
+__pycache__/
+*.pyc

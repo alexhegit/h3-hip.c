@@ -87,6 +87,8 @@ typedef struct {
     h3_gpu_tensor *branch;
     h3_gpu_tensor *ff1;
     h3_gpu_tensor *activated;
+    h3_gpu_tensor *norm_bf16;
+    h3_gpu_tensor *activated_bf16;
     h3_gpu_tensor *rope_cos;
     h3_gpu_tensor *rope_sin;
     h3_gpu_tensor *projected;
@@ -178,7 +180,8 @@ static void cleanup(vae_context *vae) {
     free_tensor(&vae->norm); free_tensor(&vae->qkv); free_tensor(&vae->query);
     free_tensor(&vae->key); free_tensor(&vae->value); free_tensor(&vae->heads);
     free_tensor(&vae->branch); free_tensor(&vae->ff1);
-    free_tensor(&vae->activated); free_tensor(&vae->rope_cos);
+    free_tensor(&vae->activated); free_tensor(&vae->norm_bf16);
+    free_tensor(&vae->activated_bf16); free_tensor(&vae->rope_cos);
     free_tensor(&vae->rope_sin); free_tensor(&vae->projected);
     free_tensor(&vae->quant_ws); free_tensor(&vae->scale_ws);
     h3_gpu_free(vae->gpu);
@@ -201,6 +204,18 @@ static void *vae_f2_worker(void *arg) {
     *job->dst = f2(job->vae, job->name, job->rows, job->columns, job->error,
                    sizeof(job->error));
     job->ok = *job->dst != NULL;
+    /* The INT8 VAE quantizes from the F32 weight; otherwise store the BF16
+     * the WMMA linear would round to anyway. VAE tiles are well over the
+     * 256 rows that keep that path. */
+    if (job->ok && !job->vae->int8_vae) {
+        h3_gpu_tensor *bf16 = h3_gpu_linear_f32_bf16_weight(
+            job->vae->gpu, *job->dst, (uint32_t)job->columns,
+            (uint32_t)job->rows);
+        if (bf16) {
+            h3_gpu_tensor_free(*job->dst);
+            *job->dst = bf16;
+        }
+    }
     return NULL;
 }
 
@@ -498,6 +513,18 @@ static int allocate_activations(vae_context *vae, char *error,
                  h3_gpu_error(vae->gpu));
             return 0;
         }
+    /* BF16 copies of the norm and SwiGLU outputs, rounded exactly as the
+     * WMMA linear rounds F32 inputs, for blocks whose weights are BF16. */
+    if (!vae->int8_vae && !getenv("H3_VAE_F32_ACT")) {
+        vae->norm_bf16 = h3_gpu_tensor_new_bf16_device(vae->gpu,
+                                                       sequence * HIDDEN);
+        vae->activated_bf16 = h3_gpu_tensor_new_bf16_device(vae->gpu,
+                                                            sequence * FFN);
+        if (!vae->norm_bf16 || !vae->activated_bf16) {
+            free_tensor(&vae->norm_bf16);
+            free_tensor(&vae->activated_bf16);
+        }
+    }
     if (vae->int8_vae) {
         vae->quant_ws = h3_gpu_tensor_new_i8_device(
             vae->gpu, (size_t)sequence * FFN);
@@ -558,10 +585,20 @@ static int run_block(vae_context *vae, int index, char *error,
                      size_t error_size) {
     vae_block *weight = &vae->blocks[index];
     uint32_t rows = vae->sequence;
+    h3_gpu_tensor *bf16_norm = vae->norm_bf16;
+    h3_gpu_tensor *attn_norm =
+        bf16_norm && h3_gpu_tensor_dtype(weight->qkv_w) == H3_GPU_BF16
+            ? bf16_norm : vae->norm;
+    h3_gpu_tensor *mlp_norm =
+        bf16_norm && h3_gpu_tensor_dtype(weight->w1) == H3_GPU_BF16
+            ? bf16_norm : vae->norm;
+    h3_gpu_tensor *activated =
+        vae->activated_bf16 && h3_gpu_tensor_dtype(weight->w2) == H3_GPU_BF16
+            ? vae->activated_bf16 : vae->activated;
 #define OP(call, label) do {                                                    \
     if (!gpu_op(vae, (call), error, error_size, label)) return 0;               \
 } while (0)
-    OP(h3_gpu_rms_norm_f32(vae->gpu, vae->norm, vae->hidden, weight->norm1,
+    OP(h3_gpu_rms_norm_f32(vae->gpu, attn_norm, vae->hidden, weight->norm1,
         rows, HIDDEN, 1e-5f), "video VAE attention norm");
     if (vae->int8_vae && weight->qkv_int8) {
         OP(h3_gpu_linear_f32_int8(vae->gpu, vae->qkv, vae->norm,
@@ -569,7 +606,7 @@ static int run_block(vae_context *vae, int index, char *error,
             vae->quant_ws, vae->scale_ws,
             rows, HIDDEN, INNER * 3), "video VAE QKV int8");
     } else {
-        OP(h3_gpu_linear_f32(vae->gpu, vae->qkv, vae->norm, weight->qkv_w,
+        OP(h3_gpu_linear_f32(vae->gpu, vae->qkv, attn_norm, weight->qkv_w,
             weight->qkv_b, rows, HIDDEN, INNER * 3), "video VAE QKV");
     }
     OP(h3_gpu_video_qkv_rope_f32(vae->gpu, vae->query, vae->key, vae->value,
@@ -587,7 +624,7 @@ static int run_block(vae_context *vae, int index, char *error,
         OP(h3_gpu_linear_f32(vae->gpu, vae->branch, vae->heads, weight->out_w,
             weight->out_b, rows, INNER, HIDDEN), "video VAE attention output");
     }
-    OP(h3_gpu_scale_add_rms_norm_f32(vae->gpu, vae->norm, vae->hidden,
+    OP(h3_gpu_scale_add_rms_norm_f32(vae->gpu, mlp_norm, vae->hidden,
         vae->branch, weight->scale1, weight->norm2, rows, HIDDEN, 1e-5f),
        "video VAE attn residual + MLP norm");
     if (vae->int8_vae && weight->w1_int8) {
@@ -596,10 +633,10 @@ static int run_block(vae_context *vae, int index, char *error,
             vae->quant_ws, vae->scale_ws,
             rows, HIDDEN, FFN * 2), "video VAE MLP input int8");
     } else {
-        OP(h3_gpu_linear_f32(vae->gpu, vae->ff1, vae->norm, weight->w1,
+        OP(h3_gpu_linear_f32(vae->gpu, vae->ff1, mlp_norm, weight->w1,
             weight->w1_b, rows, HIDDEN, FFN * 2), "video VAE MLP input");
     }
-    OP(h3_gpu_swiglu_f32(vae->gpu, vae->activated, vae->ff1, rows, FFN),
+    OP(h3_gpu_swiglu_f32(vae->gpu, activated, vae->ff1, rows, FFN),
        "video VAE SwiGLU");
     if (vae->int8_vae && weight->w2_int8) {
         OP(h3_gpu_linear_f32_int8(vae->gpu, vae->branch, vae->activated,
@@ -607,7 +644,7 @@ static int run_block(vae_context *vae, int index, char *error,
             vae->quant_ws, vae->scale_ws,
             rows, FFN, HIDDEN), "video VAE MLP output int8");
     } else {
-        OP(h3_gpu_linear_f32(vae->gpu, vae->branch, vae->activated, weight->w2,
+        OP(h3_gpu_linear_f32(vae->gpu, vae->branch, activated, weight->w2,
             weight->w2_b, rows, FFN, HIDDEN), "video VAE MLP output");
     }
     OP(h3_gpu_scale_add_f32(vae->gpu, vae->hidden, vae->hidden, vae->branch,

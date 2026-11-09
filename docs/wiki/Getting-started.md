@@ -9,10 +9,15 @@ the Makefile does **not** probe the GPU.
 | **MI210** (CDNA2, wave64) | `gfx90a` | INT8 weights (hipBLAS), BF16 activations | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 | **MI300X** (CDNA3, wave64) | `gfx942` | INT8 weights (hipBLAS), BF16 activations | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 
-Timed scoreboard SKUs are Strix Halo, MI210, and MI300X. MI250 / MI250X share
+Timed scoreboard SKUs are Strix Halo, MI210, MI300X, and the Radeon AI PRO
+R9700 (`gfx1201`, build with `make HIP_ARCH=gfx1201`). MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.17.0** adds opt-in Pika H3 Flex. It stays off unless
+Tagged **v0.19.0** adds a ComfyUI node that renders through `h3 --serve`
+([ComfyUI](ComfyUI.md)) and the daemon changes behind it, and is the first
+public release with the R9700 work. v0.18.0 added the R9700. 1344×768 on its 32 GiB needs
+`H3_INT8_HOST=1`; 1344×768 · 15 s dense is **2787.6 s**. Every case is in
+[`docs/PERFORMANCE.md`](../PERFORMANCE.md). v0.17.0 adds opt-in Pika H3 Flex. It stays off unless
 `--pika-lora` or `--pika-ref-lora` is set. On one MI300X, 832×480 · 5 s
 is **34.97 s**, or **28.68 s** with `--taeh3`. Commands and the full
 tables are in [`docs/PIKA.md`](../PIKA.md). v0.16.0 runs `--vsa` on
@@ -39,7 +44,7 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.17.0
+git checkout v0.19.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
@@ -160,7 +165,9 @@ Loopback HTTP for the DSH plugin (protocol v1alpha, not stable):
 ```
 
 Env: `H3D_BIND`, `H3D_PORT`, `H3D_MODEL_PATH`, `H3D_OUTPUT_ROOT`,
-`H3D_MEDIA_ROOT`, `H3D_GPUS`. Spec: [`docs/DESIGN_DHS.md`](../DESIGN_DHS.md).
+`H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_FASTH3_LORA`, `H3D_IDLE_RELEASE_SEC`.
+Spec: [`docs/DESIGN_DHS.md`](../DESIGN_DHS.md). To drive it from ComfyUI,
+see [ComfyUI](ComfyUI.md).
 
 ## Optional knobs
 

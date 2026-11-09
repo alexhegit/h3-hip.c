@@ -118,6 +118,11 @@ int h3_dit_denoise_euler_preview(
                          h3_dit_preview preview, void *preview_opaque,
                          char *error, size_t error_size);
 
+/* The denoise loops fail before the next step once *stop is nonzero. A
+ * cancelling progress callback sets the flag; the loops check it after each
+ * progress report. Clear it (NULL) before *stop goes out of scope. */
+void h3_dit_set_stop_flag(h3_dit *dit, const int *stop);
+
 /* Build the velocity-evaluation mask used by the serving sampler. Returns the
  * evaluation count, or -1 for invalid arguments. Public internally so the
  * quality-tuned aggressive schedule remains pinned by cheap host tests. */

@@ -1010,12 +1010,22 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         fprintf(stderr,
                 "h3: --token-reduction is on: faster DiT, visible quality "
                 "loss (off by default)\n");
+    /* The DiT reads H3_SOL_ATTN at load. In a process that generates more
+     * than once (h3 --serve), a later call without sol_attn must not inherit
+     * the value an earlier call set; a value the user exported is kept. */
+    static int sol_attn_env_ours;
+    if (!params->sol_attn && sol_attn_env_ours) {
+        unsetenv("H3_SOL_ATTN");
+        sol_attn_env_ours = 0;
+    }
     if (params->sol_attn) {
+        const char *sol_env = getenv("H3_SOL_ATTN");
+        if (!sol_env || !strcmp(sol_env, "0")) sol_attn_env_ours = 1;
         setenv("H3_SOL_ATTN", "1", 1);
         fprintf(stderr,
                 "h3: --sol-attn is on: faster long SDPA, visible quality "
-                "loss (off by default). Supported on gfx90a, gfx942, and "
-                "gfx1151. See docs/SOL_ATTN.md.\n");
+                "loss (off by default). Supported on gfx90a, gfx942, "
+                "gfx1151, and gfx1201. See docs/SOL_ATTN.md.\n");
     }
     setenv("H3_FBC", params->fbc ? "1" : "0", 1);
     {
@@ -1805,12 +1815,15 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         h3_weight_warmup_start(&decode_warmup, audio_vae_path,
                                params->taeh3 && params->taeh3[0] ? NULL
                                                                  : vae_path);
-    if (!h3_dit_denoise_euler_preview(
+    h3_dit_set_stop_flag(dit, &progress.cancelled);
+    int denoised = h3_dit_denoise_euler_preview(
             dit, video, audio, params->denoise_reuse,
             h3_dit_progress_bridge, &progress,
             preview_decoder ? h3_deliver_denoise_preview : NULL,
             preview_decoder ? &live_preview : NULL,
-            detail, sizeof(detail))) {
+            detail, sizeof(detail));
+    h3_dit_set_stop_flag(dit, NULL);
+    if (!denoised) {
         if (!live_preview.failed) h3_set_error(ctx, "%s", detail);
         if (dit_is_cached) {
             ctx->dit = NULL;

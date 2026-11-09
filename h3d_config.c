@@ -1,6 +1,7 @@
 #include "h3d_config.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +17,9 @@ static int getenv_int(const char *name, int fallback) {
     const char *value = getenv(name);
     if (!value || !*value) return fallback;
     char *end = NULL;
+    errno = 0;
     long parsed = strtol(value, &end, 10);
-    if (errno || !end || *end || parsed < 0) return fallback;
+    if (errno || !end || *end || parsed < 0 || parsed > 2147483647L) return fallback;
     return (int)parsed;
 }
 
@@ -58,15 +60,6 @@ void h3d_config_init(h3d_ctx *ctx) {
     ctx->prompt_max_chars = 8000;
     ctx->gpu_indices[0] = 0;
     ctx->gpu_count = 1;
-
-    /* Default geometry whitelist (verified on h3-hip.c) */
-    ctx->geometry_whitelist_count = 0;
-    /* 512x512: all frame counts */
-    ctx->geometry_whitelist[ctx->geometry_whitelist_count++] =
-        (h3d_geometry){512, 512, 0};  /* 0 = any frames */
-    /* 864x480: cinematic long video */
-    ctx->geometry_whitelist[ctx->geometry_whitelist_count++] =
-        (h3d_geometry){864, 480, 0};
 }
 
 int h3d_config_load(h3d_ctx *ctx) {
@@ -104,6 +97,27 @@ int h3d_config_load(h3d_ctx *ctx) {
     expand_home(expanded, sizeof(expanded), media);
     snprintf(ctx->media_root, sizeof(ctx->media_root), "%s", expanded);
 
+    /* options.fasth3: H3D_FASTH3_LORA, else where
+     * tools/download_fasth3_lora.sh puts the dense adapter. */
+    char fasth3[2048];
+    const char *lora = getenv("H3D_FASTH3_LORA");
+    if (lora && *lora) {
+        expand_home(fasth3, sizeof(fasth3), lora);
+    } else {
+        expand_home(expanded, sizeof(expanded),
+                    getenv_or("H3_FASTH3_LORA_DIR", "./FastH3-4-step-LoRA"));
+        snprintf(fasth3, sizeof(fasth3), "%s/dense-datafree/adapter_model.safetensors",
+                 expanded);
+    }
+    char resolved[PATH_MAX];
+    struct stat st;
+    if (realpath(fasth3, resolved) && stat(resolved, &st) == 0 && S_ISREG(st.st_mode) &&
+        strlen(resolved) < sizeof(ctx->fasth3_lora))
+        snprintf(ctx->fasth3_lora, sizeof(ctx->fasth3_lora), "%s", resolved);
+    else if (lora && *lora)
+        fprintf(stderr, "h3d: warning: H3D_FASTH3_LORA=%s is not a file; "
+                "options.fasth3 is unavailable\n", lora);
+
     ctx->quota_bytes = getenv_u64("H3D_QUOTA_BYTES", ctx->quota_bytes);
     ctx->timeout_tier1 = getenv_int("H3D_TIMEOUT_TIER1", ctx->timeout_tier1);
     ctx->timeout_tier2 = getenv_int("H3D_TIMEOUT_TIER2", ctx->timeout_tier2);
@@ -119,6 +133,8 @@ int h3d_config_load(h3d_ctx *ctx) {
 
     ctx->max_queued_per_client = getenv_int("H3D_MAX_QUEUED", ctx->max_queued_per_client);
     ctx->prompt_max_chars = getenv_int("H3D_PROMPT_MAX_CHARS", ctx->prompt_max_chars);
+    ctx->idle_release_sec = getenv_int("H3D_IDLE_RELEASE_SEC", ctx->idle_release_sec);
+    if (ctx->idle_release_sec < 0) ctx->idle_release_sec = 0;
 
     /* Parse GPU list */
     const char *gpus = getenv_or("H3D_GPUS", "0");

@@ -308,12 +308,18 @@ static size_t h3_hip_device_weight_reserve(void) {
     hipDeviceProp_t props;
     int device = 0;
     int integrated = 0;
+    double total_gib = 0.0;
     if (hipGetDevice(&device) == hipSuccess &&
         hipGetDeviceProperties(&props, device) == hipSuccess) {
         integrated = props.integrated ? 1 : 0;
+        total_gib = (double)props.totalGlobalMem / gib;
     }
+    /* 20 GiB is sized for 64+ GiB HBM parts. On a 32 GiB card it is capped at
+     * half the VRAM, which leaves ~15 GiB idle while hot DiT and VAE tensors
+     * fall back to pinned host memory and are read over PCIe. */
     const char *value = getenv("H3_DEVICE_WEIGHT_RESERVE_GIB");
-    double want = value ? atof(value) : (integrated ? 4.0 : 20.0);
+    double want = value ? atof(value) :
+                  (integrated ? 4.0 : (total_gib >= 48.0 ? 20.0 : 4.0));
     if (want < 0.0) want = 0.0;
     cached = (size_t)(want * gib);
     return cached ? cached : 1;
@@ -589,6 +595,9 @@ struct h3_gpu {
     /* Scratch for SDPA K/V [seq][head][dim] → [head][seq][dim] transpose. */
     void *kv_hm_scratch;
     size_t kv_hm_scratch_bytes;
+    int kv_hm_device;
+    /* Created on first use by the h3_gpu_copy_* calls. */
+    hipStream_t copy_stream;
     /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
     int sdpa_kv_already_hm;
     /* Sol-Attn K-mean / V-sum: 2 * n_kv_blocks * heads * 128 floats. */
@@ -892,6 +901,14 @@ static struct h3_gpu_tensor *h3_hip_tensor_new_ex(struct h3_gpu *gpu,
             }
         }
     } else {
+        if (weight && h3_hip_env_on("H3_HIP_MEMLOG")) {
+            size_t free_bytes = 0, total_bytes = 0;
+            (void)hipMemGetInfo(&free_bytes, &total_bytes);
+            fprintf(stderr,
+                    "h3: memlog pinned fallback %.3f GiB (free %.3f GiB) [%s]\n",
+                    (double)request / 1073741824.0,
+                    (double)free_bytes / 1073741824.0, gpu->profile_label);
+        }
         tensor->data = h3_hip_pin_take(request);
         if (tensor->data) {
             if (!overwritten && !values) memset(tensor->data, 0, request);
@@ -966,6 +983,48 @@ static int h3_hip_require_f32(struct h3_gpu *gpu, const h3_gpu_tensor *tensor,
     return 1;
 }
 
+static int h3_hip_device_integrated(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        hipDeviceProp_t props;
+        int device = 0;
+        cached = hipGetDevice(&device) == hipSuccess &&
+                 hipGetDeviceProperties(&props, device) == hipSuccess &&
+                 props.integrated ? 1 : 0;
+    }
+    return cached;
+}
+
+static void h3_hip_kv_scratch_free(struct h3_gpu *ctx) {
+    if (!ctx->kv_hm_scratch) return;
+    if (ctx->kv_hm_device) hipFree(ctx->kv_hm_scratch);
+    else hipHostFree(ctx->kv_hm_scratch);
+    ctx->kv_hm_scratch = NULL;
+    ctx->kv_hm_scratch_bytes = 0;
+    ctx->kv_hm_device = 0;
+}
+
+/* SDPA re-reads the transposed K/V once per query tile. On a discrete GPU
+ * that has to be VRAM; pinned host only remains the fallback. */
+static int h3_hip_kv_scratch_ensure(struct h3_gpu *ctx, size_t need) {
+    if (need <= ctx->kv_hm_scratch_bytes) return 1;
+    h3_hip_kv_scratch_free(ctx);
+    void *scratch = NULL;
+    int device = 0;
+    if (!h3_hip_device_integrated() &&
+        hipMalloc(&scratch, need) == hipSuccess) {
+        device = 1;
+    } else if (hipHostMalloc(&scratch, need, hipHostMallocDefault) !=
+               hipSuccess) {
+        h3_hip_set_error(ctx, "cannot allocate SDPA KV scratch");
+        return 0;
+    }
+    ctx->kv_hm_scratch = scratch;
+    ctx->kv_hm_scratch_bytes = need;
+    ctx->kv_hm_device = device;
+    return 1;
+}
+
 h3_gpu *h3_gpu_create(const char *shader_source_path,
                       char *error, size_t error_size) {
     (void)shader_source_path;
@@ -986,6 +1045,13 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
         return NULL;
     }
     gpu->device_id = device;
+    if (h3_hip_env_on("H3_HIP_MEMLOG")) {
+        size_t free_bytes = 0, total_bytes = 0;
+        (void)hipMemGetInfo(&free_bytes, &total_bytes);
+        fprintf(stderr, "h3: memlog context create free %.3f / %.3f GiB\n",
+                (double)free_bytes / 1073741824.0,
+                (double)total_bytes / 1073741824.0);
+    }
     gpu->sol_attn_layer = 1;
     gpu->sol_attn_prefix = -1;
     gpu->sol_attn_sparse_q0 = 0;
@@ -1006,7 +1072,7 @@ void h3_gpu_free(h3_gpu *gpu) {
     h3_hip_profile_emit_ops(ctx);
     h3_hip_profile_emit_load(ctx);
     h3_hip_profile_destroy_ops(ctx);
-    if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
+    h3_hip_kv_scratch_free(ctx);
     if (ctx->sol_scratch) {
         if (h3_hip_env_on("H3_SOL_ATTN_STATS") && ctx->sol_route_stats) {
             uint64_t stats[2] = {0, 0};
@@ -1037,8 +1103,13 @@ void h3_gpu_free(h3_gpu *gpu) {
     hipFree(ctx->vsa_scores);
     hipFree(ctx->vsa_acc);
     hipFree(ctx->vsa_mask);
+    if (ctx->copy_stream) {
+        hipStreamSynchronize(ctx->copy_stream);
+        hipStreamDestroy(ctx->copy_stream);
+    }
     hipStreamDestroy(ctx->stream);
     free(ctx);
+    h3_kernels_release_scratch();
     h3_hip_pin_purge();
 }
 
@@ -1317,6 +1388,16 @@ int h3_gpu_tensor_read_i8(const h3_gpu_tensor *tensor, int8_t *values,
     return h3_hip_tensor_out(obj, 0, values, elements * sizeof(int8_t));
 }
 
+int h3_gpu_tensor_write_i8(h3_gpu_tensor *tensor, const int8_t *values,
+                           size_t elements) {
+    struct h3_gpu_tensor *obj = tensor_ptr(tensor);
+    if (!obj || obj->dtype != H3_GPU_I8 || !values ||
+        elements > obj->elements) {
+        return 0;
+    }
+    return h3_hip_tensor_in(obj, 0, values, elements * sizeof(int8_t));
+}
+
 int h3_gpu_tensor_write_f32(h3_gpu_tensor *tensor, const float *values,
                             size_t elements) {
     struct h3_gpu_tensor *obj = tensor_ptr(tensor);
@@ -1401,6 +1482,110 @@ int h3_gpu_submit(h3_gpu *gpu) {
     ctx->in_command = 0;
     h3_hip_pin_retire();
     h3_hip_profile_flush_ops(ctx);
+    return 1;
+}
+
+void *h3_gpu_host_pinned_alloc(size_t bytes) {
+    void *host = NULL;
+    if (!bytes || !h3_hip_bind_thread_device() ||
+        hipHostMalloc(&host, bytes, hipHostMallocDefault) != hipSuccess)
+        return NULL;
+    return host;
+}
+
+void h3_gpu_host_pinned_free(void *host) {
+    if (host) hipHostFree(host);
+}
+
+struct h3_gpu_event {
+    hipEvent_t event;
+};
+
+static hipStream_t h3_hip_copy_stream(struct h3_gpu *ctx) {
+    if (!ctx->copy_stream &&
+        hipStreamCreateWithFlags(&ctx->copy_stream, hipStreamNonBlocking) !=
+            hipSuccess) {
+        ctx->copy_stream = NULL;
+        h3_hip_set_error(ctx, "cannot create HIP copy stream");
+    }
+    return ctx->copy_stream;
+}
+
+h3_gpu_event *h3_gpu_event_new(h3_gpu *gpu) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    h3_gpu_event *event = calloc(1, sizeof(*event));
+    if (!ctx || !event) {
+        free(event);
+        return NULL;
+    }
+    if (hipEventCreateWithFlags(&event->event, hipEventDisableTiming) !=
+        hipSuccess) {
+        free(event);
+        h3_hip_set_error(ctx, "cannot create HIP event");
+        return NULL;
+    }
+    return event;
+}
+
+void h3_gpu_event_free(h3_gpu_event *event) {
+    if (!event) return;
+    hipEventDestroy(event->event);
+    free(event);
+}
+
+int h3_gpu_record_compute(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    return ctx && event &&
+           hipEventRecord(event->event, ctx->stream) == hipSuccess;
+}
+
+int h3_gpu_compute_wait(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    return ctx && event &&
+           hipStreamWaitEvent(ctx->stream, event->event, 0) == hipSuccess;
+}
+
+int h3_gpu_record_copy(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    hipStream_t stream = ctx ? h3_hip_copy_stream(ctx) : NULL;
+    return stream && event &&
+           hipEventRecord(event->event, stream) == hipSuccess;
+}
+
+int h3_gpu_copy_wait(h3_gpu *gpu, h3_gpu_event *event) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    hipStream_t stream = ctx ? h3_hip_copy_stream(ctx) : NULL;
+    return stream && event &&
+           hipStreamWaitEvent(stream, event->event, 0) == hipSuccess;
+}
+
+int h3_gpu_copy_to_device_async(h3_gpu *gpu, h3_gpu_tensor *destination,
+                                const void *pinned_source, size_t bytes) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    struct h3_gpu_tensor *obj = tensor_ptr(destination);
+    hipStream_t stream = ctx ? h3_hip_copy_stream(ctx) : NULL;
+    if (!stream || !obj || !obj->device || !pinned_source ||
+        bytes > obj->bytes) {
+        if (ctx) h3_hip_set_error(ctx, "invalid async device copy");
+        return 0;
+    }
+    if (!bytes) return 1;
+    if (hipMemcpyAsync(obj->data, pinned_source, bytes, hipMemcpyHostToDevice,
+                       stream) != hipSuccess) {
+        h3_hip_set_error(ctx, "async host-to-device copy failed");
+        return 0;
+    }
+    return 1;
+}
+
+int h3_gpu_copy_sync(h3_gpu *gpu) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    if (!ctx) return 0;
+    if (!ctx->copy_stream) return 1;
+    if (hipStreamSynchronize(ctx->copy_stream) != hipSuccess) {
+        h3_hip_set_error(ctx, "HIP copy stream synchronization failed");
+        return 0;
+    }
     return 1;
 }
 
@@ -1658,6 +1843,32 @@ int h3_gpu_patch_linear_bf16_offset(h3_gpu *gpu, h3_gpu_tensor *output,
         ctx->stream), "h3_linear_f32_tiled_bf16");
 }
 
+h3_gpu_tensor *h3_gpu_linear_f32_bf16_weight(h3_gpu *gpu,
+                                             const h3_gpu_tensor *weight,
+                                             uint32_t input_dim,
+                                             uint32_t output_dim) {
+    struct h3_gpu *ctx = gpu_ptr(gpu);
+    size_t count = (size_t)output_dim * input_dim;
+    if (!ctx || !weight || tensor_ptr(weight)->dtype != H3_GPU_F32 ||
+        h3_gpu_tensor_elements(weight) != count || count > UINT32_MAX ||
+        !h3_linear_f32_takes_bf16_weight(input_dim, output_dim))
+        return NULL;
+    h3_gpu_tensor *bf16 = h3_gpu_tensor_new_bf16_device(gpu, count);
+    if (!bf16) return NULL;
+    /* Weight loaders call this from worker threads: run on the upload stream
+     * they already use, outside the per-context profiler. */
+    hipStream_t stream = h3_hip_upload();
+    if (!tensor_ptr(bf16)->device || !stream ||
+        !h3_launch_cast_f32_to_bf16((const float *)tensor_ptr(weight)->data,
+                                    (uint16_t *)tensor_ptr(bf16)->data,
+                                    (uint32_t)count, stream) ||
+        hipStreamSynchronize(stream) != hipSuccess) {
+        h3_gpu_tensor_free(bf16);
+        return NULL;
+    }
+    return bf16;
+}
+
 int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                       const h3_gpu_tensor *input, const h3_gpu_tensor *weight,
                       const h3_gpu_tensor *bias, uint32_t rows,
@@ -1666,9 +1877,17 @@ int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
     size_t input_count = (size_t)rows * input_dim;
     size_t weight_count = (size_t)output_dim * input_dim;
     size_t output_count = (size_t)rows * output_dim;
+    int bf16_weight = weight && tensor_ptr(weight)->dtype == H3_GPU_BF16;
+    int bf16_input = input && tensor_ptr(input)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !input_dim || !output_dim ||
-        !h3_hip_require_f32(ctx, input, input_count, "linear input") ||
-        !h3_hip_require_f32(ctx, weight, weight_count, "linear weight") ||
+        (bf16_input && !bf16_weight) ||
+        (bf16_input
+             ? !h3_hip_require_bf16(ctx, input, input_count, "linear input")
+             : !h3_hip_require_f32(ctx, input, input_count, "linear input")) ||
+        (bf16_weight
+             ? !h3_hip_require_bf16(ctx, weight, weight_count, "linear weight")
+             : !h3_hip_require_f32(ctx, weight, weight_count,
+                                   "linear weight")) ||
         !h3_hip_require_f32(ctx, output, output_count, "linear output") ||
         (bias && !h3_hip_require_f32(ctx, bias, output_dim, "linear bias"))) {
         return 0;
@@ -1677,6 +1896,21 @@ int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         (const float *)tensor_ptr(bias)->data :
         (const float *)tensor_ptr(input)->data;
     h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
+    if (bf16_input)
+        return h3_hip_launch_linear(ctx, h3_launch_linear_bf16a_wbf16(
+            (const uint16_t *)tensor_ptr(input)->data,
+            (const uint16_t *)tensor_ptr(weight)->data,
+            bias ? (const float *)tensor_ptr(bias)->data : NULL,
+            (float *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_linear_bf16a_wbf16",
+            h3_hip_mps_linear_f32(rows, input_dim, output_dim));
+    if (bf16_weight)
+        return h3_hip_launch_linear(ctx, h3_launch_linear_f32_wbf16(
+            (const float *)tensor_ptr(input)->data,
+            (const uint16_t *)tensor_ptr(weight)->data, bias_ptr,
+            (float *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_linear_f32_wbf16",
+            h3_hip_mps_linear_f32(rows, input_dim, output_dim));
     return h3_hip_launch_linear(ctx, h3_launch_linear_f32(
         (const float *)tensor_ptr(input)->data,
         (const float *)tensor_ptr(weight)->data, bias_ptr,
@@ -1896,12 +2130,20 @@ int h3_gpu_swiglu_f32(h3_gpu *gpu, h3_gpu_tensor *output,
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t fused_count = (size_t)rows * width * 2;
     size_t out_count = (size_t)rows * width;
+    int bf16_out = output && tensor_ptr(output)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !width ||
         !h3_hip_require_f32(ctx, fused, fused_count, "SwiGLU input") ||
-        !h3_hip_require_f32(ctx, output, out_count, "SwiGLU output")) {
+        (bf16_out ? !h3_hip_require_bf16(ctx, output, out_count, "SwiGLU output")
+                  : !h3_hip_require_f32(ctx, output, out_count,
+                                        "SwiGLU output"))) {
         return 0;
     }
     h3_swiglu_args args = {rows, width};
+    if (bf16_out)
+        return h3_hip_launch_ok(ctx, h3_launch_swiglu_f32_bf16(
+            (const float *)tensor_ptr(fused)->data,
+            (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_swiglu_f32_bf16");
     return h3_hip_launch_ok(ctx, h3_launch_swiglu_f32(
         (const float *)tensor_ptr(fused)->data,
         (float *)tensor_ptr(output)->data, &args, ctx->stream),
@@ -1940,15 +2182,25 @@ int h3_gpu_scale_add_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                                   float epsilon) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t count = (size_t)rows * width;
+    int bf16_out = output && tensor_ptr(output)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !width ||
         !h3_hip_require_f32(ctx, residual, count, "fused residual") ||
         !h3_hip_require_f32(ctx, branch, count, "fused branch") ||
         !h3_hip_require_f32(ctx, scale, width, "fused scale") ||
         !h3_hip_require_f32(ctx, norm_weight, width, "fused norm weight") ||
-        !h3_hip_require_f32(ctx, output, count, "fused output")) {
+        (bf16_out ? !h3_hip_require_bf16(ctx, output, count, "fused output")
+                  : !h3_hip_require_f32(ctx, output, count, "fused output"))) {
         return 0;
     }
     h3_norm_args args = {rows, width, epsilon};
+    if (bf16_out)
+        return h3_hip_launch_ok(ctx, h3_launch_scale_add_rms_norm_f32_bf16(
+            (float *)tensor_ptr(residual)->data,
+            (const float *)tensor_ptr(branch)->data,
+            (const float *)tensor_ptr(scale)->data,
+            (const float *)tensor_ptr(norm_weight)->data,
+            (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_scale_add_rms_norm_f32_bf16");
     return h3_hip_launch_ok(ctx, h3_launch_scale_add_rms_norm_f32(
         (float *)tensor_ptr(residual)->data,
         (const float *)tensor_ptr(branch)->data,
@@ -2079,13 +2331,22 @@ int h3_gpu_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                         uint32_t width, float epsilon) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t count = (size_t)rows * width;
+    int bf16_out = output && tensor_ptr(output)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !width ||
         !h3_hip_require_f32(ctx, input, count, "RMSNorm input") ||
         !h3_hip_require_f32(ctx, weight, width, "RMSNorm weight") ||
-        !h3_hip_require_f32(ctx, output, count, "RMSNorm output")) {
+        (bf16_out ? !h3_hip_require_bf16(ctx, output, count, "RMSNorm output")
+                  : !h3_hip_require_f32(ctx, output, count,
+                                        "RMSNorm output"))) {
         return 0;
     }
     h3_norm_args args = {rows, width, epsilon};
+    if (bf16_out)
+        return h3_hip_launch_ok(ctx, h3_launch_rms_norm_f32_bf16(
+            (const float *)tensor_ptr(input)->data,
+            (const float *)tensor_ptr(weight)->data,
+            (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_rms_norm_f32_bf16");
     return h3_hip_launch_ok(ctx, h3_launch_rms_norm_f32(
         (const float *)tensor_ptr(input)->data,
         (const float *)tensor_ptr(weight)->data,
@@ -3117,7 +3378,8 @@ static int h3_hip_sol_supported(void) {
              hipGetDeviceProperties(&props, device) == hipSuccess &&
              (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
               strncmp(props.gcnArchName, "gfx942", 6) == 0 ||
-              strncmp(props.gcnArchName, "gfx1151", 7) == 0);
+              strncmp(props.gcnArchName, "gfx1151", 7) == 0 ||
+              strncmp(props.gcnArchName, "gfx120", 6) == 0);
     return cached;
 }
 
@@ -3139,7 +3401,7 @@ static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
         warned = 1;
         fprintf(stderr,
                 "h3: --sol-attn: unsupported GPU; using dense SDPA "
-                "(supported: gfx90a, gfx942, gfx1151)\n");
+                "(supported: gfx90a, gfx942, gfx1151, gfx1201)\n");
     }
     return 0;
 }
@@ -3325,6 +3587,14 @@ static int h3_vsa_prepare(struct h3_gpu *ctx, uint32_t sequence, uint32_t t,
     free(slot);
     free(blocks);
     if (!ok) {
+        size_t free_bytes = 0, total_bytes = 0;
+        (void)hipMemGetInfo(&free_bytes, &total_bytes);
+        h3_hip_set_error(ctx,
+                         "cannot allocate VSA buffers: %.2f GiB for %u tokens, "
+                         "%.2f GiB free",
+                         (double)(5u * tiled_bytes + 3u * pool_bytes +
+                                  score_bytes + acc_bytes) / 1073741824.0,
+                         sequence, (double)free_bytes / 1073741824.0);
         h3_vsa_release(ctx);
         return 0;
     }
@@ -3426,17 +3696,7 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         args.kv_head_major = 1u;
     } else if (!disable_hm && (head_dim == 128 || head_dim == 64)) {
         size_t need = count * sizeof(uint16_t) * 2u;
-        if (need > ctx->kv_hm_scratch_bytes) {
-            void *scratch = NULL;
-            if (hipHostMalloc(&scratch, need, hipHostMallocDefault) !=
-                hipSuccess) {
-                h3_hip_set_error(ctx, "cannot allocate SDPA KV scratch");
-                return 0;
-            }
-            if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
-            ctx->kv_hm_scratch = scratch;
-            ctx->kv_hm_scratch_bytes = need;
-        }
+        if (!h3_hip_kv_scratch_ensure(ctx, need)) return 0;
         uint16_t *key_hm = (uint16_t *)ctx->kv_hm_scratch;
         uint16_t *value_hm = key_hm + count;
         if (!h3_launch_transpose_shd_hsd_bf16(key_ptr, key_hm, sequence, heads,
@@ -3481,17 +3741,7 @@ int h3_gpu_sdpa_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         args.kv_head_major = 1u;
     } else if (!disable_hm && (head_dim == 128 || head_dim == 64)) {
         size_t need = count * sizeof(float) * 2u;
-        if (need > ctx->kv_hm_scratch_bytes) {
-            void *scratch = NULL;
-            if (hipHostMalloc(&scratch, need, hipHostMallocDefault) !=
-                hipSuccess) {
-                h3_hip_set_error(ctx, "cannot allocate SDPA KV scratch");
-                return 0;
-            }
-            if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
-            ctx->kv_hm_scratch = scratch;
-            ctx->kv_hm_scratch_bytes = need;
-        }
+        if (!h3_hip_kv_scratch_ensure(ctx, need)) return 0;
         float *key_hm = (float *)ctx->kv_hm_scratch;
         float *value_hm = key_hm + count;
         if (!h3_launch_transpose_shd_hsd_f32(key_ptr, key_hm, sequence, heads,
@@ -3539,17 +3789,7 @@ int h3_gpu_sdpa_bf16_head_major_output(h3_gpu *gpu, h3_gpu_tensor *output,
         args.kv_head_major = 1u;
     } else if (!disable_hm && (head_dim == 128 || head_dim == 64)) {
         size_t need = count * sizeof(uint16_t) * 2u;
-        if (need > ctx->kv_hm_scratch_bytes) {
-            void *scratch = NULL;
-            if (hipHostMalloc(&scratch, need, hipHostMallocDefault) !=
-                hipSuccess) {
-                h3_hip_set_error(ctx, "cannot allocate SDPA KV scratch");
-                return 0;
-            }
-            if (ctx->kv_hm_scratch) hipHostFree(ctx->kv_hm_scratch);
-            ctx->kv_hm_scratch = scratch;
-            ctx->kv_hm_scratch_bytes = need;
-        }
+        if (!h3_hip_kv_scratch_ensure(ctx, need)) return 0;
         uint16_t *key_hm = (uint16_t *)ctx->kv_hm_scratch;
         uint16_t *value_hm = key_hm + count;
         if (!h3_launch_transpose_shd_hsd_bf16(key_ptr, key_hm, sequence, heads,
@@ -4610,16 +4850,6 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              "int8 MLP output")) {
         return 0;
     }
-    h3_gpu_tensor *fc1_out = fc1_out_ws;
-    int own_fc1_out = 0;
-    if (!fc1_out) {
-        fc1_out = h3_gpu_tensor_new_bf16_device(gpu, fc1_out_count);
-        if (!fc1_out) {
-            h3_hip_set_error(ctx, "int8 MLP FC1 temporary allocation failed");
-            return 0;
-        }
-        own_fc1_out = 1;
-    }
     int ok = 1;
     if (!input_is_quantized &&
         !h3_hip_quantize_bf16_int8_rows(
@@ -4631,7 +4861,21 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         !h3_hip_launch_fc1_swiglu_int8_prequant(
             ctx, activated, quantized_activation, activation_scales,
             fc1_weight, fc1_scales, rows, input_dim, hidden_dim)) {
-        if (!h3_hip_launch_linear_int8_prequant(
+        /* Only the unfused fallback needs the [rows, 2*hidden] FC1 product
+         * (6.3 GiB at 1344x768 15 s), so it is allocated on first use. */
+        h3_gpu_tensor *fc1_out = fc1_out_ws;
+        if (!fc1_out) {
+            if (!ctx->nax_fc1_temp || ctx->nax_fc1_temp_elems < fc1_out_count) {
+                h3_gpu_tensor_free((h3_gpu_tensor *)ctx->nax_fc1_temp);
+                ctx->nax_fc1_temp =
+                    h3_gpu_tensor_new_bf16_device(gpu, fc1_out_count);
+                ctx->nax_fc1_temp_elems =
+                    ctx->nax_fc1_temp ? fc1_out_count : 0;
+            }
+            fc1_out = (h3_gpu_tensor *)ctx->nax_fc1_temp;
+        }
+        if (!fc1_out ||
+            !h3_hip_launch_linear_int8_prequant(
                 ctx, fc1_out, quantized_activation, activation_scales,
                 fc1_weight, fc1_scales, rows, input_dim, fc1_output_dim) ||
             !h3_gpu_swiglu_bf16(gpu, activated, fc1_out, rows, hidden_dim)) {
@@ -4666,7 +4910,6 @@ int h3_gpu_mlp_int8_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                    fc2_weight, fc2_scales, rows, hidden_dim, output_dim)) {
         ok = 0;
     }
-    if (own_fc1_out) h3_gpu_tensor_free(fc1_out);
     if (!ok) {
         h3_hip_set_error(ctx, "h3_mlp_int8_bf16 failed");
     }
