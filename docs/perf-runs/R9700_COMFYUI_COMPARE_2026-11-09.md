@@ -17,17 +17,71 @@ process start unless noted.
 - **h3-hip** branch `h3d-fixes` (r9700 + daemon fixes, without the VAE
   BF16-activation PR), CLI with `--profile`. Turbo = FastH3 dense 4-step.
 
-| workload | ComfyUI denoise | ComfyUI E2E | h3-hip denoise | h3-hip E2E |
-|---|---:|---:|---:|---:|
-| 864×480, 20 steps, 50 layers | 216–236 s (10.8–11.8 s/step) | 274–295 s | **172.4 s** (8.6 s/step) | **229.5 s** |
-| 864×480, h3-hip fox-fast (45 layers, reuse 2) | | | 87.6 s | 142.2 s |
-| 864×480, 4-step turbo | 62.8 s (15.7 s/step) | 129.5 s | **38.5 s** | **96.0 s** |
-| 1344×768, 4-step turbo | 222.8 s (55.7 s/step) | 303.2 s | **148.7 s** (`H3_INT8_HOST=1`) | **258.1 s** |
+## Settings per row
 
-At the same step count h3-hip denoises 1.25–1.6× faster and finishes
-1.2–1.35× faster end to end. The samplers (Euler vs `res_multistep`) and
-the turbo LoRAs differ, so outputs are different pictures; quality was not
-compared.
+Every row is one process: text encoder, DiT, audio and video VAE, MP4.
+None of the h3-hip rows use token reduction, Sol-Attn, FBC, VSA, TAEH3 or
+`H3_GPU_SAMPLER`. Both sides run INT8 DiT weights.
+
+| row | ComfyUI | h3-hip | dense? |
+|---|---|---|---|
+| A. 864×480, 20 steps | template graph, no LoRA, 20 steps | `--steps 20 --layers 50 --reuse 1` | both dense |
+| B. 864×480, h3-hip fast | (not run) | `--steps 20 --layers 45 --reuse 2` (validated fast path: 5 gate-ranked blocks dropped, every other step evaluated) | h3-hip lossy |
+| C. 864×480, 4-step turbo | `LoraLoaderModelOnly` turbo 4-step 768p, strength 1.0, 4 steps | `--fasth3-lora dense-datafree --steps 4 --layers 50 --reuse 1` | both dense |
+| D. 1344×768, 4-step turbo | as C | as C, plus `H3_INT8_HOST=1` (same output as resident INT8) | both dense |
+
+ComfyUI's turbo row uses the 4-step LoRA at 4 steps to match FastH3; the
+template's own turbo switch is the 8-step LoRA at 6 steps. The two turbo
+LoRAs are different adapters.
+
+## Times
+
+| row | ComfyUI s/step | ComfyUI denoise | ComfyUI E2E | h3-hip s/step | h3-hip denoise | h3-hip E2E | denoise speedup | E2E speedup |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| A (run 1 / run 2) | 11.82 / 10.82 | 236.4 / 216.4 s | 294.5 / 273.7 s | 8.62 | **172.4 s** | **229.5 s** | 1.26–1.37× | 1.19–1.28× |
+| B | | | | 4.38 ¹ | 87.6 s | 142.2 s | (lossy, not comparable) | |
+| C | 15.69 | 62.8 s | 129.5 s | 9.61 | **38.5 s** | **96.0 s** | 1.63× | 1.35× |
+| D | 55.71 | 222.8 s | 303.2 s | 37.18 | **148.7 s** | **258.1 s** | 1.50× | 1.17× |
+
+¹ Average over 20 steps; with reuse 2 only 10 are full DiT evaluations.
+
+ComfyUI s/step is its tqdm average; E2E is `Prompt executed in` (the
+process was already up). h3-hip times are `--profile` phases and
+`/usr/bin/time` for the whole process. The samplers (Euler vs
+`res_multistep`) and the turbo LoRAs differ, so outputs are different
+pictures; quality was not compared.
+
+### Where the rest of the time goes
+
+| row | ComfyUI outside denoise ² | h3-hip text encoder | h3-hip DiT load | h3-hip video VAE | h3-hip other ³ |
+|---|---:|---:|---:|---:|---:|
+| A | 58.1 / 57.3 s | 12.1 s | 19.8 s | 21.6 s | 3.6 s |
+| B | | 11.8 s | 18.1 s | 21.4 s | 3.3 s |
+| C | 66.7 s | 11.8 s | 20.3 s | 21.6 s | 3.8 s |
+| D | 80.4 s | 13.0 s | 34.2 s | 54.6 s | 7.5 s |
+
+² Text encoder load and encode, DiT load, both VAEs, mux; ComfyUI does not
+log them separately. ³ Audio VAE (0.9 s), FFmpeg, process start.
+
+At 1344×768 h3-hip spends more than ComfyUI outside the denoise loop:
+`H3_INT8_HOST` parks the INT8 linears in pinned RAM at load (34 s), and
+the video VAE takes 54.6 s. The VAE BF16-activation PR cuts the 864×480
+VAE from 21.7 to 16.9 s and should help here too; not measured at 1344.
+
+## Memory
+
+| row | ComfyUI DiT on GPU / offloaded | ComfyUI LoRA patches | h3-hip DiT peak VRAM | h3-hip VAE peak |
+|---|---|---:|---:|---:|
+| A run 1 | 10.1 GB / 22.4 GB | 0 | 21.4 GiB | 5.1 GiB |
+| A run 2 | 25.1 GB / 7.3 GB | 0 | | |
+| B | | | 19.7 GiB | 5.1 GiB |
+| C | 10.0 GB / 22.4 GB | 206 | 21.2 GiB | 5.1 GiB |
+| D | 19.8 GB / 12.6 GB | 160 | 21.0 GiB | 5.3 GiB |
+
+ComfyUI loads the 25.9 GB text encoder fully onto the GPU first, then the
+DiT partially. Because the DiT is not fully resident, the turbo LoRA stays
+as per-step patches (`lowvram patches`), which is why row C is slower per
+step than row A. h3-hip merges FastH3 into the weights at load.
 
 Memory decides more than speed on this box:
 
