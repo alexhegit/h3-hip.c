@@ -90,6 +90,7 @@ typedef struct {
 
 struct h3_dit {
     h3_gpu *gpu;
+    const int *stop;
     h3_weight_store *weights;
     h3_dit_schedule *schedule;
     int fused_mlp;
@@ -295,6 +296,17 @@ static int gpu_op(h3_dit *dit, int ok, char *error, size_t error_size,
 static void report(h3_dit_progress progress, void *opaque, const char *phase,
                    int completed, int total) {
     if (progress) progress(phase, completed, total, opaque);
+}
+
+void h3_dit_set_stop_flag(h3_dit *dit, const int *stop) {
+    if (dit) dit->stop = stop;
+}
+
+static int stop_requested(const h3_dit *dit, int step, char *error,
+                          size_t error_size) {
+    if (!dit->stop || !*dit->stop) return 0;
+    fail(error, error_size, "denoising cancelled before step %d", step);
+    return 1;
 }
 
 static void free_tensor(h3_gpu_tensor **tensor) {
@@ -3888,9 +3900,14 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
     unsigned pending_evaluations = 0;
     int command_active = 0;
     int pika_draw = 0;
+    int stopped = 0;
     for (int step = 0; step < dit->sigmas.steps && ok; step++) {
         report(progress, progress_opaque, "denoise enqueue", step,
                dit->sigmas.steps);
+        if (stop_requested(dit, step, error, error_size)) {
+            stopped = 1;
+            break;
+        }
         if (!command_active) {
             ok = gpu_op(dit, h3_gpu_begin(dit->gpu), error, error_size,
                         "begin GPU Euler command chain");
@@ -4011,6 +4028,7 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
     if (ok && command_active)
         ok = gpu_op(dit, h3_gpu_submit(dit->gpu), error, error_size,
                     "submit GPU Euler denoise");
+    if (stopped) ok = 0;
     if (ok) ok = h3_gpu_tensor_read_f32_range(
                      dit->video_input, video_offset, video_rows, video_count) &&
                  h3_gpu_tensor_read_f32_range(
@@ -4068,6 +4086,10 @@ int h3_dit_denoise(h3_dit *dit, float *video_latent, float *audio_latent,
     int ok = 1;
     for (int step = 0; step < dit->sigmas.steps && ok; step++) {
         report(progress, progress_opaque, "denoise", step, dit->sigmas.steps);
+        if (stop_requested(dit, step, error, error_size)) {
+            ok = 0;
+            break;
+        }
         ok = h3_dit_forward(dit, step, video_latent, audio_latent,
                             video_velocity, audio_velocity,
                             error, error_size);
@@ -4194,6 +4216,10 @@ int h3_dit_denoise_euler_preview(
     int previous_evaluated = -1;
     for (int step = 0; step < dit->sigmas.steps && ok; step++) {
         report(progress, progress_opaque, "denoise", step, dit->sigmas.steps);
+        if (stop_requested(dit, step, error, error_size)) {
+            ok = 0;
+            break;
+        }
         int evaluate = selected[step];
         if (evaluate) {
             ok = h3_dit_forward(dit, step, video_latent, audio_latent,

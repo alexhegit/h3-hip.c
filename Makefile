@@ -75,7 +75,7 @@ DAEMON_OBJ := $(DAEMON_C:.c=.o)
 CLI_OBJ := main.o h3_cli.o linenoise.o $(DAEMON_OBJ)
 
 .PHONY: all test parity real-parity clean hip-smoke hip-test hip-test-strict \
-	hip-functional halo-regression
+	hip-functional halo-regression serve-regression
 
 all: h3 libh3.a
 
@@ -219,6 +219,9 @@ hip-test-strict: hip-test h3_hip_real_dit_smoke
 
 halo-regression:
 	./tools/halo_regression.sh
+
+serve-regression:
+	HIP_ARCH=$(HIP_ARCH) H3_MODEL="$(H3_MODEL)" ./tools/serve_regression.sh
 
 hip-functional: h3_hip_encoder_roundtrip h3_hip_audio_smoke h3_hip_vision_smoke \
 	h3_hip_text_smoke h3_hip_multimodal_smoke h3_hip_ref2va_smoke

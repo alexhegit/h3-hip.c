@@ -32,6 +32,9 @@ make HIP_ARCH=gfx942 hip-functional
 # Fox-s2 md5 regression gate (Halo only)
 make HIP_ARCH=gfx1151 halo-regression
 # or: ./tools/halo_regression.sh [--clean] [--skip-e2e] [--strict]
+
+# --serve vs CLI fox-s2 md5 gate (any ISA; port 8597, about 100 s)
+make HIP_ARCH=gfx1201 serve-regression
 ```
 
 Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`/home/amd/HF-MODELS/MiniMax-H3`).
@@ -45,6 +48,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - **Metal sources** (`h3_gpu.m`, `h3_shaders.metal`, `h3_metal.m`) are reference-only for upstream parity — not compiled on Linux
 - **Major pipelines:** DiT (`h3_dit.c`, `h3_dit_schedule.c`), Video VAE (`h3_video_vae.c`), Audio VAE (`h3_audio_vae.c`), Text encoder (`h3_text_encoder.c`), Vision encoder (`h3_vision_encoder.c`), FFmpeg mux (`h3_ffmpeg.c`)
 - **HTTP daemon (experimental):** `./h3 -d MODEL --serve` → `h3d.c` (loopback JSON+SSE, protocol **v1alpha**). Bind `127.0.0.1:8571` unless `H3D_BIND`/`H3D_PORT` are set. Do not expose the daemon on a public interface. Contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md). Agent plugin lives in a separate repo (`dsh-plugin-h3-hip`).
+- **ComfyUI node (experimental):** `integrations/comfyui/` (V3 node API, symlink into `custom_nodes/`), a thin client of `--serve`; `run_workflow.py` queues the API-format graphs in `workflows/` headless. User guide: [`docs/wiki/ComfyUI.md`](docs/wiki/ComfyUI.md).
 - **Wave mode:** gfx1151 and gfx1201 use wave32 (rocWMMA; gfx12 accumulator rows differ, see `H3_WMMA_ACC_ROW`); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
 
 ## Key gotchas
@@ -82,7 +86,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
 - `--pika-lora` / `--pika-ref-lora` merge a Pika H3 Flex rank-128 LoRA and force the 6-step renoise schedule (1000, 750, 500, 250, 100, 40), 50 layers, and `--reuse 1`. `--pika-lora` is FL2VA; references need `--pika-ref-lora`. Do not combine with `--fasth3-lora`, token reduction, sol-attn, fbc, VSA, SSD streaming, or core reuse above 1. `--pika-lora` sets `H3_GPU_SAMPLER=1` unless that variable or `H3_CPU_SAMPLER` is already set. Download: `./tools/download_pika_lora.sh`. See `docs/PIKA.md`.
-- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). `--serve` has no Pika flag. On a discrete card below 48 GiB `--serve` sets `H3_INT8_HOST=1` itself so the cached DiT leaves room for the video VAE (`docs/KNOWN_ISSUES.md` KI-007); an explicit `H3_INT8_HOST` wins. `./tools/h3d_smoke.py` checks a running daemon (validation, concurrency, cancel, SSE); `--generate` adds the fox-s2 md5.
+- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). `--serve` has no Pika flag. On a discrete card below 48 GiB `--serve` sets `H3_INT8_HOST=1` itself so the cached DiT leaves room for the video VAE (`docs/KNOWN_ISSUES.md` KI-007); an explicit `H3_INT8_HOST` wins. The daemon keeps its generation cache (9.5 GiB VRAM + 19 GiB RAM after an 864×480 FastH3 job on the R9700) until `POST /v1/cache/release`, a job with `options.release_after`, or `H3D_IDLE_RELEASE_SEC` frees it; output is unchanged (`DESIGN_DHS.md` §13.7). `options.fasth3: true` uses the daemon's own dense FastH3 adapter (`H3D_FASTH3_LORA`, default the `download_fasth3_lora.sh` location; `/v1/info` `adapters.fasth3`). `./tools/h3d_smoke.py` checks a running daemon (validation, concurrency, cancel, SSE, cache release); `--generate --fox-md5 MD5` adds fox-s2 on a cache miss and a cache hit. `make serve-regression` runs it against the same build's CLI (KI-005).
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
 - `linenoise.o` is vendored and compiled with relaxed warnings (`-Wno-conversion`).
 
@@ -101,4 +105,5 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/DESIGN_DHS.md` — `--serve` daemon protocol v1alpha and DSH plugin phases
-- `docs/wiki/` — Getting started, T2VA pipeline, Long video
+- `docs/DESIGN_SERVE_CLIENTS.md` — plan/tracker: ComfyUI through `--serve` (daemon gate + idle VRAM release, in-tree node, wiki tutorial, public release)
+- `docs/wiki/` — Getting started, T2VA pipeline, Long video, ComfyUI

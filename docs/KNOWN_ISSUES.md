@@ -53,12 +53,17 @@ tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 
 ## KI-005: Daemon ↔ CLI fox-s2 md5 gate
 
-**Status:** not implemented
+**Status:** gate implemented on `serve-clients`; passes on gfx1201 only so far.
 
 [`docs/DESIGN_DHS.md`](DESIGN_DHS.md) §18.2 requires the `--serve` path to
-reproduce the CLI fox-s2 md5 (extend `halo-regression` / optional
-MI210/MI300X). `--serve` is experimental until that gate, plus crash and
-quota drills, land. CLI `./h3 -o` is unchanged.
+reproduce the CLI fox-s2 md5. `make HIP_ARCH=… serve-regression` renders
+fox-s2 with the CLI, starts a daemon from the same build, and runs
+`tools/h3d_smoke.py --generate --fox-md5 <CLI md5>`: the daemon renders
+fox-s2 on a cache miss and again on a prepared-DiT cache hit with
+`release_after`, and both must match. The reference is the build's own CLI,
+so the gate works on every ISA. gfx1201: both runs `6d17f81a…`, 53 checks,
+about 100 s. Not yet run on gfx1151, gfx90a or gfx942. `--serve` stays
+experimental until the crash and quota drills in §18.2 land too.
 
 ## KI-006: `--vsa` at 1344×768 · 15 s does not fit in 32 GiB (gfx1201)
 
@@ -102,7 +107,7 @@ Candidate fixes, none implemented:
 
 ## KI-007: `--serve` cache overflows 32 GiB cards without `H3_INT8_HOST=1`
 
-**Status:** fixed on `h3d-fixes`: `--serve` now sets `H3_INT8_HOST=1` itself
+**Status:** fixed on `r9700` (PR #2): `--serve` now sets `H3_INT8_HOST=1` itself
 on a discrete card below 48 GiB unless `H3_INT8_HOST` is already set or the
 DiT is not INT8 (`H3_INT8_MLP=0`, `H3_FP8_MLP`). With no environment set the
 same three jobs (same prompt, new seed, new prompt), with the VAE BF16

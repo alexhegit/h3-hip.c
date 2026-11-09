@@ -1,0 +1,28 @@
+{
+  "1": {
+    "class_type": "H3HipGenerate",
+    "inputs": {
+      "prompt": "A red fox walks through fresh snow at dawn, its breath steaming in the cold air. The camera tracks low beside it. Soft crunch of snow underfoot, distant birdsong.",
+      "width": 864,
+      "height": 480,
+      "length": 124,
+      "seed": 42,
+      "steps": 20,
+      "fasth3": false,
+      "layers": 50,
+      "reuse": 1,
+      "free_comfy_vram": true,
+      "release_vram": false,
+      "daemon_url": "http://127.0.0.1:8571"
+    }
+  },
+  "2": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": ["1", 0],
+      "filename_prefix": "h3hip/t2va",
+      "format": "auto",
+      "codec": "auto"
+    }
+  }
+}

@@ -281,8 +281,12 @@ MODEL=/path/to/MiniMax-H3
 
 Useful env: `H3D_BIND` / `H3D_PORT` (default `127.0.0.1:8571`),
 `H3D_MODEL_PATH` (or `H3D_MODEL_PATH_FL2VA` / `H3D_MODEL_PATH_REF2VA`),
-`H3D_OUTPUT_ROOT`, `H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_QUOTA_BYTES`.
+`H3D_OUTPUT_ROOT`, `H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_QUOTA_BYTES`,
+`H3D_FASTH3_LORA`, `H3D_IDLE_RELEASE_SEC`.
 Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
+
+**ComfyUI:** `integrations/comfyui/` is a ComfyUI node that renders through
+this daemon. Setup: [ComfyUI](docs/wiki/ComfyUI.md).
 
 ## Documentation
 
@@ -290,7 +294,8 @@ Full contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md).
 - **Wiki sources** (also published to the GitHub wiki):
   [Getting started](docs/wiki/Getting-started.md),
   [T2VA pipeline](docs/wiki/T2VA-pipeline.md),
-  [Long video](docs/wiki/Long-video.md)
+  [Long video](docs/wiki/Long-video.md),
+  [ComfyUI](docs/wiki/ComfyUI.md)
 - **Timings** (Strix Halo / MI210 / MI300X): [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)
 - **Best practice** (recommended settings): [`docs/BEST_PRACTICE.md`](docs/BEST_PRACTICE.md)
 - **`--sol-attn`** (lossy long SDPA; off by default): [`docs/SOL_ATTN.md`](docs/SOL_ATTN.md)

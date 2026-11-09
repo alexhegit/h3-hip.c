@@ -287,10 +287,26 @@ static int resolve_adapter_path(const char *input, char *output, size_t cap,
     return 1;
 }
 
+static void close_adapter(void) {
+    h3_st_free_header(&fasth3.header);
+    memset(&fasth3.header, 0, sizeof(fasth3.header));
+    free(fasth3.used);
+    fasth3.used = NULL;
+    fasth3.open = 0;
+    fasth3.failed = 0;
+    fasth3.path[0] = '\0';
+}
+
 static int open_adapter(char *error, size_t error_size) {
     const char *env = getenv("H3_FASTH3_LORA");
     const char *strength_env = getenv("H3_FASTH3_STRENGTH");
     char path[1024];
+    /* h3 --serve runs many jobs in one process; a job may name another
+     * adapter (FastH3 dense, the VSA gates, Pika) than the one held open. */
+    if ((fasth3.open || fasth3.failed) && env &&
+        resolve_adapter_path(env, path, sizeof(path), NULL, 0) &&
+        strcmp(path, fasth3.path) != 0)
+        close_adapter();
     if (fasth3.open) return 1;
     if (fasth3.failed) {
         fasth3_fail(error, error_size, "FastH3 LoRA already failed to open");
@@ -306,8 +322,12 @@ static int open_adapter(char *error, size_t error_size) {
         }
     }
     if (!env || !resolve_adapter_path(env, path, sizeof(path), error,
-                                      error_size) ||
-        !h3_st_read_header(path, &fasth3.header, error, error_size)) {
+                                      error_size)) {
+        fasth3.failed = 1;
+        return 0;
+    }
+    snprintf(fasth3.path, sizeof(fasth3.path), "%s", path);
+    if (!h3_st_read_header(path, &fasth3.header, error, error_size)) {
         fasth3.failed = 1;
         return 0;
     }
@@ -318,7 +338,6 @@ static int open_adapter(char *error, size_t error_size) {
         fasth3.failed = 1;
         return 0;
     }
-    snprintf(fasth3.path, sizeof(fasth3.path), "%s", path);
     fasth3.open = 1;
     if (getenv("H3_PIKA") && strcmp(getenv("H3_PIKA"), "0") != 0) {
         fprintf(stderr,
@@ -661,7 +680,7 @@ int h3_fasth3_finish(char *error, size_t error_size) {
         error = local;
         error_size = sizeof(local);
     }
-    if (!fasth3.open && !open_adapter(error, error_size)) return 0;
+    if (!open_adapter(error, error_size)) return 0;
     const char *vsa_env = getenv("H3_VSA");
     int vsa = vsa_env && vsa_env[0] && strcmp(vsa_env, "0") != 0;
     int gate_unused = 0;
