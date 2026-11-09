@@ -16,8 +16,9 @@ including the worst pairing of individual runs:
 
 The bigger practical difference is memory. On 59 GiB of RAM ComfyUI with
 the full INT8 DiT needs `--cache-none` and a restart per job, or it is
-OOM-killed. The h3-hip daemon reuses resident weights (second job 56.6 s)
-but on a 32 GiB card only with `H3_INT8_HOST=1` (KI-007).
+OOM-killed. The h3-hip daemon reuses resident weights: a rerun of the same
+prompt takes 52.1 s after a 106.5 s first job (KI-007 fix and VAE BF16
+activations included, no environment needed).
 
 Scope of the claim: this R9700 (32 GiB, 59 GiB RAM), ComfyUI `fca60fe`
 with PyTorch 2.11+rocm7.13, fresh processes alternating. Quality is not
@@ -25,8 +26,8 @@ compared (samplers, INT8 schemes and noise differ). The h3-hip fox-fast
 numbers (≈2× whole job) are lossy and must not be quoted against ComfyUI.
 
 Where h3-hip can gain more: the video VAE (not power-bound; the BF16
-activation PR saves about 5 s at 864×480), fixing KI-007 so the daemon
-does not need a manual `H3_INT8_HOST`, and the DiT kernels themselves
+activation PR, since merged, saves about 5 s at 864×480 and is not in the
+table above), and the DiT kernels themselves
 (denoise already sits on the 300 W cap, so only efficiency helps: SDPA at
 about 40 % of BF16 peak, grouped INT8 at about 112 of 391 TOPS).
 
@@ -150,13 +151,14 @@ per-step patches. h3-hip merges FastH3 into the weights at load.
   52 GB used RAM.
 - A second job in the same ComfyUI process was OOM-killed again (the
   offloaded DiT stays in RAM), so ComfyUI needs a restart per job here.
-- The h3-hip daemon keeps weights resident, but on this 32 GiB card only
-  with `H3_INT8_HOST=1`: two consecutive 864×480 FastH3 jobs took 120.6 s
-  and then **56.6 s** (same prompt, so the text encoder result was reused
-  too). Without it the cached DiT pushes the video VAE and the next job
-  into pinned host memory: 212.7 s, then 179.4 s (`KNOWN_ISSUES.md`
-  KI-007). This is the setting a ComfyUI node would use; the table above
-  deliberately compares fresh processes on both sides.
+- The h3-hip daemon keeps weights resident. Three consecutive 864×480
+  FastH3 jobs (same prompt, new seed, new prompt) take 106.5 s, **52.1 s**
+  and 101.9 s with no environment set. Before the KI-007 fix the cached DiT
+  pushed the video VAE and the next job into pinned host memory (212.7,
+  179.4, 208.6 s); `--serve` now turns on `H3_INT8_HOST` itself on cards
+  below 48 GiB. A new prompt re-prepares the DiT, so reuse pays off for
+  reruns of one prompt. This is the setting a ComfyUI node would use; the
+  table above deliberately compares fresh processes on both sides.
 
 ## What this supports, and what it does not
 

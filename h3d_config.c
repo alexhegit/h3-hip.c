@@ -16,8 +16,9 @@ static int getenv_int(const char *name, int fallback) {
     const char *value = getenv(name);
     if (!value || !*value) return fallback;
     char *end = NULL;
+    errno = 0;
     long parsed = strtol(value, &end, 10);
-    if (errno || !end || *end || parsed < 0) return fallback;
+    if (errno || !end || *end || parsed < 0 || parsed > 2147483647L) return fallback;
     return (int)parsed;
 }
 

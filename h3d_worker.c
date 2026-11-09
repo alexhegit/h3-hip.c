@@ -233,6 +233,28 @@ void *h3d_worker_loop(void *arg) {
 
 /* ── Workers init ────────────────────────────────────────────── */
 
+/* The daemon keeps the prepared DiT cached between jobs. On a discrete card
+ * below 48 GiB that cached DiT leaves the video VAE too little room, so its
+ * tensors and the next job's fall back to pinned host memory (KI-007).
+ * Parking the INT8 linears in host RAM gives the same output and fits. An
+ * explicit H3_INT8_HOST, or a non-INT8 DiT, is left alone. */
+static void default_int8_host_for_cache(const h3_ctx *h3) {
+    const h3_device_info *device = h3_device(h3);
+    if (!device || device->unified_memory || !device->recommended_working_set)
+        return;
+    if (getenv("H3_INT8_HOST")) return;
+    const char *int8_mlp = getenv("H3_INT8_MLP");
+    const char *fp8_mlp = getenv("H3_FP8_MLP");
+    if ((int8_mlp && !strcmp(int8_mlp, "0")) || (fp8_mlp && strcmp(fp8_mlp, "0")))
+        return;
+    double gib = (double)device->recommended_working_set / (1024.0 * 1024.0 * 1024.0);
+    if (gib >= 48.0) return;
+    setenv("H3_INT8_HOST", "1", 1);
+    fprintf(stderr, "h3d: %.1f GiB card: H3_INT8_HOST=1 so the cached DiT leaves "
+            "room for the video VAE (set H3_INT8_HOST=0 to keep it on the card)\n",
+            gib);
+}
+
 int h3d_workers_init(h3d_ctx *ctx) {
     ctx->workers = NULL;
     ctx->worker_count = 0;
@@ -259,6 +281,7 @@ int h3d_workers_init(h3d_ctx *ctx) {
             free(worker);
             continue;
         }
+        default_int8_host_for_cache(worker->ctx);
 
         /* Load Ref2VA model if configured and different */
         if (ctx->model_path_ref2va[0] &&
