@@ -108,6 +108,7 @@ typedef struct {
     /* Options */
     int finalize_partial_on_cancel;
     int write_preview_frames;
+    int release_after;       /* clear the generation cache before reporting done */
     char extra_args[2048];   /* normalized echo of the accepted flags */
     int token_reduction;
     int sol_attn;
@@ -168,6 +169,13 @@ typedef struct h3d_worker {
     pthread_t thread;
     atomic_int running;
     h3d_job *current_job;
+    /* Set by POST /v1/cache/release; the worker clears it once idle. */
+    atomic_int release_requested;
+    time_t idle_since;   /* end of the last job, 0 before the first */
+    /* Only the worker thread touches the h3 contexts, so it publishes the
+     * cache state here for /v1/info. */
+    pthread_mutex_t cache_lock;
+    h3_cache_info cache;
     struct h3d_worker *next;
 } h3d_worker;
 
@@ -189,6 +197,7 @@ struct h3d_ctx {
     char log_dir[1024];
     int max_queued_per_client;
     int prompt_max_chars;
+    int idle_release_sec;          /* 0 keeps the cache until asked */
     int gpu_indices[16];
     int gpu_count;
 
@@ -218,6 +227,7 @@ int h3d_config_load(h3d_ctx *ctx);
 /* ── API: JSON helpers ────────────────────────────────────────── */
 int h3d_json_escape(char *dest, size_t dest_len, const char *src);
 int h3d_json_info_response(h3d_ctx *ctx, char *buf, size_t len);
+int h3d_json_cache_release_response(h3d_ctx *ctx, int released, char *buf, size_t len);
 int h3d_json_job_response(h3d_job *job, char *buf, size_t len);
 int h3d_json_error_response(const h3d_error *error, char *buf, size_t len);
 int h3d_json_queue_full_response(char *buf, size_t len);

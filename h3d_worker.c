@@ -117,6 +117,50 @@ static void build_h3_params(h3d_job *job, h3_params *params) {
     params->reference_count = count;
 }
 
+/* ── Generation cache ────────────────────────────────────────── */
+
+static void publish_cache(h3d_worker *worker) {
+    h3_cache_info fl2va, ref2va = {0};
+    h3_cache_get_info(worker->ctx, &fl2va);
+    if (worker->ctx_ref2va) h3_cache_get_info(worker->ctx_ref2va, &ref2va);
+    pthread_mutex_lock(&worker->cache_lock);
+    worker->cache.embedding_entries = fl2va.embedding_entries + ref2va.embedding_entries;
+    worker->cache.embedding_bytes = fl2va.embedding_bytes + ref2va.embedding_bytes;
+    worker->cache.prepared_dit = fl2va.prepared_dit || ref2va.prepared_dit;
+    worker->cache.video_decoder = fl2va.video_decoder || ref2va.video_decoder;
+    pthread_mutex_unlock(&worker->cache_lock);
+}
+
+static int cache_resident(h3d_worker *worker) {
+    pthread_mutex_lock(&worker->cache_lock);
+    int resident = worker->cache.prepared_dit || worker->cache.video_decoder ||
+                   worker->cache.embedding_entries;
+    pthread_mutex_unlock(&worker->cache_lock);
+    return resident;
+}
+
+static void release_cache(h3d_worker *worker, const char *why) {
+    int resident = cache_resident(worker);
+    h3_cache_clear(worker->ctx);
+    if (worker->ctx_ref2va) h3_cache_clear(worker->ctx_ref2va);
+    publish_cache(worker);
+    if (resident)
+        fprintf(stderr, "h3d: GPU %d: released the generation cache (%s)\n",
+                worker->gpu_index, why);
+}
+
+static void idle_tick(h3d_worker *worker) {
+    int idle_release_sec = worker->dctx->idle_release_sec;
+    if (atomic_load(&worker->release_requested)) {
+        release_cache(worker, "requested");
+        atomic_store(&worker->release_requested, 0);
+    } else if (idle_release_sec > 0 && worker->idle_since &&
+               time(NULL) - worker->idle_since >= idle_release_sec &&
+               cache_resident(worker)) {
+        release_cache(worker, "idle timeout");
+    }
+}
+
 /* ── Worker loop ─────────────────────────────────────────────── */
 
 void *h3d_worker_loop(void *arg) {
@@ -126,6 +170,7 @@ void *h3d_worker_loop(void *arg) {
     while (!atomic_load(&dctx->shutdown)) {
         h3d_job *job = find_next_job(dctx);
         if (!job) {
+            idle_tick(worker);
             usleep(100000); /* 100ms idle poll */
             continue;
         }
@@ -160,6 +205,8 @@ void *h3d_worker_loop(void *arg) {
 
         /* Generate */
         h3_result *result = h3_generate(ctx, job->prompt, &params);
+        if (job->release_after) release_cache(worker, "release_after");
+        else publish_cache(worker);
 
         if (atomic_load(&job->cancel_requested)) {
             /* Cancelled during generation */
@@ -225,6 +272,7 @@ void *h3d_worker_loop(void *arg) {
             h3_result_free(result);
         }
 
+        worker->idle_since = time(NULL);
         worker->current_job = NULL;
         atomic_store(&worker->running, 0);
     }
@@ -265,6 +313,7 @@ int h3d_workers_init(h3d_ctx *ctx) {
 
         worker->gpu_index = ctx->gpu_indices[i];
         worker->dctx = ctx;
+        pthread_mutex_init(&worker->cache_lock, NULL);
 
         /* Load FL2VA model (primary) */
         const char *model_path = ctx->model_path_fl2va[0] ? ctx->model_path_fl2va : ctx->model_path;

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Smoke test for a running `h3 --serve` daemon (protocol v1alpha).
 
-Default checks need no GPU time: request parsing, validation, concurrency,
-cancel, SSE framing. --generate also renders fox-s2 (md5 6d17f81a...) and,
-with --first-frame/--fl2va-md5, compares FL2VA against the CLI.
+Default checks need little GPU time: request parsing, validation,
+concurrency, cancel, SSE framing, cache release. --generate also renders
+fox-s2 twice (the second run hits the prepared-DiT cache and sets
+release_after) and compares both with --fox-md5, the CLI's fox-s2 md5 from
+the same build; with --first-frame/--fl2va-md5 it compares FL2VA too.
+tools/serve_regression.sh runs the CLI and this script together.
 
     ./tools/h3d_smoke.py [--url http://127.0.0.1:8571] [--generate]
-        [--first-frame PNG --fl2va-md5 MD5]
+        [--fox-md5 MD5] [--first-frame PNG --fl2va-md5 MD5]
 
 The first frame must live under the daemon's media_root.
 """
@@ -22,7 +25,6 @@ import urllib.parse
 
 PROTO = {"X-H3-Protocol": "v1alpha"}
 FOX = "A red fox walks through fresh snow."
-FOX_S2_MD5 = "6d17f81ae47f48b46e6144ce92c2d167"
 failures = []
 
 
@@ -208,6 +210,15 @@ def test_options(url):
     check("missing LoRA file -> 422", status == 422, data)
     status, data = submit(url, job_body(options={"token_reduction_schedule": "4:30"}))
     check("token_reduction_schedule -> 422", status == 422, data)
+    status, data = submit(url, job_body(options={"release_after": "yes"}))
+    check("string release_after -> 400", status == 400, data)
+    status, data = submit(url, job_body(options={"release_after": True}))
+    check("release_after is accepted", status == 202, data)
+    if status == 202:
+        _, job, _ = request(url, "GET", f"/v1/jobs/{data['job_id']}")
+        check("release_after is echoed", job["request"]["options"]["release_after"] is True,
+              job["request"]["options"])
+        cancel(url, data["job_id"])
     status, data = submit(url, job_body(options={"extra_args": "--token-reduction --core-reuse 4"}))
     check("allowed extra args are accepted", status == 202, data)
     if status == 202:
@@ -255,7 +266,32 @@ def test_concurrency_and_cancel(url):
     check("cancel a finished job -> 409", status == 409, status)
 
 
-def test_generate(url, first_frame, fl2va_md5):
+def worker_cache(url):
+    _, info, _ = request(url, "GET", "/v1/info")
+    return info["workers"][0]["cache"]
+
+
+def test_cache_release(url):
+    status, info, _ = request(url, "GET", "/v1/info")
+    check("info reports idle_release_sec", isinstance(info.get("idle_release_sec"), int), info)
+    check("info reports the worker cache",
+          {"prepared_dit", "video_decoder", "embedding_bytes"} <= set(info["workers"][0].get("cache", {})),
+          info["workers"][0])
+    status, data, _ = request(url, "POST", "/v1/cache/release", timeout=30)
+    check("release on an idle daemon -> 200", status == 200 and data["released"] is True, f"{status} {data}")
+    cache = worker_cache(url)
+    check("release empties the cache", not cache["prepared_dit"] and not cache["video_decoder"], cache)
+
+
+def check_fox(name, job, fox_md5):
+    got = md5(job["result"]["mp4_path"])
+    if fox_md5:
+        check(f"{name} md5 matches the CLI", got == fox_md5, f"got {got} want {fox_md5}")
+    else:
+        print(f"skip: {name} md5 {got} not compared (pass --fox-md5 from a CLI run)")
+
+
+def test_generate(url, fox_md5, first_frame, fl2va_md5):
     status, data = submit(url, job_body())
     check("fox-s2 submit", status == 202, data)
     events = sse_events(url, data["job_id"])
@@ -265,8 +301,21 @@ def test_generate(url, first_frame, fl2va_md5):
     if names and names[-1] == "done":
         job = json.loads(events[-1][1])
         check("done event carries the job", job["status"] == "done" and job["result"]["mp4_path"])
-        check("fox-s2 md5", md5(job["result"]["mp4_path"]) == FOX_S2_MD5,
-              md5(job["result"]["mp4_path"]))
+        check_fox("fox-s2", job, fox_md5)
+        cache = worker_cache(url)
+        check("fox-s2 leaves the DiT cached", cache["prepared_dit"], cache)
+
+    # Same request again: prepared-DiT cache hit, then release before done.
+    status, data = submit(url, job_body(options={"release_after": True}))
+    check("fox-s2 rerun submit", status == 202, data)
+    if status == 202:
+        job = wait(url, data["job_id"])
+        check("fox-s2 rerun done", job["status"] == "done", job.get("error"))
+        if job["status"] == "done":
+            check_fox("fox-s2 cache-hit rerun", job, fox_md5)
+            cache = worker_cache(url)
+            check("release_after empties the cache by done",
+                  not cache["prepared_dit"] and not cache["video_decoder"], cache)
 
     if first_frame:
         status, data = submit(url, job_body(mode="FL2VA", refs={"first_frame": first_frame}))
@@ -283,6 +332,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--url", default="http://127.0.0.1:8571")
     parser.add_argument("--generate", action="store_true")
+    parser.add_argument("--fox-md5", help="CLI fox-s2 md5 from the same build")
     parser.add_argument("--first-frame")
     parser.add_argument("--fl2va-md5")
     args = parser.parse_args()
@@ -299,8 +349,9 @@ def main():
     test_refs(args.url, info["media_root"])
     test_options(args.url)
     test_concurrency_and_cancel(args.url)
+    test_cache_release(args.url)
     if args.generate:
-        test_generate(args.url, args.first_frame, args.fl2va_md5)
+        test_generate(args.url, args.fox_md5, args.first_frame, args.fl2va_md5)
 
     print(f"\n{len(failures)} failure(s)" + (": " + ", ".join(failures) if failures else ""))
     sys.exit(1 if failures else 0)

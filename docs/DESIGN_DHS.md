@@ -338,9 +338,12 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   "output_root": "/var/lib/h3d/outputs",
   "media_root": "/var/lib/h3d/media",
   "quota": { "limit_bytes": 21474836480, "used_bytes": 3221225472 },
+  "idle_release_sec": 0,
   "workers": [
     { "gpu_index": 0, "arch": "gfx1151", "state": "idle",
-      "current_job": null, "queue_depth": 1 }
+      "current_job": null, "queue_depth": 1,
+      "cache": { "prepared_dit": true, "video_decoder": true,
+                 "embedding_bytes": 81928, "release_pending": false } }
   ],
   "limits": {
     "max_queued_jobs_per_client": 8,
@@ -358,6 +361,9 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 - `ready=false` 时 `unready_reason` 为人类可读原因（权重缺失、ROCm 未
   初始化等）。此时提交任务返回 503。
 - 插件应在会话早期调用一次，把 workers/limits 告知 agent（skill 可引用）。
+- `workers[].cache` 是生成缓存（prepared DiT、视频 VAE decoder、条件嵌入）
+  是否驻留；驻留时 daemon 占着显存和 pinned 内存，释放见 §13.7。
+  `idle_release_sec` 为 0 表示不按空闲时间自动释放。
 
 ### 13.2 `POST /v1/jobs` — 提交任务
 
@@ -383,6 +389,7 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   },
   "options": {
     "finalize_partial_on_cancel": false,
+    "release_after": false,
     "write_preview_frames": false,
     "token_reduction": false,
     "extra_args": ["--token-reduction"]
@@ -569,6 +576,26 @@ data: {"job_id":"k3v9a2x1","result":{...同13.3...}}
 
 开启预览时，偶发 `event: preview`（路径必须在 output root 内，频率与分辨率由 daemon 限额）。插件不得把每一 DiT step 都当附件发出。
 
+### 13.7 `POST /v1/cache/release` — 释放生成缓存（附加，不升协议号）
+
+daemon 默认在任务之间保留生成缓存，同一 prompt 重跑快一倍，但期间一直
+占着显存和 pinned 内存。与其他 GPU 程序（例如 ComfyUI 的其他模型节点）
+共卡时，客户端用下面三种方式之一把它还回去：
+
+- `POST /v1/cache/release`：空闲 worker 在 100 ms 内清空缓存，daemon
+  等它完成后返回 200 `{"released":true,"workers":[…]}`（`workers` 同
+  §13.1）。worker 忙时 10 秒后返回 202 `{"released":false,…}`，缓存在
+  队列跑空后释放，`workers[].cache.release_pending` 为 true。
+- 提交时 `options.release_after=true`：该任务结束后、状态变为终态之前
+  清空缓存，客户端看到 `done` 时内存已经还回。
+- `H3D_IDLE_RELEASE_SEC=N`：最后一个任务结束 N 秒后自动释放（默认 0，
+  不自动释放）。
+
+释放不改变输出：下一个任务重新准备 DiT（cache miss），md5 与 CLI 相同。
+R9700 实测（864×480 · 5 s FastH3）：缓存驻留 9.5 GiB 显存、19 GiB
+常驻内存；释放后 0.55 GiB / 0.89 GiB；首个任务 104.5 s，命中缓存的
+重跑 61.6 s。
+
 ## 14. 任务生命周期
 
 ```
@@ -638,6 +665,7 @@ queued → preparing → running → finalizing → done
 | `H3D_LOG_LEVEL` | `INFO` | DEBUG 开关 |
 | `H3D_LOG_DIR` | `~/.h3d/logs` | 日志目录，10MB×5 轮转 |
 | `H3D_GPUS` | `0` | worker 池 GPU 索引列表（逗号分隔），为后续多卡预留 |
+| `H3D_IDLE_RELEASE_SEC` | `0` | 最后一个任务结束多少秒后释放生成缓存；0 不自动释放（§13.7） |
 | `H3D_CONFIG_FILE` | （无） | 可选配置文件路径，优先级高于环境变量 |
 
 ## 18. 明确不做与验收
@@ -655,8 +683,10 @@ queued → preparing → running → finalizing → done
 
 ### 18.2 验收
 
-1. **一致性 gate**：daemon 路径跑 fox-s2，产物 md5 与 CLI 路径一致
-   （并入现有 halo-regression；MI210/MI300X 可选扩展）
+1. **一致性 gate**：daemon 路径跑 fox-s2，产物 md5 与 CLI 路径一致。
+   已实现为 `make HIP_ARCH=… serve-regression`（`tools/serve_regression.sh`）：
+   同一构建先跑 CLI，再让 daemon 跑 cache miss 与 cache hit 两次，任何 ISA
+   都以本机 CLI 为基准
 2. **fake daemon 对拍**：插件测试套件在 fake 与真 daemon 上全部通过
 3. **崩溃演练**：kill -9 daemon 后重启，在制任务按 §14 语义呈现，
    队列恢复可用

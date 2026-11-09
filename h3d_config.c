@@ -111,6 +111,8 @@ int h3d_config_load(h3d_ctx *ctx) {
 
     ctx->max_queued_per_client = getenv_int("H3D_MAX_QUEUED", ctx->max_queued_per_client);
     ctx->prompt_max_chars = getenv_int("H3D_PROMPT_MAX_CHARS", ctx->prompt_max_chars);
+    ctx->idle_release_sec = getenv_int("H3D_IDLE_RELEASE_SEC", ctx->idle_release_sec);
+    if (ctx->idle_release_sec < 0) ctx->idle_release_sec = 0;
 
     /* Parse GPU list */
     const char *gpus = getenv_or("H3D_GPUS", "0");

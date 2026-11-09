@@ -43,8 +43,8 @@ Tick the boxes in commits on this branch, or note the landing PR / SHA.
 
 | # | Item | Status |
 |---|---|---|
-| A1 | **KI-005 gate.** `tools/h3d_smoke.py --generate` checks fox-s2 against a hard-coded gfx1201 md5 (`6d17f81a…`; gfx1151 is `1731f95c…`). Compare the daemon output with a CLI run from the same build instead, and wire it into a make target | [ ] |
-| A2 | **Release VRAM when idle.** The worker always enables the generation cache and has no unload, so the daemon keeps the prepared DiT on the card between jobs and competes with ComfyUI's own models on a 32 GiB card. Add an unload endpoint and/or an idle timeout that frees the cache, reported in `/v1/info` | [ ] |
+| A1 | **KI-005 gate.** `tools/h3d_smoke.py --generate` checks fox-s2 against a hard-coded gfx1201 md5 (`6d17f81a…`; gfx1151 is `1731f95c…`). Compare the daemon output with a CLI run from the same build instead, and wire it into a make target | [x] `make serve-regression`; gfx1201 pass (miss + hit = CLI `6d17f81a…`). Other ISAs not run |
+| A2 | **Release VRAM when idle.** The worker always enables the generation cache and has no unload, so the daemon keeps the prepared DiT on the card between jobs and competes with ComfyUI's own models on a 32 GiB card. Add an unload endpoint and/or an idle timeout that frees the cache, reported in `/v1/info` | [x] `POST /v1/cache/release`, `options.release_after`, `H3D_IDLE_RELEASE_SEC`, `workers[].cache` in `/v1/info` (`DESIGN_DHS.md` §13.7). 864×480 FastH3: 9.5 GiB VRAM / 19 GiB RSS → 0.55 / 0.89 GiB |
 | A3 | **FastH3 without server paths.** Today a client must pass `--fasth3-lora PATH` through `extra_args`. Resolve the adapter on the daemon side (default download location or `H3D_*` setting) behind a named option, and fold this into the public `DESIGN_DHS_PATHS.md` plan ([h3-hip.c PR #12](https://github.com/alexhegit/h3-hip.c/pull/12)) instead of keeping two plans | [ ] |
 | A4 | KI-007 status in `KNOWN_ISSUES.md` points at `r9700` | [x] |
 

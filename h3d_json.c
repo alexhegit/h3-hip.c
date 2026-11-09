@@ -88,6 +88,39 @@ int h3d_json_escape(char *dest, size_t dest_len, const char *src) {
 
 /* ── Info response ───────────────────────────────────────────── */
 
+static void jb_workers(jbuf *b, h3d_ctx *ctx) {
+    jb_char(b, '[');
+    int first = 1;
+    for (h3d_worker *w = ctx->workers; w; w = w->next) {
+        if (!first) jb_char(b, ',');
+        first = 0;
+        h3d_job *current = w->current_job;
+        jb_printf(b, "{\"gpu_index\":%d,\"arch\":", w->gpu_index);
+        jb_str(b, w->arch);
+        jb_printf(b, ",\"state\":\"%s\",\"current_job\":",
+                  atomic_load(&w->running) ? "busy" : "idle");
+        jb_str(b, current ? current->job_id : NULL);
+        pthread_mutex_lock(&w->cache_lock);
+        h3_cache_info cache = w->cache;
+        pthread_mutex_unlock(&w->cache_lock);
+        jb_printf(b, ",\"cache\":{\"prepared_dit\":%s,\"video_decoder\":%s,"
+                  "\"embedding_bytes\":%zu,\"release_pending\":%s}}",
+                  cache.prepared_dit ? "true" : "false",
+                  cache.video_decoder ? "true" : "false",
+                  cache.embedding_bytes,
+                  atomic_load(&w->release_requested) ? "true" : "false");
+    }
+    jb_char(b, ']');
+}
+
+int h3d_json_cache_release_response(h3d_ctx *ctx, int released, char *buf, size_t len) {
+    jbuf b = jb_init(buf, len);
+    jb_printf(&b, "{\"released\":%s,\"workers\":", released ? "true" : "false");
+    jb_workers(&b, ctx);
+    jb_char(&b, '}');
+    return jb_end(&b);
+}
+
 int h3d_json_info_response(h3d_ctx *ctx, char *buf, size_t len) {
     jbuf b = jb_init(buf, len);
     jb_printf(&b, "{\"protocol\":\"%s\",\"h3_version\":\"%s\",\"ready\":%s,"
@@ -101,22 +134,11 @@ int h3d_json_info_response(h3d_ctx *ctx, char *buf, size_t len) {
     jb_printf(&b, ",\"media_root\":");
     jb_str(&b, ctx->media_root);
     jb_printf(&b, ",\"quota\":{\"limit_bytes\":%" PRIu64 ",\"used_bytes\":%" PRIu64
-              "},\"workers\":[", ctx->quota_bytes, ctx->quota_used_bytes);
+              "},\"idle_release_sec\":%d,\"workers\":",
+              ctx->quota_bytes, ctx->quota_used_bytes, ctx->idle_release_sec);
+    jb_workers(&b, ctx);
 
-    int first = 1;
-    for (h3d_worker *w = ctx->workers; w; w = w->next) {
-        if (!first) jb_char(&b, ',');
-        first = 0;
-        h3d_job *current = w->current_job;
-        jb_printf(&b, "{\"gpu_index\":%d,\"arch\":", w->gpu_index);
-        jb_str(&b, w->arch);
-        jb_printf(&b, ",\"state\":\"%s\",\"current_job\":",
-                  atomic_load(&w->running) ? "busy" : "idle");
-        jb_str(&b, current ? current->job_id : NULL);
-        jb_printf(&b, "}");
-    }
-
-    jb_printf(&b, "],\"limits\":{"
+    jb_printf(&b, ",\"limits\":{"
         "\"max_queued_jobs_per_client\":%d,"
         "\"prompt_max_chars\":%d,"
         "\"ref_images_max\":%d,\"ref_videos_max\":%d,\"ref_audios_max\":%d,"
@@ -196,10 +218,12 @@ int h3d_json_job_response(h3d_job *job, char *buf, size_t len) {
     jb_printf(&b, ",\"last_frame\":");
     jb_opt_str(&b, job->last_frame);
     jb_printf(&b, "},\"options\":{\"finalize_partial_on_cancel\":%s,"
+              "\"release_after\":%s,"
               "\"token_reduction\":%s,\"sol_attn\":%s,\"fbc\":%s,\"vsa\":%s,"
               "\"core_reuse\":%d,\"render_width\":%d,\"render_height\":%d,"
               "\"fasth3_lora\":",
               job->finalize_partial_on_cancel ? "true" : "false",
+              job->release_after ? "true" : "false",
               job->token_reduction ? "true" : "false",
               job->sol_attn ? "true" : "false",
               job->fbc ? "true" : "false",

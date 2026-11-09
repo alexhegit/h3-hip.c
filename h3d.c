@@ -595,6 +595,25 @@ static void handle_info(h3d_ctx *ctx, int fd) {
     send_json(fd, 200, "OK", body, h3d_json_info_response(ctx, body, sizeof(body)));
 }
 
+/* Ask every worker to drop its generation cache. Idle workers act within
+ * 100 ms, so wait for them and answer 200 once the memory is back; a busy
+ * worker releases after its queue drains and the answer is 202. */
+static void handle_cache_release(h3d_ctx *ctx, int fd) {
+    for (h3d_worker *w = ctx->workers; w; w = w->next)
+        atomic_store(&w->release_requested, 1);
+    int released = 0;
+    for (int i = 0; i < 100 && !released; i++) {
+        released = 1;
+        for (h3d_worker *w = ctx->workers; w; w = w->next)
+            if (atomic_load(&w->release_requested)) released = 0;
+        if (!released) usleep(100000);
+    }
+    char body[8192];
+    int len = h3d_json_cache_release_response(ctx, released, body, sizeof(body));
+    if (released) send_json(fd, 200, "OK", body, len);
+    else send_json(fd, 202, "Accepted", body, len);
+}
+
 #define FIELD(parse, object, key, name, dst, what) do {                        \
     const char *value_ = json_member(object, key);                             \
     if (json_given(value_) && !parse(value_, dst)) {                           \
@@ -780,6 +799,8 @@ static void handle_submit(h3d_ctx *ctx, int fd, const char *body) {
           "options.finalize_partial_on_cancel", &job->finalize_partial_on_cancel, "a boolean");
     FIELD(json_read_bool, options, "write_preview_frames", "options.write_preview_frames",
           &job->write_preview_frames, "a boolean");
+    FIELD(json_read_bool, options, "release_after", "options.release_after",
+          &job->release_after, "a boolean");
     int token_reduction = -1;
     FIELD(json_read_bool, options, "token_reduction", "options.token_reduction",
           &token_reduction, "a boolean");
@@ -1047,6 +1068,8 @@ static void handle_request(h3d_ctx *ctx, int fd,
 
     if (strcmp(path, "/v1/info") == 0 && strcmp(method, "GET") == 0) {
         handle_info(ctx, fd);
+    } else if (strcmp(path, "/v1/cache/release") == 0 && strcmp(method, "POST") == 0) {
+        handle_cache_release(ctx, fd);
     } else if (strcmp(path, "/v1/jobs") == 0 && strcmp(method, "POST") == 0) {
         handle_submit(ctx, fd, body);
     } else if (strncmp(path, "/v1/jobs", 8) == 0 &&
