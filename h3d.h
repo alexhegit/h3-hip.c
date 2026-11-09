@@ -189,6 +189,7 @@ struct h3d_ctx {
     char model_path[1024];         /* compatibility: shared fallback */
     char output_root[1024];
     char media_root[1024];
+    char fasth3_lora[1024];        /* adapter behind options.fasth3; empty if none */
     uint64_t quota_bytes;
     int timeout_tier1;
     int timeout_tier2;

@@ -203,6 +203,26 @@ def test_refs(url, media_root):
         os.unlink(probe)
 
 
+def test_fasth3(url, info):
+    status, data = submit(url, job_body(options={"fasth3": "yes"}))
+    check("string fasth3 -> 400", status == 400, data)
+    available = info.get("adapters", {}).get("fasth3")
+    check("info reports the FastH3 adapter", isinstance(available, bool), info.get("adapters"))
+    status, data = submit(url, job_body(options={"fasth3": True}))
+    if not available:
+        check("fasth3 without an adapter -> 422", status == 422, data)
+        return
+    check("fasth3 is accepted", status == 202, data)
+    if status == 202:
+        _, job, _ = request(url, "GET", f"/v1/jobs/{data['job_id']}")
+        lora = job["request"]["options"]["fasth3_lora"]
+        check("fasth3 resolves the adapter", bool(lora) and os.path.isabs(lora), lora)
+        cancel(url, data["job_id"])
+        status, data = submit(url, job_body(options={"fasth3": True,
+                                                     "extra_args": ["--fasth3-lora", lora]}))
+        check("fasth3 plus --fasth3-lora -> 422", status == 422, data)
+
+
 def test_options(url):
     status, data = submit(url, job_body(options={"extra_args": ["--bogus"]}))
     check("unknown extra arg -> 422", status == 422, data)
@@ -348,6 +368,7 @@ def main():
     test_geometry(args.url)
     test_refs(args.url, info["media_root"])
     test_options(args.url)
+    test_fasth3(args.url, info)
     test_concurrency_and_cancel(args.url)
     test_cache_release(args.url)
     if args.generate:

@@ -134,8 +134,9 @@ int h3d_json_info_response(h3d_ctx *ctx, char *buf, size_t len) {
     jb_printf(&b, ",\"media_root\":");
     jb_str(&b, ctx->media_root);
     jb_printf(&b, ",\"quota\":{\"limit_bytes\":%" PRIu64 ",\"used_bytes\":%" PRIu64
-              "},\"idle_release_sec\":%d,\"workers\":",
-              ctx->quota_bytes, ctx->quota_used_bytes, ctx->idle_release_sec);
+              "},\"idle_release_sec\":%d,\"adapters\":{\"fasth3\":%s},\"workers\":",
+              ctx->quota_bytes, ctx->quota_used_bytes, ctx->idle_release_sec,
+              ctx->fasth3_lora[0] ? "true" : "false");
     jb_workers(&b, ctx);
 
     jb_printf(&b, ",\"limits\":{"

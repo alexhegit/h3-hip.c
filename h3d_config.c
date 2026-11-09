@@ -1,6 +1,7 @@
 #include "h3d_config.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,6 +96,27 @@ int h3d_config_load(h3d_ctx *ctx) {
     const char *media = getenv_or("H3D_MEDIA_ROOT", "~/.h3d/media");
     expand_home(expanded, sizeof(expanded), media);
     snprintf(ctx->media_root, sizeof(ctx->media_root), "%s", expanded);
+
+    /* options.fasth3: H3D_FASTH3_LORA, else where
+     * tools/download_fasth3_lora.sh puts the dense adapter. */
+    char fasth3[2048];
+    const char *lora = getenv("H3D_FASTH3_LORA");
+    if (lora && *lora) {
+        expand_home(fasth3, sizeof(fasth3), lora);
+    } else {
+        expand_home(expanded, sizeof(expanded),
+                    getenv_or("H3_FASTH3_LORA_DIR", "./FastH3-4-step-LoRA"));
+        snprintf(fasth3, sizeof(fasth3), "%s/dense-datafree/adapter_model.safetensors",
+                 expanded);
+    }
+    char resolved[PATH_MAX];
+    struct stat st;
+    if (realpath(fasth3, resolved) && stat(resolved, &st) == 0 && S_ISREG(st.st_mode) &&
+        strlen(resolved) < sizeof(ctx->fasth3_lora))
+        snprintf(ctx->fasth3_lora, sizeof(ctx->fasth3_lora), "%s", resolved);
+    else if (lora && *lora)
+        fprintf(stderr, "h3d: warning: H3D_FASTH3_LORA=%s is not a file; "
+                "options.fasth3 is unavailable\n", lora);
 
     ctx->quota_bytes = getenv_u64("H3D_QUOTA_BYTES", ctx->quota_bytes);
     ctx->timeout_tier1 = getenv_int("H3D_TIMEOUT_TIER1", ctx->timeout_tier1);

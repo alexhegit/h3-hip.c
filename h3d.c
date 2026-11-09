@@ -584,6 +584,8 @@ static void build_cli_args(char *buf, size_t len, h3d_ctx *ctx, h3d_job *job) {
         cli_append(buf, len, " --ref-audio %s", job->refs_audio[i].path);
     if (job->token_reduction && !strstr(job->extra_args, "--token-reduction"))
         cli_append(buf, len, " --token-reduction");
+    if (job->fasth3_lora[0] && !strstr(job->extra_args, "--fasth3-lora"))
+        cli_append(buf, len, " --fasth3-lora %s", job->fasth3_lora);
     if (job->extra_args[0]) cli_append(buf, len, " %s", job->extra_args);
     cli_append(buf, len, " -o %s", job->mp4_path);
 }
@@ -804,6 +806,8 @@ static void handle_submit(h3d_ctx *ctx, int fd, const char *body) {
     int token_reduction = -1;
     FIELD(json_read_bool, options, "token_reduction", "options.token_reduction",
           &token_reduction, "a boolean");
+    int fasth3 = 0;
+    FIELD(json_read_bool, options, "fasth3", "options.fasth3", &fasth3, "a boolean");
     if (json_given(json_member(options, "token_reduction_schedule"))) {
         UNPROCESSABLE("ARG_REJECTED", "options.token_reduction_schedule",
                       "token_reduction_schedule is not supported by this daemon");
@@ -816,6 +820,20 @@ static void handle_submit(h3d_ctx *ctx, int fd, const char *body) {
         goto reject;
     }
     if (token_reduction == 1) job->token_reduction = 1;
+    if (fasth3) {
+        if (job->fasth3_lora[0]) {
+            UNPROCESSABLE("ARG_REJECTED", "options.fasth3",
+                          "use options.fasth3 or --fasth3-lora in extra_args, not both");
+            goto reject;
+        }
+        if (!ctx->fasth3_lora[0]) {
+            UNPROCESSABLE("ARG_REJECTED", "options.fasth3",
+                          "no FastH3 adapter on this daemon; set H3D_FASTH3_LORA or run "
+                          "tools/download_fasth3_lora.sh");
+            goto reject;
+        }
+        snprintf(job->fasth3_lora, sizeof(job->fasth3_lora), "%s", ctx->fasth3_lora);
+    }
 
     /* idempotency */
     value = json_member(body, "idempotency_key");

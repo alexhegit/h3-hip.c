@@ -339,6 +339,7 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   "media_root": "/var/lib/h3d/media",
   "quota": { "limit_bytes": 21474836480, "used_bytes": 3221225472 },
   "idle_release_sec": 0,
+  "adapters": { "fasth3": true },
   "workers": [
     { "gpu_index": 0, "arch": "gfx1151", "state": "idle",
       "current_job": null, "queue_depth": 1,
@@ -364,6 +365,7 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 - `workers[].cache` 是生成缓存（prepared DiT、视频 VAE decoder、条件嵌入）
   是否驻留；驻留时 daemon 占着显存和 pinned 内存，释放见 §13.7。
   `idle_release_sec` 为 0 表示不按空闲时间自动释放。
+- `adapters.fasth3` 为 true 时可用 `options.fasth3`（见 §13.2）。
 
 ### 13.2 `POST /v1/jobs` — 提交任务
 
@@ -390,6 +392,7 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   "options": {
     "finalize_partial_on_cancel": false,
     "release_after": false,
+    "fasth3": false,
     "write_preview_frames": false,
     "token_reduction": false,
     "extra_args": ["--token-reduction"]
@@ -427,6 +430,12 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   一律 422 `ARG_REJECTED`，不会被悄悄忽略。`options.token_reduction`
   （§13.6）与 `--token-reduction` 等价，二者矛盾时 422；
   `token_reduction_schedule` 是进程级环境变量，daemon 不支持，422
+- `options.fasth3=true` 使用 daemon 自己配置的 FastH3 dense 适配器
+  （`H3D_FASTH3_LORA`，缺省为 `tools/download_fasth3_lora.sh` 的下载位置），
+  客户端不需要知道服务器路径；与 `--fasth3-lora PATH` 二选一，同给 422；
+  daemon 没有适配器时 422（`/v1/info` 的 `adapters.fasth3` 为 false）。
+  输出与 CLI `--fasth3-lora` 逐字节相同
+- `options.release_after=true` 见 §13.7
 - `idempotency_key` 有效期内（建议 24h）重复提交返回原 job，不重复入队
 
 响应 202：
@@ -665,6 +674,7 @@ queued → preparing → running → finalizing → done
 | `H3D_LOG_LEVEL` | `INFO` | DEBUG 开关 |
 | `H3D_LOG_DIR` | `~/.h3d/logs` | 日志目录，10MB×5 轮转 |
 | `H3D_GPUS` | `0` | worker 池 GPU 索引列表（逗号分隔），为后续多卡预留 |
+| `H3D_FASTH3_LORA` | `${H3_FASTH3_LORA_DIR:-./FastH3-4-step-LoRA}/dense-datafree/adapter_model.safetensors` | `options.fasth3` 用的适配器文件；不存在时 `adapters.fasth3=false` |
 | `H3D_IDLE_RELEASE_SEC` | `0` | 最后一个任务结束多少秒后释放生成缓存；0 不自动释放（§13.7） |
 | `H3D_CONFIG_FILE` | （无） | 可选配置文件路径，优先级高于环境变量 |
 
