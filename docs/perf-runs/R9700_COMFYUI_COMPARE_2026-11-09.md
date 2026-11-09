@@ -3,6 +3,37 @@
 Question: is a ComfyUI node that calls `h3 --serve` worth building, given
 that ComfyUI now runs MiniMax-H3 natively on ROCm?
 
+## Summary
+
+h3-hip is faster than ComfyUI native on this card in every matched row,
+including the worst pairing of individual runs:
+
+| row | denoise | whole job | worst pairing (whole job) | how to quote it |
+|---|---:|---:|---:|---|
+| A. 864×480, 20 steps, dense | **1.37×** | **1.29×** | 1.21× | headline: same model, steps and layers, both dense |
+| C. 864×480, 4-step turbo | 1.70× | 1.31× | 1.16× | different turbo adapters; ComfyUI patches its LoRA per step because the DiT does not fit |
+| D. 1344×768, 4-step turbo | 1.42× | 1.16× | 1.13× | as C; h3-hip's lead shrinks outside denoise (VAE 54 s, `H3_INT8_HOST` load 32 s) |
+
+The bigger practical difference is memory. On 59 GiB of RAM ComfyUI with
+the full INT8 DiT needs `--cache-none` and a restart per job, or it is
+OOM-killed. The h3-hip daemon reuses resident weights (second job 56.6 s)
+but on a 32 GiB card only with `H3_INT8_HOST=1` (KI-007).
+
+Scope of the claim: this R9700 (32 GiB, 59 GiB RAM), ComfyUI `fca60fe`
+with PyTorch 2.11+rocm7.13, fresh processes alternating. Quality is not
+compared (samplers, INT8 schemes and noise differ). The h3-hip fox-fast
+numbers (≈2× whole job) are lossy and must not be quoted against ComfyUI.
+
+Where h3-hip can gain more: the video VAE (not power-bound; the BF16
+activation PR saves about 5 s at 864×480), fixing KI-007 so the daemon
+does not need a manual `H3_INT8_HOST`, and the DiT kernels themselves
+(denoise already sits on the 300 W cap, so only efficiency helps: SDPA at
+about 40 % of BF16 peak, grouped INT8 at about 112 of 391 TOPS).
+
+For the node decision: the speed lead is real but moderate; the case for
+the node is mostly that it lets ComfyUI users on smaller-RAM AMD boxes
+render job after job.
+
 Box: Radeon AI PRO R9700 (gfx1201, 32 GiB, PCIe 4.0 x4, 300 W cap),
 59 GiB RAM. Prompt `prompt_starship.txt`, seed 42, 5 s (124 frames).
 

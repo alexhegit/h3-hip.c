@@ -94,6 +94,7 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 
 - `docs/BEST_PRACTICE.md` — quick reference for optimal settings
 - `docs/PERFORMANCE.md` — scoreboard; MI300X process E2E vs DiT total
+- `docs/perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md` — R9700 vs ComfyUI native MiniMax-H3 (method, medians, caveats, quotable claim)
 - `docs/perf-runs/MI300X_2026-09-18_full.md` — 2026-09-18 MI300X retake
 - `docs/PIKA.md` — opt-in Pika H3 Flex (download, commands, MI300X speed, quality)
 - `docs/SOL_ATTN.md` — opt-in lossy Sol-Attn (speed vs quality vs dense)
