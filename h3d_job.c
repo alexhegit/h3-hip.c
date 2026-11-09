@@ -1,5 +1,6 @@
 #include "h3d_job.h"
 #include "h3d_json.h"
+#include "h3_host.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -64,18 +65,7 @@ void h3d_jobs_init(h3d_ctx *ctx) {
 
 /* ── Job create ──────────────────────────────────────────────── */
 
-h3d_job *h3d_job_create(h3d_ctx *ctx, const char *prompt,
-                        const h3d_mode mode,
-                        const int width, const int height,
-                        const int frames, const float seconds,
-                        const h3d_quality *quality,
-                        uint64_t seed, int seed_was_set,
-                        const h3d_ref_entry *refs_images, int ref_image_count,
-                        const h3d_ref_entry *refs_video, int has_video,
-                        const h3d_ref_entry *refs_audio, int ref_audio_count,
-                        int finalize_partial, int write_preview,
-                        const char *extra_args,
-                        const char *idempotency_key) {
+h3d_job *h3d_job_new(h3d_ctx *ctx) {
     h3d_job *job = calloc(1, sizeof(h3d_job));
     if (!job) return NULL;
 
@@ -84,69 +74,53 @@ h3d_job *h3d_job_create(h3d_ctx *ctx, const char *prompt,
     generate_job_id(job->job_id, sizeof(job->job_id));
     job->status = H3D_JOB_QUEUED;
     job->created_at = time(NULL);
+    job->core_reuse = 1;
 
-    /* Request fields */
-    if (prompt) snprintf(job->prompt, sizeof(job->prompt), "%s", prompt);
-    job->mode = mode;
-    job->width = width;
-    job->height = height;
-    job->frames = frames;
-    job->seconds = seconds;
-    if (quality) job->quality = *quality;
-    job->seed = seed;
-    job->seed_was_set = seed_was_set;
-    job->finalize_partial_on_cancel = finalize_partial;
-    job->write_preview_frames = write_preview;
-    if (extra_args) snprintf(job->extra_args, sizeof(job->extra_args), "%s", extra_args);
-    if (idempotency_key) snprintf(job->idempotency_key, sizeof(job->idempotency_key), "%s", idempotency_key);
-
-    /* Copy references */
-    job->refs_image_count = ref_image_count;
-    for (int i = 0; i < ref_image_count && i < H3D_MAX_REFERENCES; i++) {
-        snprintf(job->refs_images[i].path, sizeof(job->refs_images[i].path),
-                 "%s", refs_images[i].path);
+    char output_dir[2048], mp4_path[2048], poster_path[2048];
+    if (snprintf(output_dir, sizeof(output_dir), "%s/%s", ctx->output_root,
+                 job->job_id) >= (int)sizeof(output_dir) ||
+        snprintf(mp4_path, sizeof(mp4_path), "%s/%s.mp4", output_dir,
+                 job->job_id) >= (int)sizeof(mp4_path) ||
+        snprintf(poster_path, sizeof(poster_path), "%s/%s.poster.png", output_dir,
+                 job->job_id) >= (int)sizeof(poster_path)) {
+        h3d_job_free(job);
+        return NULL;
     }
-    if (has_video && refs_video) {
-        snprintf(job->refs_video.path, sizeof(job->refs_video.path),
-                 "%s", refs_video->path);
-        job->has_refs_video = 1;
-    }
-    job->refs_audio_count = ref_audio_count;
-    for (int i = 0; i < ref_audio_count && i < 3; i++) {
-        snprintf(job->refs_audio[i].path, sizeof(job->refs_audio[i].path),
-                 "%s", refs_audio[i].path);
-    }
-
-    /* Generate output paths */
-    char output_dir[1024];
-    snprintf(output_dir, sizeof(output_dir), "%s/%s", ctx->output_root, job->job_id);
-    mkdir(output_dir, 0755);
     job->output_path = strdup(output_dir);
-
-    char mp4_path[1024];
-    snprintf(mp4_path, sizeof(mp4_path), "%s/%s.mp4", output_dir, job->job_id);
     job->mp4_path = strdup(mp4_path);
-
-    char poster_path[1024];
-    snprintf(poster_path, sizeof(poster_path), "%s/%s.poster.png", output_dir, job->job_id);
     job->poster_path = strdup(poster_path);
+    if (!job->output_path || !job->mp4_path || !job->poster_path) {
+        h3d_job_free(job);
+        return NULL;
+    }
+    return job;
+}
 
-    /* Add to job list */
+void h3d_job_free(h3d_job *job) {
+    if (!job) return;
+    free(job->output_path);
+    free(job->mp4_path);
+    free(job->poster_path);
+    pthread_mutex_destroy(&job->lock);
+    free(job);
+}
+
+int h3d_job_enqueue(h3d_ctx *ctx, h3d_job *job) {
+    if (mkdir(job->output_path, 0755) < 0 && errno != EEXIST) return -1;
     pthread_mutex_lock(&ctx->jobs_lock);
     if (ctx->job_count >= ctx->job_capacity) {
         size_t new_cap = ctx->job_capacity * 2;
         h3d_job **new_jobs = realloc(ctx->jobs, new_cap * sizeof(h3d_job *));
-        if (new_jobs) {
-            ctx->jobs = new_jobs;
-            ctx->job_capacity = new_cap;
+        if (!new_jobs) {
+            pthread_mutex_unlock(&ctx->jobs_lock);
+            return -1;
         }
+        ctx->jobs = new_jobs;
+        ctx->job_capacity = new_cap;
     }
-    if (ctx->job_count < ctx->job_capacity) {
-        ctx->jobs[ctx->job_count++] = job;
-    }
+    ctx->jobs[ctx->job_count++] = job;
     pthread_mutex_unlock(&ctx->jobs_lock);
-
-    return job;
+    return 0;
 }
 
 /* ── Job find ────────────────────────────────────────────────── */
@@ -190,8 +164,20 @@ int h3d_job_cancel(h3d_ctx *ctx, const char *job_id) {
         return 0; /* Already terminal */
     }
     atomic_store(&job->cancel_requested, 1);
-    job->status = H3D_JOB_CANCELLING;
+    /* No worker owns a queued job, so nothing else would finish it. Workers
+     * only claim QUEUED jobs, and they do so under this same lock. */
+    int was_queued = job->status == H3D_JOB_QUEUED;
+    if (was_queued) {
+        job->status = H3D_JOB_CANCELLED;
+        job->finished_at = time(NULL);
+        snprintf(job->error.code, sizeof(job->error.code), "CANCELLED");
+        snprintf(job->error.message, sizeof(job->error.message),
+                 "Job was cancelled before it started");
+    } else {
+        job->status = H3D_JOB_CANCELLING;
+    }
     pthread_mutex_unlock(&job->lock);
+    if (was_queued) h3d_job_record_event(job, "cancelled", "{\"status\":\"cancelled\"}");
     return 1;
 }
 
@@ -232,7 +218,7 @@ void h3d_job_record_event(h3d_job *job, const char *event, const char *data) {
     pthread_mutex_lock(&job->lock);
     int idx = job->event_head;
     snprintf(job->events[idx], sizeof(job->events[idx]),
-             "event: %s\ndata: %s\n", event, data);
+             "event: %s\ndata: %s\n\n", event, data);
     job->event_head = (idx + 1) % H3D_SSE_EVENT_HISTORY;
     if (job->event_count < H3D_SSE_EVENT_HISTORY)
         job->event_count++;
@@ -243,15 +229,12 @@ void h3d_job_record_event(h3d_job *job, const char *event, const char *data) {
 
 /* ── Geometry validation ─────────────────────────────────────── */
 
-int h3d_geometry_is_valid(h3d_ctx *ctx, int width, int height, int frames) {
-    for (int i = 0; i < ctx->geometry_whitelist_count; i++) {
-        h3d_geometry *g = &ctx->geometry_whitelist[i];
-        if (g->width == width && g->height == height) {
-            if (g->frames == 0) return 1;  /* any frames */
-            if (g->frames == frames) return 1;
-        }
-    }
-    return 0;
+int h3d_geometry_is_valid(int width, int height, int frames) {
+    if (width < 32 || height < 32 || width % H3_CANVAS_MULTIPLE ||
+        height % H3_CANVAS_MULTIPLE)
+        return 0;
+    if ((int64_t)width * height > H3_MAX_PIXELS) return 0;
+    return frames >= 5 && h3_align_frame_count(frames) <= 362;
 }
 
 /* ── Poster generation (ffmpeg extract first frame) ───────────── */

@@ -58,15 +58,6 @@ void h3d_config_init(h3d_ctx *ctx) {
     ctx->prompt_max_chars = 8000;
     ctx->gpu_indices[0] = 0;
     ctx->gpu_count = 1;
-
-    /* Default geometry whitelist (verified on h3-hip.c) */
-    ctx->geometry_whitelist_count = 0;
-    /* 512x512: all frame counts */
-    ctx->geometry_whitelist[ctx->geometry_whitelist_count++] =
-        (h3d_geometry){512, 512, 0};  /* 0 = any frames */
-    /* 864x480: cinematic long video */
-    ctx->geometry_whitelist[ctx->geometry_whitelist_count++] =
-        (h3d_geometry){864, 480, 0};
 }
 
 int h3d_config_load(h3d_ctx *ctx) {
