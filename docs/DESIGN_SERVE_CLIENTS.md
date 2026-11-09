@@ -86,18 +86,32 @@ Tick the boxes in commits on this branch, or note the landing PR / SHA.
 
 ## Exit criteria
 
-- [ ] The A1 gate fails when daemon and CLI fox-s2 differ, on the build's own ISA.
-- [ ] Following `docs/wiki/ComfyUI.md` on a clean ComfyUI install renders fox-s2
-      through the node. `SaveVideo` remuxes the MP4, so compare streams
-      (`ffmpeg -f streamhash`) with the CLI, not file md5.
-- [ ] ComfyUI can load another GPU model after an h3 job without restarting
-      the daemon (A2).
+- [x] The A1 gate fails when daemon and CLI fox-s2 differ, on the build's own ISA.
+      gfx1201 only so far; gfx1151 / gfx90a / gfx942 not run.
+- [x] Following `docs/wiki/ComfyUI.md` renders fox-s2 through the node with the
+      CLI's stream hashes (`ffmpeg -f streamhash`; `SaveVideo` remuxes, so file
+      md5 differs). Checked on an existing ComfyUI 0.44.0 install, not a clean one.
+- [x] ComfyUI can load another GPU model after an h3 job without restarting
+      the daemon (A2): native ComfyUI MiniMax-H3 ran right after an h3 job with
+      `release_vram`. The reverse (h3 after native MiniMax-H3) needs a ComfyUI
+      restart on a 59 GiB box, because ComfyUI keeps ~35 GiB of those weights in
+      RAM; documented in the tutorial.
 - [ ] The node and tutorial are on public `h3-hip.c` in a tagged release.
+
+## Found along the way (fixed on this branch)
+
+- A cancelled job kept running its whole denoise loop (the DiT progress
+  callback could not stop it), so Interrupt in ComfyUI left the GPU busy for
+  minutes. Fixed in `c4b104b` for the CPU and GPU Euler samplers.
+- SIGTERM waited for the running job and kept the port bound meanwhile.
+  The daemon now cancels the job and closes the socket first (`c4b104b`).
 
 ## Known limits
 
 - Users download the official checkpoint even if ComfyUI already has
   Comfy-Org's MiniMax-H3 files.
+- Native ComfyUI MiniMax-H3 and the h3 node do not fit in one ComfyUI
+  session on ~64 GiB of RAM (see the exit criteria above).
 - Outputs are not comparable to ComfyUI native (different sampler, INT8
   scheme and RNG); the comparison doc covers speed only.
 
