@@ -292,7 +292,11 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 
 ## 11. 传输与通用约定
 
-- HTTP/1.1（keep-alive + chunked），无外部 HTTP 库依赖，C 侧为最小实现
+- HTTP/1.1，无外部 HTTP 库依赖，C 侧为最小实现。每个连接只处理一个
+  请求，响应一律带 `Connection: close`；每个连接一个线程，所以 SSE 流
+  或空闲连接不会挡住其他请求（含 `/cancel`）。读写超时 30 秒
+- 请求体按完整 JSON 解析：空白、键顺序不影响；字段类型不对返回 400，
+  不会悄悄退回默认值
 - 请求/响应体一律 `application/json; charset=utf-8`
 - 所有端点位于 `/v1` 前缀下
 - 进度推送走 SSE：`text/event-stream`，单向，只推不接收
@@ -341,10 +345,13 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   "limits": {
     "max_queued_jobs_per_client": 8,
     "prompt_max_chars": 8000,
+    "ref_images_max": 9, "ref_videos_max": 3, "ref_audios_max": 3,
     "ref_image_max_bytes": 52428800,
     "ref_video_max_bytes": 524288000,
     "ref_audio_max_bytes": 104857600
-  }
+  },
+  "geometry": { "multiple": 32, "max_pixels": 1032192,
+                "frames_min": 5, "frames_max": 362, "fps": 24 }
 }
 ```
 
@@ -370,11 +377,14 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   "refs": {
     "images": ["/var/lib/h3d/media/a.png"],
     "video": null,
-    "audio": null
+    "audio": null,
+    "first_frame": null,
+    "last_frame": null
   },
   "options": {
     "finalize_partial_on_cancel": false,
     "write_preview_frames": false,
+    "token_reduction": false,
     "extra_args": ["--token-reduction"]
   },
   "idempotency_key": "plugin 生成的可选去重键"
@@ -387,20 +397,29 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 - `quality.preset=cinematic` 时默认 steps=20/layers=45/reuse=2、864×480；
   `custom` 时必须显式给 steps/layers/reuse；preset 与显式字段同给时，
   **显式字段覆盖 preset**
-- `size`/`duration` 合法组合由 daemon 按 h3-hip.c 已知的几何约束校验
-  （如长片仅验证过 864×480），不在白名单内返回 422 并附允许值列表
-- `mode=Ref2VA` 时 `refs.images` 必填（≥1），容量上限按官方规格：
-  **≤ 9 图 + 3 视频（各 2–15s）+ 3 音频 = 12 文件**；超限返回 400
-- `mode=FL2VA` 时 `refs.images` 为 0/1/2 张关键帧（首帧、末帧、首+末），
-  `refs.video`/`refs.audio` 不接受；T2VA/I2VA 作为 FL2VA 的
-  0/1 图特例走同一路径
+- `size`/`duration` 按 `h3_generate` 自身的限制在提交时校验：宽高为 32
+  的倍数、像素数不超过 768×1344、帧数对齐后在 5..362；`quality` 要求
+  steps 2..1000、layers 35..50、reuse 1..3。不满足返回 422，规则见
+  `/v1/info` 的 `geometry`。`seconds` 按 24 fps 四舍五入成帧数
+- `mode=Ref2VA` 时至少一个引用，容量上限按官方规格：
+  **≤ 9 图 + 3 视频（各 2–15s）+ 3 音频**；超限返回 400。`refs.video`
+  （或 `refs.videos`）与 `refs.audio` 可以是字符串或字符串数组；视频
+  带自身音轨，同 CLI `--ref-video`
+- T2VA/I2VA/FL2VA 走同一路径，关键帧二选一给法：`refs.first_frame` /
+  `refs.last_frame`（可只给末帧），或 `refs.images` 位置形式
+  `[首帧]`、`[首帧, 末帧]`。T2VA 不接受关键帧，I2VA 恰好一个首帧，
+  这三种模式不接受视频/音频引用
 - 提示词中引用文件须用官方 `<Picture X>` / `<Video X>` / `<Audio X>`
-  标签语法（见 skill 文档）；daemon 不解析提示词，仅做文件存在性校验
-- `refs.*` 路径必须在 media root 内，否则 400
-- `options.extra_args` 为逃生口，daemon 原样追加到 CLI 参数；含
-  已废弃或危险参数时返回 422 并指明拒绝项（如 `--frames-dir`、
-  `--output` 由 daemon 托管，拒绝透传）。M3 起 `--token-reduction` 应走
-  §13.6 语义字段，避免只靠 `extra_args`
+  标签语法（见 skill 文档）；daemon 不解析提示词
+- `refs.*` 必须是存在的普通文件，解析符号链接和 `..` 后仍在 media root
+  内，否则 400（`PATH_OUT_OF_ROOT` 或 `VALIDATION_ERROR`）
+- `options.extra_args` 是字符串数组（也接受一个空格分隔的字符串），只
+  接受 daemon 能逐任务设置的参数：`--token-reduction`、`--sol-attn`、
+  `--fbc`、`--vsa`、`--core-reuse N`、`--render-width N`、
+  `--render-height N`、`--fasth3-lora PATH`、`--taeh3 PATH`。其他参数
+  一律 422 `ARG_REJECTED`，不会被悄悄忽略。`options.token_reduction`
+  （§13.6）与 `--token-reduction` 等价，二者矛盾时 422；
+  `token_reduction_schedule` 是进程级环境变量，daemon 不支持，422
 - `idempotency_key` 有效期内（建议 24h）重复提交返回原 job，不重复入队
 
 响应 202：
@@ -489,7 +508,10 @@ data: {"job_id":"k3v9a2x1","result":{...同13.3...}}
 ```
 
 - 终态事件类型即状态名：`done` / `failed` / `cancelled` / `timeout`，
-  携带完整 job 对象；此后服务端关闭流
+  携带完整 job 对象（发送时生成，长提示词也不截断）；此后服务端结束
+  chunked 流并关闭连接。每个事件以空行结束，标准 SSE 解析器可直接用
+- 取消仍在排队的任务立即进入 `cancelled`；运行中的任务先 `cancelling`，
+  在下一个进度回调时停下
 - 断线重连：客户端带 `Last-Event-ID` 头续传，daemon 保留每 job 最近
   50 条事件 1 小时（MVP 允许直接从头重放当前状态）
 - 心跳：每 15 秒 `event: ping`，防代理断链
@@ -593,7 +615,7 @@ queued → preparing → running → finalizing → done
 | 404 | JOB_NOT_FOUND | job_id 不存在 |
 | 404 | JOB_LOST_AFTER_RESTART | daemon 重启后丢失 |
 | 409 | ALREADY_TERMINAL | 对终态 job 再取消 |
-| 422 | UNSUPPORTED_COMBINATION | 几何/模式/preset 组合不在白名单，details 附允许值 |
+| 422 | UNSUPPORTED_COMBINATION | 几何或 quality 超出 `h3_generate` 的限制，message 写明规则 |
 | 422 | ARG_REJECTED | extra_args 含被拒参数，details 指明 |
 | 426 | PROTOCOL_MISMATCH | 协议版本不符，body 附 `server_protocol`/`supported_protocols` |
 | 429 | QUEUE_FULL | 该客户端排队任务超限（见 limits） |

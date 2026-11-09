@@ -100,6 +100,33 @@ Candidate fixes, none implemented:
 4. **Smaller accumulator.** A BF16 `vsa_acc`, or accumulating in registers,
    saves up to 3.13 GiB but changes the numbers.
 
+## KI-007: `--serve` cache overflows 32 GiB cards without `H3_INT8_HOST=1`
+
+**Status:** fixed on `h3d-fixes`: `--serve` now sets `H3_INT8_HOST=1` itself
+on a discrete card below 48 GiB unless `H3_INT8_HOST` is already set or the
+DiT is not INT8 (`H3_INT8_MLP=0`, `H3_FP8_MLP`). With no environment set the
+same three jobs (same prompt, new seed, new prompt), with the VAE BF16
+activations merged, take 106.5 s, **52.1 s** and 101.9 s, against 212.7,
+179.4 and 208.6 s before. A new prompt re-prepares the DiT (the prepared
+key includes the conditioning), so reuse pays off for reruns of one prompt.
+
+Measured on one Radeon AI PRO R9700 (29.86 GiB), 864×480 · 5 s, FastH3
+4-step, jobs on one daemon.
+
+The daemon enables the generation cache, so the prepared DiT (21.2 GiB)
+stays on the card after denoise. The video VAE decoder then sees about
+4 GiB free and its tensors silently fall back to pinned host memory
+(`H3_HIP_MEMLOG=1` prints 901 `pinned fallback` lines). The next job's
+DiT hits the cache but denoise runs 5× slower:
+
+| daemon | job 1 | job 2 | job 2 denoise |
+|---|---:|---:|---:|
+| default | 212.7 s | 179.4 s | 180.0 s (job 1: 34.2 s) |
+| `H3_INT8_HOST=1` | 120.6 s | **56.6 s** | |
+
+The CLI is not affected: it runs one job with the cache off and frees the
+DiT before the VAE. `H3_INT8_HOST=0` restores the old behaviour.
+
 ## Related backlog
 
 | ID | Topic | Status |

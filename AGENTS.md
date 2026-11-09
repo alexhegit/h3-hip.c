@@ -82,7 +82,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
 - `--pika-lora` / `--pika-ref-lora` merge a Pika H3 Flex rank-128 LoRA and force the 6-step renoise schedule (1000, 750, 500, 250, 100, 40), 50 layers, and `--reuse 1`. `--pika-lora` is FL2VA; references need `--pika-ref-lora`. Do not combine with `--fasth3-lora`, token reduction, sol-attn, fbc, VSA, SSD streaming, or core reuse above 1. `--pika-lora` sets `H3_GPU_SAMPLER=1` unless that variable or `H3_CPU_SAMPLER` is already set. Download: `./tools/download_pika_lora.sh`. See `docs/PIKA.md`.
-- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). `--serve` has no Pika flag.
+- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). `--serve` has no Pika flag. On a discrete card below 48 GiB `--serve` sets `H3_INT8_HOST=1` itself so the cached DiT leaves room for the video VAE (`docs/KNOWN_ISSUES.md` KI-007); an explicit `H3_INT8_HOST` wins. `./tools/h3d_smoke.py` checks a running daemon (validation, concurrency, cancel, SSE); `--generate` adds the fox-s2 md5.
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
 - `linenoise.o` is vendored and compiled with relaxed warnings (`-Wno-conversion`).
 
@@ -94,6 +94,7 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 
 - `docs/BEST_PRACTICE.md` — quick reference for optimal settings
 - `docs/PERFORMANCE.md` — scoreboard; MI300X process E2E vs DiT total
+- `docs/perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md` — R9700 vs ComfyUI native MiniMax-H3 (method, medians, caveats, quotable claim)
 - `docs/perf-runs/MI300X_2026-09-18_full.md` — 2026-09-18 MI300X retake
 - `docs/PIKA.md` — opt-in Pika H3 Flex (download, commands, MI300X speed, quality)
 - `docs/SOL_ATTN.md` — opt-in lossy Sol-Attn (speed vs quality vs dense)

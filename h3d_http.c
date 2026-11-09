@@ -4,21 +4,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 
-/* Ignore write() return value — best-effort send on a streaming socket. */
-static void write_all(int fd, const void *buf, size_t len) {
+/* Idle reads and stalled writes give up after this, so a client that opens a
+ * connection and goes quiet cannot hold a connection thread forever. */
+#define H3D_HTTP_IO_TIMEOUT_SEC 30
+
+int h3d_http_write(int fd, const void *buf, size_t len) {
     const char *p = buf;
     size_t done = 0;
     while (done < len) {
         ssize_t n = write(fd, p + done, len - done);
-        if (n <= 0) break;
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return -1;
         done += (size_t)n;
     }
+    return 0;
 }
 
 int h3d_http_listen(const char *bind_addr, int port) {
@@ -42,7 +49,7 @@ int h3d_http_listen(const char *bind_addr, int port) {
         close(fd);
         return -1;
     }
-    if (listen(fd, 16) < 0) {
+    if (listen(fd, 64) < 0) {
         close(fd);
         return -1;
     }
@@ -57,35 +64,36 @@ int h3d_http_accept(int server_fd) {
 
     int opt = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+    struct timeval timeout = {H3D_HTTP_IO_TIMEOUT_SEC, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     return fd;
 }
 
-/* Read a line from fd (up to \r\n). Returns bytes read, 0 on EOF, -1 on error.
- * The line terminator is NOT included in buf. */
+/* Read a line from fd (up to \n). Returns its length without the line
+ * terminator, or -1 on error, timeout, EOF, or a line longer than cap. */
 static int read_line(int fd, char *buf, size_t cap) {
     size_t n = 0;
     while (n < cap - 1) {
         char c;
         ssize_t r = read(fd, &c, 1);
-        if (r < 0) { fprintf(stderr, "h3d: read_line: read error: %s\n", strerror(errno)); return -1; }
-        if (r == 0) { fprintf(stderr, "h3d: read_line: EOF at %zu bytes\n", n); return (int)n > 0 ? (int)n : -1; }
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) return -1;
         if (c == '\n') {
-            /* Strip trailing \r */
             if (n > 0 && buf[n - 1] == '\r') n--;
             buf[n] = '\0';
             return (int)n;
         }
         buf[n++] = c;
     }
-    buf[n] = '\0';
-    return (int)n;
+    return -1;
 }
 
-/* Read exactly len bytes from fd. Returns 0 on success, -1 on error/EOF. */
 static int read_exact(int fd, char *buf, size_t len) {
     size_t total = 0;
     while (total < len) {
         ssize_t r = read(fd, buf + total, len - total);
+        if (r < 0 && errno == EINTR) continue;
         if (r <= 0) return -1;
         total += (size_t)r;
     }
@@ -101,9 +109,7 @@ int h3d_http_read_request(int fd,
     char line[4096];
 
     /* Request line: METHOD PATH HTTP/1.x */
-    int rlen = read_line(fd, line, sizeof(line));
-    fprintf(stderr, "h3d: read_request: first line read=%d\n", rlen);
-    if (rlen <= 0) return -1;
+    if (read_line(fd, line, sizeof(line)) <= 0) return -1;
     char *sp1 = strchr(line, ' ');
     if (!sp1) return -1;
     *sp1 = '\0';
@@ -114,14 +120,13 @@ int h3d_http_read_request(int fd,
     snprintf(method, method_len, "%s", line);
     snprintf(path, path_len, "%s", sp1 + 1);
 
-    /* Headers */
     size_t hpos = 0;
-    int content_length = 0;
+    long content_length = 0;
     headers[0] = '\0';
     while (1) {
         int len = read_line(fd, line, sizeof(line));
         if (len < 0) return -1;
-        if (len == 0 && line[0] == '\0') break; /* Empty line = end of headers */
+        if (len == 0) break;
         if (hpos + (size_t)len + 2 < headers_len) {
             memcpy(headers + hpos, line, (size_t)len);
             hpos += (size_t)len;
@@ -129,16 +134,16 @@ int h3d_http_read_request(int fd,
             headers[hpos++] = '\n';
             headers[hpos] = '\0';
         }
-        /* Parse Content-Length */
         if (strncasecmp(line, "Content-Length:", 15) == 0) {
-            content_length = atoi(line + 15);
+            content_length = strtol(line + 15, NULL, 10);
         }
     }
 
-    /* Body */
     *body_out_len = 0;
+    body[0] = '\0';
+    if (content_length < 0) return -1;
     if (content_length > 0) {
-        if ((size_t)content_length > body_len) return -1;
+        if ((size_t)content_length >= body_len) return H3D_HTTP_TOO_LARGE;
         if (read_exact(fd, body, (size_t)content_length) < 0) return -1;
         *body_out_len = (size_t)content_length;
         body[content_length] = '\0';
@@ -154,50 +159,47 @@ void h3d_http_send_response(int fd, int status, const char *status_text,
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %zu\r\n"
-        "Connection: keep-alive\r\n"
+        "Connection: close\r\n"
         "\r\n",
         status, status_text, content_type, body_len);
-    write_all(fd, header, (size_t)hlen);
-    if (body_len > 0) write_all(fd, body, body_len);
+    if (h3d_http_write(fd, header, (size_t)hlen) == 0 && body_len > 0)
+        h3d_http_write(fd, body, body_len);
 }
 
-void h3d_http_send_headers(int fd, int status, const char *status_text,
-                           const char *extra_headers) {
-    char header[2048];
-    int hlen = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\n"
+int h3d_http_send_sse_headers(int fd) {
+    static const char header[] =
+        "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/event-stream\r\n"
         "Cache-Control: no-cache\r\n"
-        "Connection: keep-alive\r\n"
+        "Connection: close\r\n"
         "Transfer-Encoding: chunked\r\n"
-        "%s"
-        "\r\n",
-        status, status_text,
-        extra_headers ? extra_headers : "");
-    write_all(fd, header, (size_t)hlen);
+        "\r\n";
+    return h3d_http_write(fd, header, sizeof(header) - 1);
 }
 
-void h3d_http_send_chunk(int fd, const char *data, size_t len) {
+int h3d_http_send_chunk(int fd, const char *data, size_t len) {
+    if (len == 0) return 0;
     char prefix[32];
     int plen = snprintf(prefix, sizeof(prefix), "%zx\r\n", len);
-    write_all(fd, prefix, (size_t)plen);
-    if (len > 0) write_all(fd, data, len);
-    write_all(fd, "\r\n", 2);
+    if (h3d_http_write(fd, prefix, (size_t)plen) < 0) return -1;
+    if (h3d_http_write(fd, data, len) < 0) return -1;
+    return h3d_http_write(fd, "\r\n", 2);
 }
 
-void h3d_http_send_sse_event(int fd, const char *event, const char *data) {
+int h3d_http_end_chunks(int fd) {
+    return h3d_http_write(fd, "0\r\n\r\n", 5);
+}
+
+int h3d_http_send_sse_event(int fd, const char *event, const char *data) {
     char buf[4096];
     int len = snprintf(buf, sizeof(buf), "event: %s\ndata: %s\n\n", event, data);
-    /* Wrap in chunked encoding */
-    char chunk_prefix[32];
-    int plen = snprintf(chunk_prefix, sizeof(chunk_prefix), "%zx\r\n", (size_t)len);
-    write_all(fd, chunk_prefix, (size_t)plen);
-    write_all(fd, buf, (size_t)len);
-    write_all(fd, "\r\n", 2);
+    if (len < 0) return -1;
+    if ((size_t)len >= sizeof(buf)) len = (int)sizeof(buf) - 1;
+    return h3d_http_send_chunk(fd, buf, (size_t)len);
 }
 
-void h3d_http_send_sse_heartbeat(int fd) {
-    h3d_http_send_sse_event(fd, "ping", "{}");
+int h3d_http_send_sse_heartbeat(int fd) {
+    return h3d_http_send_sse_event(fd, "ping", "{}");
 }
 
 void h3d_http_close(int fd) {

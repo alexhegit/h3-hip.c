@@ -71,6 +71,13 @@ gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
 from 21.7 to 16.9 s, again with the same MP4
 ([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
 
+Against ComfyUI's native MiniMax-H3 on the same card (same model, steps and
+layers, INT8 main linears, fresh processes; h3-hip after VAE BF16
+activations), h3-hip denoises 1.39× faster at 864×480 · 20 steps and
+finishes the job 1.34× faster; the 4-step turbo rows are 1.48× and 1.27×
+whole job, with caveats
+([`perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md`](perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md)).
+
 Dense is 2.8–3.3× MI300X. fox-s2 and fox-fast are bound by reading ~98 GiB
 of weights on a 59 GiB host. The published RTX 5090 numbers for the
 1344×768 · 5 s job are 1045.4 s baseline, 708.3 s with Sol-Attn, and

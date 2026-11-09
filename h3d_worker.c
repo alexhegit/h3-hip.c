@@ -45,14 +45,15 @@ static h3d_job *find_next_job(h3d_ctx *dctx) {
     pthread_mutex_lock(&dctx->jobs_lock);
     for (size_t i = 0; i < dctx->job_count; i++) {
         h3d_job *job = dctx->jobs[i];
+        pthread_mutex_lock(&job->lock);
         if (job->status == H3D_JOB_QUEUED) {
-            pthread_mutex_lock(&job->lock);
             job->status = H3D_JOB_PREPARING;
             snprintf(job->phase, sizeof(job->phase), "loading_weights");
             pthread_mutex_unlock(&job->lock);
             pthread_mutex_unlock(&dctx->jobs_lock);
             return job;
         }
+        pthread_mutex_unlock(&job->lock);
     }
     pthread_mutex_unlock(&dctx->jobs_lock);
     return NULL;
@@ -70,55 +71,50 @@ static h3_ctx *select_worker_ctx(h3d_worker *worker, h3d_mode mode) {
 
 /* ── Build h3_params from job ────────────────────────────────── */
 
-static h3_reference g_refs[H3D_MAX_REFERENCES];
+static void add_reference(h3d_job *job, size_t *count, h3_reference_kind kind,
+                          const char *path) {
+    if (*count >= H3D_MAX_REFERENCES) return;
+    /* Videos keep their soundtrack, like the CLI's --ref-video. */
+    job->references[*count] = (h3_reference){
+        .kind = kind, .path = path, .audio_path = NULL,
+        .include_embedded_audio = kind == H3_REFERENCE_VIDEO,
+    };
+    (*count)++;
+}
 
 static void build_h3_params(h3d_job *job, h3_params *params) {
-    /* Zero-init with designated initializer */
-    *params = (h3_params){
-        .width = job->width,
-        .height = job->height,
-        .frames = job->frames,
-        .steps = job->quality.steps,
-        .seed = job->seed,
-        .output_path = job->mp4_path,
-        .denoise_reuse = job->quality.reuse,
-        .dit_layers = job->quality.layers,
-        .core_reuse = 1,
-        .preview_denoise = 0,
-        .on_progress = worker_progress,
-        .callback_opaque = job,
-    };
+    *params = (h3_params)H3_PARAMS_DEFAULT;
+    params->width = job->width;
+    params->height = job->height;
+    params->frames = job->frames;
+    params->steps = job->quality.steps;
+    params->seed = job->seed;
+    params->output_path = job->mp4_path;
+    params->denoise_reuse = job->quality.reuse;
+    params->dit_layers = job->quality.layers;
+    params->core_reuse = job->core_reuse;
+    params->token_reduction = job->token_reduction;
+    params->sol_attn = job->sol_attn;
+    params->fbc = job->fbc;
+    params->vsa = job->vsa;
+    params->render_width = job->render_width;
+    params->render_height = job->render_height;
+    params->fasth3_lora = job->fasth3_lora[0] ? job->fasth3_lora : NULL;
+    params->taeh3 = job->taeh3[0] ? job->taeh3 : NULL;
+    params->first_frame = job->first_frame[0] ? job->first_frame : NULL;
+    params->last_frame = job->last_frame[0] ? job->last_frame : NULL;
+    params->on_progress = worker_progress;
+    params->callback_opaque = job;
 
-    /* Build references array */
-    memset(g_refs, 0, sizeof(g_refs));
-    int ref_count = 0;
-
-    if (job->refs_image_count > 0) {
-        for (int i = 0; i < job->refs_image_count && ref_count < H3D_MAX_REFERENCES; i++) {
-            g_refs[ref_count].kind = H3_REFERENCE_IMAGE;
-            g_refs[ref_count].path = job->refs_images[i].path;
-            g_refs[ref_count].audio_path = NULL;
-            g_refs[ref_count].include_embedded_audio = 0;
-            ref_count++;
-        }
-    }
-    if (job->has_refs_video) {
-        g_refs[ref_count].kind = H3_REFERENCE_VIDEO;
-        g_refs[ref_count].path = job->refs_video.path;
-        g_refs[ref_count].audio_path = NULL;
-        g_refs[ref_count].include_embedded_audio = 0;
-        ref_count++;
-    }
-    for (int i = 0; i < job->refs_audio_count && ref_count < H3D_MAX_REFERENCES; i++) {
-        g_refs[ref_count].kind = H3_REFERENCE_AUDIO;
-        g_refs[ref_count].path = job->refs_audio[i].path;
-        g_refs[ref_count].audio_path = NULL;
-        g_refs[ref_count].include_embedded_audio = 0;
-        ref_count++;
-    }
-
-    params->references = g_refs;
-    params->reference_count = (size_t)ref_count;
+    size_t count = 0;
+    for (int i = 0; i < job->refs_image_count; i++)
+        add_reference(job, &count, H3_REFERENCE_IMAGE, job->refs_images[i].path);
+    for (int i = 0; i < job->refs_video_count; i++)
+        add_reference(job, &count, H3_REFERENCE_VIDEO, job->refs_videos[i].path);
+    for (int i = 0; i < job->refs_audio_count; i++)
+        add_reference(job, &count, H3_REFERENCE_AUDIO, job->refs_audio[i].path);
+    params->references = count ? job->references : NULL;
+    params->reference_count = count;
 }
 
 /* ── Worker loop ─────────────────────────────────────────────── */
@@ -181,6 +177,7 @@ void *h3d_worker_loop(void *arg) {
 
             h3d_job_record_event(job, "cancelled",
                 "{\"status\":\"cancelled\"}");
+            h3_result_free(result);
         } else if (!result) {
             /* Failed */
             const char *err = h3_last_error(ctx);
@@ -192,11 +189,7 @@ void *h3d_worker_loop(void *arg) {
                      "%s", err ? err : "Unknown error");
             pthread_mutex_unlock(&job->lock);
 
-            char fail_data[8192];
-            int fail_len = h3d_json_job_response(job, fail_data, sizeof(fail_data));
-            if (fail_len > 0) {
-                h3d_job_record_event(job, "failed", fail_data);
-            }
+            h3d_job_record_event(job, "failed", "{\"status\":\"failed\"}");
         } else {
             /* Success */
             pthread_mutex_lock(&job->lock);
@@ -226,12 +219,8 @@ void *h3d_worker_loop(void *arg) {
             job->seed = result->seed;
             pthread_mutex_unlock(&job->lock);
 
-            /* Record done event with full job object */
-            char done_data[8192];
-            int done_len = h3d_json_job_response(job, done_data, sizeof(done_data));
-            if (done_len > 0) {
-                h3d_job_record_event(job, "done", done_data);
-            }
+            /* The events stream sends the full job object for this. */
+            h3d_job_record_event(job, "done", "{\"status\":\"done\"}");
 
             h3_result_free(result);
         }
@@ -243,6 +232,28 @@ void *h3d_worker_loop(void *arg) {
 }
 
 /* ── Workers init ────────────────────────────────────────────── */
+
+/* The daemon keeps the prepared DiT cached between jobs. On a discrete card
+ * below 48 GiB that cached DiT leaves the video VAE too little room, so its
+ * tensors and the next job's fall back to pinned host memory (KI-007).
+ * Parking the INT8 linears in host RAM gives the same output and fits. An
+ * explicit H3_INT8_HOST, or a non-INT8 DiT, is left alone. */
+static void default_int8_host_for_cache(const h3_ctx *h3) {
+    const h3_device_info *device = h3_device(h3);
+    if (!device || device->unified_memory || !device->recommended_working_set)
+        return;
+    if (getenv("H3_INT8_HOST")) return;
+    const char *int8_mlp = getenv("H3_INT8_MLP");
+    const char *fp8_mlp = getenv("H3_FP8_MLP");
+    if ((int8_mlp && !strcmp(int8_mlp, "0")) || (fp8_mlp && strcmp(fp8_mlp, "0")))
+        return;
+    double gib = (double)device->recommended_working_set / (1024.0 * 1024.0 * 1024.0);
+    if (gib >= 48.0) return;
+    setenv("H3_INT8_HOST", "1", 1);
+    fprintf(stderr, "h3d: %.1f GiB card: H3_INT8_HOST=1 so the cached DiT leaves "
+            "room for the video VAE (set H3_INT8_HOST=0 to keep it on the card)\n",
+            gib);
+}
 
 int h3d_workers_init(h3d_ctx *ctx) {
     ctx->workers = NULL;
@@ -270,6 +281,7 @@ int h3d_workers_init(h3d_ctx *ctx) {
             free(worker);
             continue;
         }
+        default_int8_host_for_cache(worker->ctx);
 
         /* Load Ref2VA model if configured and different */
         if (ctx->model_path_ref2va[0] &&
