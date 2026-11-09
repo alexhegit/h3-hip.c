@@ -1,0 +1,37 @@
+===== dense-sdpa start 2026-11-08T02:57:23+08:00 =====
+tokenizer                    1/1
+text encoder                50/50
+h3 profile: Qwen text encoder        total          wall= 445.244s encode=  0.035s wait=   4.276s root-gpu=  4.276s peak=  4.587GiB alloc= 46.906GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  4.299s linear=  4.092s sdpa=  0.055s conv=  0.000s other=  0.151s
+h3 profile: Qwen text encoder        weight-load    pin=  6.558s (46.906GiB,   7.15GiB/s) read=5593.771s (46.860GiB,   0.01GiB/s) upload=  2.807s (46.860GiB,  16.69GiB/s) recycled= 91.8% pinned= 0.000GiB device=46.906GiB
+refine text                  1/1
+h3 profile: H3 DiT load stage refine text         11.000s
+precompute AdaLN            50/50
+h3 profile: H3 DiT load stage AdaLN precompute   221.717s
+h3: gate-ranked DiT skips 4(0.1186) 14(0.1217) 16(0.1234) 17(0.125) 13(0.1262)
+h3 profile: H3 DiT load stage rope and maps        0.135s
+load transformer core       50/50
+h3 profile: H3 DiT core split   block-io=274.946s quantize=  0.099s
+h3 profile: H3 DiT load stage transformer core   275.219s
+h3 profile: H3 DiT load stage activations          0.047s
+h3 profile: H3 DiT                   load           wall= 508.119s encode=380.681s wait=   0.397s root-gpu=  0.397s peak= 39.966GiB alloc= 98.234GiB submissions=30 direct=266 linear=62 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  0.822s linear=  0.666s sdpa=  0.003s conv=  0.000s other=  0.153s
+h3: selected reuse schedule has 11 evaluations
+denoise                     20/20
+h3 profile: H3 DiT                   Euler denoise  wall=4069.539s encode=  0.719s wait=4067.811s root-gpu=4067.811s peak= 39.966GiB alloc=  0.000GiB submissions=11 direct=5115 linear=0 conv=0 attention=495
+h3 profile: H3 DiT                   op-classes     gpu-op=4068.483s linear=638.215s sdpa=3364.746s conv=  0.000s other= 65.522s
+h3 profile: H3 DiT                   total          wall=4577.679s encode=381.399s wait=4068.207s root-gpu=4068.207s peak= 39.966GiB alloc= 98.234GiB submissions=41 direct=5381 linear=62 conv=0 attention=497
+h3 profile: H3 DiT                   weight-load    pin=  2.725s (98.234GiB,  36.05GiB/s) read=1875.076s (58.139GiB,   0.03GiB/s) upload=  2.551s (58.139GiB,  22.79GiB/s) recycled= 95.7% pinned= 0.118GiB device=98.116GiB
+audio VAE                    7/7
+h3 profile: audio VAE decoder        total          wall=   1.742s encode=  0.001s wait=   1.634s root-gpu=  1.634s peak=  0.286GiB alloc=  1.450GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  1.627s linear=  0.000s sdpa=  0.000s conv=  1.408s other=  0.219s
+h3 profile: audio VAE decoder        weight-load    pin=  0.046s ( 1.450GiB,  31.56GiB/s) read=  0.018s ( 0.242GiB,  13.14GiB/s) upload=  0.033s ( 0.242GiB,   7.31GiB/s) recycled= 99.5% pinned= 0.000GiB device= 1.450GiB
+h3: video VAE tiles 5x3 at 320 pixels
+video VAE load              36/36
+h3 profile: video VAE decoder        total          wall= 192.418s encode=  1.180s wait= 177.304s root-gpu=177.304s peak=  9.554GiB alloc=  9.635GiB submissions=315 direct=115605 linear=45675 conv=0 attention=11340
+h3 profile: video VAE decoder        op-classes     gpu-op=177.457s linear=125.627s sdpa= 28.618s conv=  0.000s other= 23.213s
+h3 profile: video VAE decoder        weight-load    pin=  0.396s ( 9.635GiB,  24.34GiB/s) read=  2.111s ( 9.028GiB,   4.28GiB/s) upload=  0.534s ( 9.028GiB,  16.92GiB/s) recycled= 98.6% pinned= 0.082GiB device= 9.553GiB
+FFmpeg                     362/362
+h3: wrote outputs/w7900-768p-15s-dense-sdpa.mp4
+ELAPSED_SEC 5223.62
+===== done 2026-11-08T04:24:27+08:00 =====
