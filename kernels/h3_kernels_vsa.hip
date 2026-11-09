@@ -776,7 +776,7 @@ extern "C" int h3_launch_vsa_bf16(
                 hipGetDeviceProperties(&props, device) == hipSuccess) {
                 mfma = strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
                        strncmp(props.gcnArchName, "gfx942", 6) == 0;
-                wmma = strncmp(props.gcnArchName, "gfx1151", 7) == 0;
+                wmma = strncmp(props.gcnArchName, "gfx11", 5) == 0;
             }
         }
     }
@@ -785,7 +785,7 @@ extern "C" int h3_launch_vsa_bf16(
         if (!announced) {
             announced = 1;
             fprintf(stderr, "h3: VSA fine kernel %s\n",
-                    wmma ? "gfx1151 wmma" : "cdna mfma");
+                    wmma ? "rdna wmma" : "cdna mfma");
         }
         void *args[] = {&tiled_q, &tiled_k, &tiled_v, &tiled_g, &pool_q, &mask,
                         &block_sizes, &tiled_o, &n_tiles, &scale};

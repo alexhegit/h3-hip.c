@@ -44,6 +44,7 @@ spreadsheets on the GitHub release.
 | [`../perf-runs/HALO_SOL_ATTN_2026-09-16.md`](../perf-runs/HALO_SOL_ATTN_2026-09-16.md) | gfx1151 15 s dense / TR / Sol-Attn, plus 2026-10-05 `--fbc` |
 | [`../perf-runs/gfx1151-2026-10-05-fox-15s-fbc.log`](../perf-runs/gfx1151-2026-10-05-fox-15s-fbc.log) | gfx1151 15 s `--fbc`, reuse 2, no TR (2206 s) |
 | [`../perf-runs/VS_UPSTREAM.md`](../perf-runs/VS_UPSTREAM.md) | What antirez/h3.c publishes vs HIP reruns |
+| [`../perf-runs/W7900_2026-11-09.md`](../perf-runs/W7900_2026-11-09.md) | gfx1100 W7900 bring-up: 1344×768 · 15 s dense 60608 → 5171 s (activations in VRAM, INT8 chunking, wave32 SDPA, batched grouped INT8), TR / fbc / Sol-Attn, VAE tiles, rejected hipBLASLt and CK INT8 |
 | `docs/perf-day*/STATUS.md` | Session logs |
 | [`../deprecated/`](../deprecated/README.md) | Superseded whole docs (e.g. the pre-port plan) |
 

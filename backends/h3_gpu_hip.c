@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -165,13 +166,52 @@ static int h3_hip_pread_threads(void) {
     return cached;
 }
 
+/* The striped reads above are an NVMe tuning. On a spinning disk they turn
+ * into seeks: a 7200 rpm drive reads 150 MB/s with one stream, 114 MB/s with
+ * 32, and the W7900 box loaded its text encoder at ~105 MB/s with the loaders'
+ * 128 outstanding reads. Serial pread cut that load from 446 s to 304 s. */
+static int h3_hip_fd_rotational(int fd) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static dev_t cached_dev;
+    static int cached = -1;
+    struct stat status;
+    if (fstat(fd, &status) != 0) return 0;
+    pthread_mutex_lock(&lock);
+    if (cached >= 0 && cached_dev == status.st_dev) {
+        int value = cached;
+        pthread_mutex_unlock(&lock);
+        return value;
+    }
+    pthread_mutex_unlock(&lock);
+    unsigned dev_major = major(status.st_dev), dev_minor = minor(status.st_dev);
+    const char *formats[] = {"/sys/dev/block/%u:%u/queue/rotational",
+                             "/sys/dev/block/%u:%u/../queue/rotational"};
+    int rotational = 0;
+    for (size_t index = 0; index < sizeof(formats) / sizeof(*formats); index++) {
+        char path[128];
+        snprintf(path, sizeof(path), formats[index], dev_major, dev_minor);
+        FILE *file = fopen(path, "r");
+        if (!file) continue;
+        int value = 0;
+        if (fscanf(file, "%d", &value) == 1) rotational = value == 1;
+        fclose(file);
+        break;
+    }
+    pthread_mutex_lock(&lock);
+    cached_dev = status.st_dev;
+    cached = rotational;
+    pthread_mutex_unlock(&lock);
+    return rotational;
+}
+
 static int h3_hip_pread_all(int fd, void *data, size_t bytes, off_t offset) {
     enum { H3_PREAD_THREADS = 32, H3_PREAD_MIN = 16u << 20 };
 #if defined(POSIX_FADV_WILLNEED)
     if (bytes >= H3_PREAD_MIN)
         posix_fadvise(fd, offset, (off_t)bytes, POSIX_FADV_WILLNEED);
 #endif
-    if (bytes < H3_PREAD_MIN || getenv("H3_PREAD_SERIAL"))
+    if (bytes < H3_PREAD_MIN || getenv("H3_PREAD_SERIAL") ||
+        (!getenv("H3_PREAD_THREADS") && h3_hip_fd_rotational(fd)))
         return h3_hip_pread_serial(fd, data, bytes, offset);
 
     int want = h3_hip_pread_threads();
@@ -319,10 +359,15 @@ static size_t h3_hip_device_weight_reserve(void) {
     return cached ? cached : 1;
 }
 
-static int h3_hip_device_weight_fits(size_t request) {
+/* The reserve exists so activations find VRAM after the weights load, so the
+ * activation arena itself only keeps a small allocator margin. Kernels re-read
+ * activations many times per step; a pinned-host fallback costs ~12x on SDPA
+ * and ~60x on INT8 GEMM over PCIe. */
+static int h3_hip_device_weight_fits(size_t request, int activation) {
     size_t free_bytes = 0, total_bytes = 0;
     if (hipMemGetInfo(&free_bytes, &total_bytes) != hipSuccess) return 0;
-    size_t reserve = h3_hip_device_weight_reserve();
+    size_t reserve = activation ? ((size_t)256 << 20)
+                                : h3_hip_device_weight_reserve();
     if (reserve > total_bytes / 2) reserve = total_bytes / 2;
     return request <= free_bytes && free_bytes - request >= reserve;
 }
@@ -591,6 +636,8 @@ struct h3_gpu {
     size_t kv_hm_scratch_bytes;
     /* Set by QKV/RoPE when K/V were written head-major; consumed by SDPA. */
     int sdpa_kv_already_hm;
+    /* Device allocations skip the weight reserve (h3_gpu_set_activation_arena). */
+    int activation_arena;
     /* Sol-Attn K-mean / V-sum: 2 * n_kv_blocks * heads * 128 floats. */
     void *sol_scratch;
     size_t sol_scratch_bytes;
@@ -874,7 +921,7 @@ static struct h3_gpu_tensor *h3_hip_tensor_new_ex(struct h3_gpu *gpu,
     double alloc_start = h3_hip_now();
     size_t request = bytes > 0 ? bytes : 1;
     if (weight && h3_hip_device_weights() &&
-        h3_hip_device_weight_fits(request) &&
+        h3_hip_device_weight_fits(request, gpu->activation_arena) &&
         hipMalloc(&tensor->data, request) == hipSuccess) {
         tensor->device = 1;
         /* hipHostMalloc hands back zeroed pages and callers depend on it;
@@ -1058,7 +1105,7 @@ int h3_gpu_has_int8_mlp(const h3_gpu *gpu) {
     if (e && strcmp(e, "0") == 0) return 0;
     if (e && strcmp(e, "1") == 0) return 1;
     /* INT8 is default on all ISAs: faster and lower VRAM than BF16 on both
-     * CDNA (gfx90a/gfx942) and RDNA (gfx1151). Set H3_INT8_MLP=0 to opt out. */
+     * CDNA (gfx90a/gfx942) and RDNA (gfx1100/gfx1151). Set H3_INT8_MLP=0 to opt out. */
     return 1;
 }
 
@@ -1175,6 +1222,32 @@ h3_gpu_tensor *h3_gpu_tensor_load_f32(h3_gpu *gpu, const char *path,
         return NULL;
     }
     return tensor;
+}
+
+int h3_gpu_tensor_read_file_bytes(h3_gpu_tensor *tensor, const char *path,
+                                  uint64_t file_offset, size_t bytes,
+                                  char *error, size_t error_size) {
+    struct h3_gpu_tensor *obj = tensor_ptr(tensor);
+    if (!obj || !path || !*path || bytes > obj->bytes) {
+        if (error && error_size)
+            snprintf(error, error_size, "invalid file read request");
+        return 0;
+    }
+    int from_cache = 0;
+    int fd = h3_hip_open_weight_fd(path, &from_cache);
+    if (fd < 0) {
+        if (error && error_size)
+            snprintf(error, error_size, "cannot open %s: %s", path,
+                     strerror(errno));
+        return 0;
+    }
+    int ok = h3_hip_load_tensor_from_file(obj, fd, path, bytes,
+                                          (off_t)file_offset);
+    if (!from_cache) close(fd);
+    if (!ok && error && error_size)
+        snprintf(error, error_size, "cannot read %zu bytes from %s", bytes,
+                 path);
+    return ok;
 }
 
 int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *tensor, const char *path,
@@ -1418,6 +1491,10 @@ void h3_gpu_profile_set_label(h3_gpu *gpu, const char *label) {
     if (!gpu || !label) return;
     snprintf(gpu_ptr(gpu)->profile_label, sizeof(gpu_ptr(gpu)->profile_label),
              "%s", label);
+}
+
+void h3_gpu_set_activation_arena(h3_gpu *gpu, int on) {
+    if (gpu) gpu_ptr(gpu)->activation_arena = on ? 1 : 0;
 }
 
 void h3_gpu_profile_mark(h3_gpu *gpu, const char *phase) {
@@ -3117,7 +3194,7 @@ static int h3_hip_sol_supported(void) {
              hipGetDeviceProperties(&props, device) == hipSuccess &&
              (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
               strncmp(props.gcnArchName, "gfx942", 6) == 0 ||
-              strncmp(props.gcnArchName, "gfx1151", 7) == 0);
+              strncmp(props.gcnArchName, "gfx11", 5) == 0);
     return cached;
 }
 
@@ -3139,7 +3216,7 @@ static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
         warned = 1;
         fprintf(stderr,
                 "h3: --sol-attn: unsupported GPU; using dense SDPA "
-                "(supported: gfx90a, gfx942, gfx1151)\n");
+                "(supported: gfx90a, gfx942, gfx1100, gfx1151)\n");
     }
     return 0;
 }

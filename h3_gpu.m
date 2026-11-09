@@ -796,6 +796,18 @@ int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *opaque, const char *path,
         opaque, path, file_offset, elements, 0, error, error_size);
 }
 
+int h3_gpu_tensor_read_file_bytes(h3_gpu_tensor *opaque, const char *path,
+                                  uint64_t file_offset, size_t bytes,
+                                  char *error, size_t error_size) {
+    (void)opaque;
+    (void)path;
+    (void)file_offset;
+    (void)bytes;
+    if (error && error_size)
+        snprintf(error, error_size, "raw file reads are HIP only");
+    return 0;
+}
+
 int h3_gpu_tensor_stream_file_bf16(h3_gpu_tensor *opaque, const char *path,
                                    uint64_t file_offset, size_t elements,
                                    char *error, size_t error_size) {
@@ -976,6 +988,11 @@ void h3_gpu_profile_set_label(h3_gpu *opaque, const char *label) {
     H3GPU *gpu = GPU(opaque);
     if (!gpu || !label || !*label) return;
     gpu.profileLabel = [NSString stringWithUTF8String:label];
+}
+
+void h3_gpu_set_activation_arena(h3_gpu *opaque, int on) {
+    (void)opaque;
+    (void)on;
 }
 
 void h3_gpu_profile_mark(h3_gpu *opaque, const char *phase) {
