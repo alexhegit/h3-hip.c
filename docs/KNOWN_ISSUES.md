@@ -100,6 +100,28 @@ Candidate fixes, none implemented:
 4. **Smaller accumulator.** A BF16 `vsa_acc`, or accumulating in registers,
    saves up to 3.13 GiB but changes the numbers.
 
+## KI-007: `--serve` cache overflows 32 GiB cards without `H3_INT8_HOST=1`
+
+**Status:** open. Measured on one Radeon AI PRO R9700 (29.86 GiB),
+864×480 · 5 s, FastH3 4-step, two jobs on one daemon.
+
+The daemon enables the generation cache, so the prepared DiT (21.2 GiB)
+stays on the card after denoise. The video VAE decoder then sees about
+4 GiB free and its tensors silently fall back to pinned host memory
+(`H3_HIP_MEMLOG=1` prints 901 `pinned fallback` lines). The next job's
+DiT hits the cache but denoise runs 5× slower:
+
+| daemon | job 1 | job 2 | job 2 denoise |
+|---|---:|---:|---:|
+| default | 212.7 s | 179.4 s | 180.0 s (job 1: 34.2 s) |
+| `H3_INT8_HOST=1` | 120.6 s | **56.6 s** | |
+
+The CLI is not affected: it runs one job with the cache off and frees the
+DiT before the VAE. Workaround: start the daemon with `H3_INT8_HOST=1` on
+cards below 48 GiB. Candidate fixes, none implemented: release the cached
+DiT before the video VAE when free VRAM is below the decoder's need, or turn
+`H3_INT8_HOST` on by default for `--serve` when the card is below 48 GiB.
+
 ## Related backlog
 
 | ID | Topic | Status |
