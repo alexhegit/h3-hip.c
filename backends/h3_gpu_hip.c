@@ -1878,8 +1878,12 @@ int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
     size_t weight_count = (size_t)output_dim * input_dim;
     size_t output_count = (size_t)rows * output_dim;
     int bf16_weight = weight && tensor_ptr(weight)->dtype == H3_GPU_BF16;
+    int bf16_input = input && tensor_ptr(input)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !input_dim || !output_dim ||
-        !h3_hip_require_f32(ctx, input, input_count, "linear input") ||
+        (bf16_input && !bf16_weight) ||
+        (bf16_input
+             ? !h3_hip_require_bf16(ctx, input, input_count, "linear input")
+             : !h3_hip_require_f32(ctx, input, input_count, "linear input")) ||
         (bf16_weight
              ? !h3_hip_require_bf16(ctx, weight, weight_count, "linear weight")
              : !h3_hip_require_f32(ctx, weight, weight_count,
@@ -1892,6 +1896,14 @@ int h3_gpu_linear_f32(h3_gpu *gpu, h3_gpu_tensor *output,
         (const float *)tensor_ptr(bias)->data :
         (const float *)tensor_ptr(input)->data;
     h3_linear_args args = {rows, input_dim, output_dim, bias ? 1u : 0u};
+    if (bf16_input)
+        return h3_hip_launch_linear(ctx, h3_launch_linear_bf16a_wbf16(
+            (const uint16_t *)tensor_ptr(input)->data,
+            (const uint16_t *)tensor_ptr(weight)->data,
+            bias ? (const float *)tensor_ptr(bias)->data : NULL,
+            (float *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_linear_bf16a_wbf16",
+            h3_hip_mps_linear_f32(rows, input_dim, output_dim));
     if (bf16_weight)
         return h3_hip_launch_linear(ctx, h3_launch_linear_f32_wbf16(
             (const float *)tensor_ptr(input)->data,
@@ -2118,12 +2130,20 @@ int h3_gpu_swiglu_f32(h3_gpu *gpu, h3_gpu_tensor *output,
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t fused_count = (size_t)rows * width * 2;
     size_t out_count = (size_t)rows * width;
+    int bf16_out = output && tensor_ptr(output)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !width ||
         !h3_hip_require_f32(ctx, fused, fused_count, "SwiGLU input") ||
-        !h3_hip_require_f32(ctx, output, out_count, "SwiGLU output")) {
+        (bf16_out ? !h3_hip_require_bf16(ctx, output, out_count, "SwiGLU output")
+                  : !h3_hip_require_f32(ctx, output, out_count,
+                                        "SwiGLU output"))) {
         return 0;
     }
     h3_swiglu_args args = {rows, width};
+    if (bf16_out)
+        return h3_hip_launch_ok(ctx, h3_launch_swiglu_f32_bf16(
+            (const float *)tensor_ptr(fused)->data,
+            (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_swiglu_f32_bf16");
     return h3_hip_launch_ok(ctx, h3_launch_swiglu_f32(
         (const float *)tensor_ptr(fused)->data,
         (float *)tensor_ptr(output)->data, &args, ctx->stream),
@@ -2162,15 +2182,25 @@ int h3_gpu_scale_add_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                                   float epsilon) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t count = (size_t)rows * width;
+    int bf16_out = output && tensor_ptr(output)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !width ||
         !h3_hip_require_f32(ctx, residual, count, "fused residual") ||
         !h3_hip_require_f32(ctx, branch, count, "fused branch") ||
         !h3_hip_require_f32(ctx, scale, width, "fused scale") ||
         !h3_hip_require_f32(ctx, norm_weight, width, "fused norm weight") ||
-        !h3_hip_require_f32(ctx, output, count, "fused output")) {
+        (bf16_out ? !h3_hip_require_bf16(ctx, output, count, "fused output")
+                  : !h3_hip_require_f32(ctx, output, count, "fused output"))) {
         return 0;
     }
     h3_norm_args args = {rows, width, epsilon};
+    if (bf16_out)
+        return h3_hip_launch_ok(ctx, h3_launch_scale_add_rms_norm_f32_bf16(
+            (float *)tensor_ptr(residual)->data,
+            (const float *)tensor_ptr(branch)->data,
+            (const float *)tensor_ptr(scale)->data,
+            (const float *)tensor_ptr(norm_weight)->data,
+            (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_scale_add_rms_norm_f32_bf16");
     return h3_hip_launch_ok(ctx, h3_launch_scale_add_rms_norm_f32(
         (float *)tensor_ptr(residual)->data,
         (const float *)tensor_ptr(branch)->data,
@@ -2301,13 +2331,22 @@ int h3_gpu_rms_norm_f32(h3_gpu *gpu, h3_gpu_tensor *output,
                         uint32_t width, float epsilon) {
     struct h3_gpu *ctx = gpu_ptr(gpu);
     size_t count = (size_t)rows * width;
+    int bf16_out = output && tensor_ptr(output)->dtype == H3_GPU_BF16;
     if (!ctx || !rows || !width ||
         !h3_hip_require_f32(ctx, input, count, "RMSNorm input") ||
         !h3_hip_require_f32(ctx, weight, width, "RMSNorm weight") ||
-        !h3_hip_require_f32(ctx, output, count, "RMSNorm output")) {
+        (bf16_out ? !h3_hip_require_bf16(ctx, output, count, "RMSNorm output")
+                  : !h3_hip_require_f32(ctx, output, count,
+                                        "RMSNorm output"))) {
         return 0;
     }
     h3_norm_args args = {rows, width, epsilon};
+    if (bf16_out)
+        return h3_hip_launch_ok(ctx, h3_launch_rms_norm_f32_bf16(
+            (const float *)tensor_ptr(input)->data,
+            (const float *)tensor_ptr(weight)->data,
+            (uint16_t *)tensor_ptr(output)->data, &args, ctx->stream),
+            "h3_rms_norm_f32_bf16");
     return h3_hip_launch_ok(ctx, h3_launch_rms_norm_f32(
         (const float *)tensor_ptr(input)->data,
         (const float *)tensor_ptr(weight)->data,

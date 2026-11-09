@@ -67,7 +67,8 @@ see [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) KI-006.
 After v0.18.0, on branch `r9700`: overlapped `H3_INT8_HOST` copies, a leaner
 gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
 **1985.1 s** (from 2204.7 s) with the same MP4, and the video VAE peak from
-9.5 to 5.3 GiB
+9.5 to 5.3 GiB. BF16 VAE activations then cut the 832×480 · 5 s video VAE
+from 21.7 to 16.9 s, again with the same MP4
 ([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
 
 Dense is 2.8–3.3× MI300X. fox-s2 and fox-fast are bound by reading ~98 GiB
