@@ -52,22 +52,23 @@ Tick the boxes in commits on this branch, or note the landing PR / SHA.
 
 | # | Item | Status |
 |---|---|---|
-| B1 | Move the node from `comfyui-h3-hip-prototype` into the tree; the benchmark scripts stay out | [ ] |
-| B2 | Remove assumptions PR #2 made obsolete (compact-only JSON, one connection at a time) | [ ] |
-| B3 | Cover T2VA / FL2VA, steps / layers / reuse, FastH3 (via A3), 864×480 and 1344×768 | [ ] |
-| B4 | Poll the job once a second into a ComfyUI `ProgressBar`; interrupt sends `/cancel`. No SSE client | [ ] |
-| B5 | Ship one example API workflow (`H3HipGenerate` → `SaveVideo`) | [ ] |
-| B6 | State the minimum ComfyUI version (the node uses the V3 `comfy_api.latest` API; tested on `fca60fe`) | [ ] |
+| B1 | Move the node from `comfyui-h3-hip-prototype` into the tree; the benchmark scripts stay out | [x] rewritten as `integrations/comfyui/__init__.py` |
+| B2 | Remove assumptions PR #2 made obsolete (compact-only JSON, one connection at a time) | [x] also fixes keyframe conversion (rounds instead of truncating, so a `LoadImage` PNG reaches the daemon unchanged) |
+| B3 | Cover T2VA / FL2VA, steps / layers / reuse, FastH3 (via A3), 864×480 and 1344×768 | [x] fox-s2 T2VA and FL2VA + FastH3 through ComfyUI have the CLI's stream hashes; 864×480 rendered through the node; 1344×768 accepted, not rendered through the node |
+| B4 | Poll the job once a second into a ComfyUI `ProgressBar`; interrupt sends `/cancel`. No SSE client | [x] Interrupt during 864×480 dense denoise frees the daemon in 12 s, after the denoise-cancel fix (`c4b104b`); it used to run the remaining steps |
+| B5 | Ship one example API workflow (`H3HipGenerate` → `SaveVideo`) | [x] `workflows/h3hip_t2va_api.json`, `h3hip_fl2va_api.json`; `run_workflow.py` runs them headless |
+| B6 | State the minimum ComfyUI version (the node uses the V3 `comfy_api.latest` API; tested on `fca60fe`) | [x] ComfyUI 0.44.0 (`fca60fe`) in the tutorial and README |
+| B7 | Node-side memory switches: `free_comfy_vram` (unload ComfyUI's models before the job), `release_vram` (→ `options.release_after`) | [x] |
 
 ### C. Tutorial (`docs/wiki/ComfyUI.md`)
 
 | # | Item | Status |
 |---|---|---|
-| C1 | Weights first: the official FL2VA checkpoint (~134 GiB, `./tools/download_weights.sh`) is separate from ComfyUI's model files | [ ] |
-| C2 | Build h3, start `h3 --serve`, check `/v1/info` | [ ] |
-| C3 | Install the node (symlink into `custom_nodes/`), load the example workflow, render | [ ] |
-| C4 | Pitfalls: VRAM sharing with other nodes (A2), port and `H3_MODEL`, the automatic `H3_INT8_HOST` on cards below 48 GiB, one daemon per GPU | [ ] |
-| C5 | Link from `Getting-started.md` (Daemon section) and the README | [ ] |
+| C1 | Weights first: the official FL2VA checkpoint (~134 GiB, `./tools/download_weights.sh`) is separate from ComfyUI's model files | [x] |
+| C2 | Build h3, start `h3 --serve`, check `/v1/info` | [x] |
+| C3 | Install the node (symlink into `custom_nodes/`), load the example workflow, render | [x] |
+| C4 | Pitfalls: VRAM sharing with other nodes (A2), port and `H3_MODEL`, the automatic `H3_INT8_HOST` on cards below 48 GiB, one daemon per GPU | [x] plus media root, outputs/quota, `SaveVideo` remux, RAM when mixed with native MiniMax-H3 |
+| C5 | Link from `Getting-started.md` (Daemon section) and the README | [x] |
 
 ### D. Release
 

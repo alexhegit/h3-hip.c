@@ -48,6 +48,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - **Metal sources** (`h3_gpu.m`, `h3_shaders.metal`, `h3_metal.m`) are reference-only for upstream parity — not compiled on Linux
 - **Major pipelines:** DiT (`h3_dit.c`, `h3_dit_schedule.c`), Video VAE (`h3_video_vae.c`), Audio VAE (`h3_audio_vae.c`), Text encoder (`h3_text_encoder.c`), Vision encoder (`h3_vision_encoder.c`), FFmpeg mux (`h3_ffmpeg.c`)
 - **HTTP daemon (experimental):** `./h3 -d MODEL --serve` → `h3d.c` (loopback JSON+SSE, protocol **v1alpha**). Bind `127.0.0.1:8571` unless `H3D_BIND`/`H3D_PORT` are set. Do not expose the daemon on a public interface. Contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md). Agent plugin lives in a separate repo (`dsh-plugin-h3-hip`).
+- **ComfyUI node (experimental):** `integrations/comfyui/` (V3 node API, symlink into `custom_nodes/`), a thin client of `--serve`; `run_workflow.py` queues the API-format graphs in `workflows/` headless. User guide: [`docs/wiki/ComfyUI.md`](docs/wiki/ComfyUI.md).
 - **Wave mode:** gfx1151 and gfx1201 use wave32 (rocWMMA; gfx12 accumulator rows differ, see `H3_WMMA_ACC_ROW`); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
 
 ## Key gotchas
@@ -105,4 +106,4 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/DESIGN_DHS.md` — `--serve` daemon protocol v1alpha and DSH plugin phases
 - `docs/DESIGN_SERVE_CLIENTS.md` — plan/tracker: ComfyUI through `--serve` (daemon gate + idle VRAM release, in-tree node, wiki tutorial, public release)
-- `docs/wiki/` — Getting started, T2VA pipeline, Long video
+- `docs/wiki/` — Getting started, T2VA pipeline, Long video, ComfyUI

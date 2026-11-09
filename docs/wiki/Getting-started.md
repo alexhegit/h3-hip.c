@@ -163,7 +163,9 @@ Loopback HTTP for the DSH plugin (protocol v1alpha, not stable):
 ```
 
 Env: `H3D_BIND`, `H3D_PORT`, `H3D_MODEL_PATH`, `H3D_OUTPUT_ROOT`,
-`H3D_MEDIA_ROOT`, `H3D_GPUS`. Spec: [`docs/DESIGN_DHS.md`](../DESIGN_DHS.md).
+`H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_FASTH3_LORA`, `H3D_IDLE_RELEASE_SEC`.
+Spec: [`docs/DESIGN_DHS.md`](../DESIGN_DHS.md). To drive it from ComfyUI,
+see [ComfyUI](ComfyUI.md).
 
 ## Optional knobs
 
