@@ -101,5 +101,5 @@ Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/Min
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/DESIGN_DHS.md` — `--serve` daemon protocol v1alpha and DSH plugin phases
-- `docs/DESIGN_SERVE_CLIENTS.md` — plan/tracker: KI-005 gate, ComfyUI node, DSH M1
+- `docs/DESIGN_SERVE_CLIENTS.md` — plan/tracker: ComfyUI through `--serve` (daemon gate + idle VRAM release, in-tree node, wiki tutorial, public release)
 - `docs/wiki/` — Getting started, T2VA pipeline, Long video

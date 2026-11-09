@@ -102,7 +102,7 @@ Candidate fixes, none implemented:
 
 ## KI-007: `--serve` cache overflows 32 GiB cards without `H3_INT8_HOST=1`
 
-**Status:** fixed on `h3d-fixes`: `--serve` now sets `H3_INT8_HOST=1` itself
+**Status:** fixed on `r9700` (PR #2): `--serve` now sets `H3_INT8_HOST=1` itself
 on a discrete card below 48 GiB unless `H3_INT8_HOST` is already set or the
 DiT is not INT8 (`H3_INT8_MLP=0`, `H3_FP8_MLP`). With no environment set the
 same three jobs (same prompt, new seed, new prompt), with the VAE BF16
