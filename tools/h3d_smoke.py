@@ -311,7 +311,32 @@ def check_fox(name, job, fox_md5):
         print(f"skip: {name} md5 {got} not compared (pass --fox-md5 from a CLI run)")
 
 
+def test_cancel_in_denoise(url):
+    status, data = submit(url, job_body(quality={"preset": "custom", "steps": 20,
+                                                 "layers": 35, "reuse": 1}))
+    check("20-step submit", status == 202, data)
+    if status != 202:
+        return
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        _, job, _ = request(url, "GET", f"/v1/jobs/{data['job_id']}")
+        # "denoise enqueue" with H3_GPU_SAMPLER=1
+        if job["phase"].startswith("denoise") and job["progress"]["step"] >= 1:
+            break
+        if job["status"] in ("done", "failed", "cancelled", "timeout"):
+            break
+        time.sleep(0.2)
+    cancel(url, data["job_id"])
+    job = wait(url, data["job_id"])
+    progress = job["progress"]
+    check("cancel during denoise stops before the last step",
+          job["status"] == "cancelled" and job["phase"].startswith("denoise") and
+          progress["step"] < progress["total_steps"],
+          f"{job['status']} {job['phase']} {progress}")
+
+
 def test_generate(url, fox_md5, first_frame, fl2va_md5):
+    test_cancel_in_denoise(url)
     status, data = submit(url, job_body())
     check("fox-s2 submit", status == 202, data)
     events = sse_events(url, data["job_id"])

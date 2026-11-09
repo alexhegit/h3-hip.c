@@ -1223,8 +1223,8 @@ int h3d_serve(h3d_ctx *ctx) {
     }
     pthread_attr_destroy(&attr);
 
-    h3d_workers_shutdown(ctx);
     h3d_http_close(ctx->server_fd);
+    h3d_workers_shutdown(ctx);
     fprintf(stderr, "h3d: shutdown complete\n");
     return 0;
 }

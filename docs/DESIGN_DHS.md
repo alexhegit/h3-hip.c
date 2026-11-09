@@ -498,6 +498,10 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   MP4 放入 `result.mp4_path`（`result.partial=true`）
 - 已终态 → 返回 409
 - 响应 200：终态 job 对象（同 13.3）
+- 运行中的任务在下一个进度回调处停下；去噪阶段每一步开始前检查，所以最多
+  再跑完当前一步（R9700 864×480 · 5 s dense 约 12 s，CPU 与 GPU Euler
+  采样器相同）。daemon 收到 SIGTERM/SIGINT 时先取消运行中的任务、关闭
+  监听端口，再退出
 
 ### 13.5 `GET /v1/jobs/{job_id}/events` — SSE 进度流
 

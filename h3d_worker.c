@@ -378,6 +378,13 @@ int h3d_workers_init(h3d_ctx *ctx) {
 void h3d_workers_shutdown(h3d_ctx *ctx) {
     atomic_store(&ctx->shutdown, 1);
 
+    /* A running job would otherwise hold the join for the rest of its
+     * denoise; cancelled, it stops before its next step. */
+    for (h3d_worker *w = ctx->workers; w; w = w->next) {
+        h3d_job *job = w->current_job;
+        if (job) h3d_job_cancel(ctx, job->job_id);
+    }
+
     h3d_worker *w = ctx->workers;
     while (w) {
         pthread_join(w->thread, NULL);
