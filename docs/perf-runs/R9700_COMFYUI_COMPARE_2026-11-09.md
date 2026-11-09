@@ -98,6 +98,41 @@ Memory decides more than speed on this box:
   jobs took 120.6 s and then **56.6 s** (same prompt, so the text encoder
   result was reused too).
 
+## What this supports, and what it does not
+
+Matched on both sides: MiniMax-H3 FL2VA, all 50 DiT layers, the same step
+count, one DiT forward per step (no CFG on either side), INT8 QKV /
+attention-out / FC1 / FC2, same canvas, frames, prompt and seed value.
+
+Not matched:
+
+- INT8 schemes differ (Comfy-Org's offline `int8_convrot` file vs h3-hip
+  quantizing the official BF16 weights at load). That is part of what is
+  being compared, but it also means the pictures differ.
+- Text encoder (INT8 Qwen3-VL vs original weights) and video VAE (fp16 vs
+  F32 with BF16 block linears) differ, so the non-denoise phases are not a
+  like-for-like comparison. The denoise column is the clean one.
+- Sampler (`res_multistep` vs Euler) and RNG differ. Both cost one DiT call
+  per step, so speed is unaffected; outputs are not comparable.
+- Turbo rows use different adapters (MiniMax turbo LoRA vs FastH3), and
+  ComfyUI applies its LoRA as per-step patches because the DiT does not fit
+  on the card. Rows C and D therefore mix kernel speed with memory effects.
+- ROCm runtime differs: ComfyUI's torch wheel bundles ROCm 7.13; h3-hip
+  runs on the TheRock 10.1 runtime (the only torch build for that runtime
+  ships a mismatched torchvision).
+- ComfyUI E2E starts at prompt execution in an already-running server;
+  h3-hip E2E includes process start. This favours ComfyUI by a few seconds.
+- Sample size: ComfyUI row A has two runs (8% apart), every other cell one
+  run. h3-hip runs on a 300 W-capped card that sits at 94–95 °C.
+- Quality was not compared.
+
+Claim that holds on this data: on an R9700 (32 GiB, 59 GiB RAM), at the
+same model, step count and layer count, with INT8 main linears on both
+sides, h3-hip's DiT denoise is 1.26–1.37× faster than ComfyUI native
+(`fca60fe`, PyTorch 2.11+rocm7.13) and the whole job is 1.19–1.28×
+faster. Row B (fox-fast) is lossy and must not be quoted against ComfyUI.
+Turbo-row ratios should be quoted with the adapter and offload caveats.
+
 The ComfyUI node prototype (`H3HipGenerate` → `SaveVideo`) produced the
 same streams as the CLI for fox-s2; the daemon bugs it exposed are fixed
 on `h3d-fixes`.
