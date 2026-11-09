@@ -10,9 +10,9 @@ including the worst pairing of individual runs:
 
 | row | denoise | whole job | worst pairing (whole job) | how to quote it |
 |---|---:|---:|---:|---|
-| A. 864×480, 20 steps, dense | **1.37×** | **1.29×** | 1.21× | headline: same model, steps and layers, both dense |
-| C. 864×480, 4-step turbo | 1.70× | 1.31× | 1.16× | different turbo adapters; ComfyUI patches its LoRA per step because the DiT does not fit |
-| D. 1344×768, 4-step turbo | 1.42× | 1.16× | 1.13× | as C; h3-hip's lead shrinks outside denoise (VAE 54 s, `H3_INT8_HOST` load 32 s) |
+| A. 864×480, 20 steps, dense | **1.39×** | **1.34×** | 1.27× | headline: same model, steps and layers, both dense |
+| C. 864×480, 4-step turbo | 1.84× | 1.48× | 1.28× | different turbo adapters; ComfyUI patches its LoRA per step because the DiT does not fit |
+| D. 1344×768, 4-step turbo | 1.50× | 1.27× | 1.24× | as C; h3-hip's lead shrinks outside denoise (VAE 41 s, `H3_INT8_HOST` load 32 s) |
 
 The bigger practical difference is memory. On 59 GiB of RAM ComfyUI with
 the full INT8 DiT needs `--cache-none` and a restart per job, or it is
@@ -21,15 +21,15 @@ prompt takes 52.1 s after a 106.5 s first job (KI-007 fix and VAE BF16
 activations included, no environment needed).
 
 Scope of the claim: this R9700 (32 GiB, 59 GiB RAM), ComfyUI `fca60fe`
-with PyTorch 2.11+rocm7.13, fresh processes alternating. Quality is not
-compared (samplers, INT8 schemes and noise differ). The h3-hip fox-fast
-numbers (≈2× whole job) are lossy and must not be quoted against ComfyUI.
+with PyTorch 2.11+rocm7.13, fresh processes. Quality is not compared
+(samplers, INT8 schemes and noise differ). The h3-hip fox-fast numbers
+(≈2× whole job) are lossy and must not be quoted against ComfyUI.
 
-Where h3-hip can gain more: the video VAE (not power-bound; the BF16
-activation PR, since merged, saves about 5 s at 864×480 and is not in the
-table above), and the DiT kernels themselves
-(denoise already sits on the 300 W cap, so only efficiency helps: SDPA at
-about 40 % of BF16 peak, grouped INT8 at about 112 of 391 TOPS).
+Where h3-hip can gain more: the video VAE is still not power-bound (BF16
+activations already cut 864×480 from ~21 to ~17 s and 1344×768 from ~54
+to ~41 s, included above), and the DiT kernels themselves (denoise already
+sits on the 300 W cap, so only efficiency helps: SDPA at about 40 % of
+BF16 peak, grouped INT8 at about 112 of 391 TOPS).
 
 For the node decision: the speed lead is real but moderate; the case for
 the node is mostly that it lets ComfyUI users on smaller-RAM AMD boxes
@@ -45,8 +45,8 @@ Box: Radeon AI PRO R9700 (gfx1201, 32 GiB, PCIe 4.0 x4, 300 W cap),
   Weights from `Comfy-Org/minimax-h3`: `minimax_h3_fl2va_int8_convrot`
   (full, not pruned), `qwen3vl_32b_minimax_h3_int8_convrot`, fp16 video VAE.
   Started with `--cache-none` (see Memory).
-- **h3-hip** branch `h3d-fixes` (r9700 + daemon fixes, without the VAE
-  BF16-activation PR), CLI with `--profile`.
+- **h3-hip** branch `h3d-fixes` (r9700 after the VAE BF16-activation merge,
+  plus daemon KI-007), CLI with `--profile`.
 
 ## Method
 
@@ -60,6 +60,11 @@ history entry, about 5 s more than its `Prompt executed in`). ComfyUI
 s/step is its tqdm average; denoise = steps × s/step. GPU clock, power and
 junction temperature are 1 s samples of `hwmon` while `gpu_busy_percent`
 ≥ 80. Driver: `bench_comfy.py` + `rerun.py` in the prototype directory.
+
+After the VAE BF16-activation PR merged, h3-hip alone was remeasured
+(`rerun_h3.py`, three rounds A→C→D) with ComfyUI weight files dropped from
+the page cache between runs; ComfyUI medians are unchanged from the
+alternating passes.
 
 ## Settings per row
 
@@ -79,14 +84,15 @@ LoRAs are different adapters.
 ## Results (median, range in brackets)
 
 ComfyUI: 6 runs for A and C (two alternating passes), 3 for D. h3-hip:
-3 runs per row. See the erratum below for why the first pass's h3-hip A
-and C runs are excluded.
+3 runs per row after the VAE remasure. See the erratum below for why the
+first pass's h3-hip A and C runs are excluded, and the superseded note for
+the pre-VAE clean pass.
 
 | row | ComfyUI s/step | ComfyUI denoise | ComfyUI E2E | h3-hip s/step | h3-hip denoise | h3-hip E2E | denoise ratio | E2E ratio |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| A | 11.82 [10.75–11.85] | 236.3 s [215.0–237.0] | 295.8 s [279.5–307.6] | 8.64 [8.55–8.69] | **172.7 s** [171.1–173.8] | **228.8 s** [225.3–230.1] | **1.37×** [1.24–1.39] | **1.29×** [1.21–1.37] |
-| C | 15.65 [12.61–15.69] | 62.6 s [50.4–62.8] | 125.3 s [111.6–135.8] | 9.21 [9.15–9.29] | **36.8 s** [36.6–37.2] | **95.5 s** [93.1–96.0] | **1.70×** [1.35–1.72] | **1.31×** [1.16–1.46] |
-| D | 56.11 [55.70–59.50] | 224.4 s [222.8–238.0] | 304.1 s [303.2–312.5] | 39.43 [38.21–39.97] | **157.7 s** [152.8–159.9] | **261.4 s** [256.6–267.5] | **1.42×** [1.39–1.56] | **1.16×** [1.13–1.22] |
+| A | 11.82 [10.75–11.85] | 236.3 s [215.0–237.0] | 295.8 s [279.5–307.6] | 8.48 [8.45–8.48] | **169.6 s** [168.9–169.7] | **220.2 s** [220.0–220.3] | **1.39×** [1.27–1.40] | **1.34×** [1.27–1.40] |
+| C | 15.65 [12.61–15.69] | 62.6 s [50.4–62.8] | 125.3 s [111.6–135.8] | 8.49 [8.47–8.50] | **34.0 s** [33.9–34.0] | **84.7 s** [84.6–87.4] | **1.84×** [1.48–1.85] | **1.48×** [1.28–1.60] |
+| D | 56.11 [55.70–59.50] | 224.4 s [222.8–238.0] | 304.1 s [303.2–312.5] | 37.28 [37.25–37.91] | **149.1 s** [149.0–151.6] | **239.5 s** [239.5–243.9] | **1.50×** [1.47–1.60] | **1.27×** [1.24–1.30] |
 
 Ratios are ComfyUI median / h3-hip median; the bracket is the worst and
 best cross-pairing of individual runs. ComfyUI is bimodal: runs that keep
@@ -99,22 +105,22 @@ outputs are different pictures; quality was not compared.
 
 | row | text encoder | DiT load | video VAE | audio VAE, mux, start |
 |---|---:|---:|---:|---:|
-| A | 11.7 s | 19.3 s | 21.3 s | 3.8 s |
-| C | 11.2 s | 20.9 s | 21.5 s | 5.1 s |
-| D | 11.2 s | 31.7 s | 53.7 s | 7.1 s |
+| A | 11.4 s | 18.9 s | 17.1 s | 3.2 s |
+| C | 10.8 s | 19.9 s | 17.0 s | 3.2 s |
+| D | 10.7 s | 31.5 s | 41.3 s | 6.9 s |
 
 Row D's load includes parking 17.9 GiB of INT8 linears in pinned RAM
-(`H3_INT8_HOST`), and its VAE is 2.5× row A's for 2.5× the pixels. The
-VAE BF16-activation PR cuts the 864×480 VAE from 21.7 to 16.9 s; not
-included.
+(`H3_INT8_HOST`), and its VAE is ~2.4× row A's for 2.5× the pixels. The
+VAE BF16-activation merge is what moved 864×480 from ~21 s to ~17 s and
+1344×768 from ~54 s to ~41 s.
 
 ### GPU telemetry (mean over busy samples, per run)
 
 | row | ComfyUI sclk / power / Tj max | h3-hip sclk / power / Tj max |
 |---|---|---|
-| A | 2.53–2.64 GHz / 293–299 W / 94–95 °C | 2.52–2.53 GHz / 288–292 W / 94–96 °C |
-| C | 2.56–2.65 GHz / 292–297 W / 92–94 °C | 2.67–2.73 GHz / 260–269 W / 92–95 °C |
-| D | 2.50–2.54 GHz / 296–298 W / 94–96 °C | 2.69–2.71 GHz / 277–280 W / 97–98 °C |
+| A | 2.53–2.64 GHz / 293–299 W / 94–95 °C | 2.49–2.52 GHz / 287–291 W / 93–96 °C |
+| C | 2.56–2.65 GHz / 292–297 W / 92–94 °C | 2.62–2.68 GHz / 247–263 W / 91–94 °C |
+| D | 2.50–2.54 GHz / 296–298 W / 94–96 °C | 2.63–2.66 GHz / 280–284 W / 97 °C |
 
 These are whole-run means, so they mix phases. A 5 Hz trace of one row C
 h3-hip run shows the denoise steps at 300 W mean, 2.47 GHz, 100 % busy,
@@ -128,9 +134,10 @@ The first three-round pass ran with `H3_INT8_HOST=1` leaked into the
 environment from the row D setup, so its h3-hip A and C runs parked the
 INT8 linears in host RAM and copied them every block: 9.27 s/step and
 185.3 / 258.4 s (A), 11.46 s/step and 45.8 / 118.7 s (C). Those six runs
-are replaced by the clean pass above (the driver now strips `H3_*` from the
+are replaced by the clean pass, and that clean pass is itself superseded by
+the post-VAE remasure in the table (the driver now strips `H3_*` from the
 environment and keeps each run's log). Its ComfyUI runs are unaffected and
-are kept. Row D needs `H3_INT8_HOST=1` and is unchanged.
+are kept. Row D still needs `H3_INT8_HOST=1` on the CLI.
 
 ## Memory
 
@@ -185,18 +192,19 @@ Not matched:
 
 Claim that holds on this data: on an R9700 (32 GiB, 59 GiB RAM), at the
 same model, step count and layer count, with INT8 main linears on both
-sides and fresh processes, h3-hip's DiT denoise is **1.37×** faster than
+sides and fresh processes, h3-hip's DiT denoise is **1.39×** faster than
 ComfyUI native (`fca60fe`, PyTorch 2.11+rocm7.13) at 864×480 · 20 steps,
-**1.70×** at 864×480 · 4 turbo steps and **1.42×** at 1344×768 · 4 turbo
-steps; whole jobs are **1.29×**, **1.31×** and **1.16×** faster. The
+**1.84×** at 864×480 · 4 turbo steps and **1.50×** at 1344×768 · 4 turbo
+steps; whole jobs are **1.34×**, **1.48×** and **1.27×** faster. The
 turbo ratios carry the adapter and offload caveats above. The larger
 practical difference is memory: ComfyUI needs a restart per job on this
 box, while the daemon reuses resident weights (with `H3_INT8_HOST=1`).
 
-Superseded: an earlier single-run pass (not alternated) gave 172.4 /
-229.5 s for row A, 38.5 / 96.0 s for C and 148.7 / 258.1 s for D (denoise
-/ E2E); it agrees with the clean pass but is not used for the claim. The
-same pass measured
+Superseded: the pre-VAE alternating clean pass gave h3-hip 172.7 /
+228.8 s for row A, 36.8 / 95.5 s for C and 157.7 / 261.4 s for D (denoise
+/ E2E; ratios 1.37× / 1.29×, 1.70× / 1.31×, 1.42× / 1.16×). An earlier
+single-run pass (not alternated) gave 172.4 / 229.5, 38.5 / 96.0 and
+148.7 / 258.1 s and is not used for the claim. The same pass measured
 h3-hip fox-fast (`--layers 45 --reuse 2`, lossy) at 87.6 / 142.2 s for
 row A's shape; it has no ComfyUI counterpart and must not be quoted
 against it.

@@ -72,9 +72,10 @@ from 21.7 to 16.9 s, again with the same MP4
 ([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
 
 Against ComfyUI's native MiniMax-H3 on the same card (same model, steps and
-layers, INT8 main linears, fresh processes alternating), h3-hip denoises
-1.37× faster at 864×480 · 20 steps and finishes the job 1.29× faster; the
-4-step turbo rows are 1.31× and 1.16× whole job, with caveats
+layers, INT8 main linears, fresh processes; h3-hip after VAE BF16
+activations), h3-hip denoises 1.39× faster at 864×480 · 20 steps and
+finishes the job 1.34× faster; the 4-step turbo rows are 1.48× and 1.27×
+whole job, with caveats
 ([`perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md`](perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md)).
 
 Dense is 2.8–3.3× MI300X. fox-s2 and fox-fast are bound by reading ~98 GiB
