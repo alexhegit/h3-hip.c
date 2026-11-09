@@ -87,8 +87,8 @@ else
   LINK := $(CC)
 endif
 
-LIB_C := h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c \
-	h3_fasth3.c h3_taeh3.c h3_dit_schedule.c h3_dit.c
+LIB_C := h3.c h3_host.c h3_safetensors.c h3_weights.c h3_weight_cache.c \
+	h3_text_encoder.c h3_fasth3.c h3_taeh3.c h3_dit_schedule.c h3_dit.c
 
 LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c h3_ffmpeg.c \
 	h3_terminal.c h3_vision_encoder.c h3_multimodal.c

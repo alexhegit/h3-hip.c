@@ -73,6 +73,10 @@ h3_gpu_tensor *h3_gpu_tensor_load_f32(h3_gpu *gpu, const char *path,
 int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *tensor, const char *path,
                                  uint64_t file_offset, size_t elements,
                                  char *error, size_t error_size);
+/* Dtype-agnostic form for INT8 / F32 payloads: copies `bytes` raw bytes. */
+int h3_gpu_tensor_read_file_bytes(h3_gpu_tensor *tensor, const char *path,
+                                  uint64_t file_offset, size_t bytes,
+                                  char *error, size_t error_size);
 /* As above, but ask Darwin to avoid retaining a second copy in the file cache.
  * Intended for large sequential weight streams whose destination is the only
  * useful resident copy. */

@@ -796,6 +796,18 @@ int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *opaque, const char *path,
         opaque, path, file_offset, elements, 0, error, error_size);
 }
 
+int h3_gpu_tensor_read_file_bytes(h3_gpu_tensor *opaque, const char *path,
+                                  uint64_t file_offset, size_t bytes,
+                                  char *error, size_t error_size) {
+    (void)opaque;
+    (void)path;
+    (void)file_offset;
+    (void)bytes;
+    if (error && error_size)
+        snprintf(error, error_size, "raw file reads are HIP only");
+    return 0;
+}
+
 int h3_gpu_tensor_stream_file_bf16(h3_gpu_tensor *opaque, const char *path,
                                    uint64_t file_offset, size_t elements,
                                    char *error, size_t error_size) {

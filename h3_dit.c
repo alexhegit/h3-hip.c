@@ -2,6 +2,7 @@
 
 #include "h3_dit_schedule.h"
 #include "h3_fasth3.h"
+#include "h3_weight_cache.h"
 #include "h3_weights.h"
 
 #include <math.h>
@@ -78,6 +79,8 @@ typedef struct {
 struct h3_dit {
     h3_gpu *gpu;
     h3_weight_store *weights;
+    /* h3_wcache_root for this checkpoint, or NULL when the cache is off. */
+    char *cache_root;
     h3_dit_schedule *schedule;
     int fused_mlp;
     int nax_mlp;
@@ -1013,6 +1016,85 @@ static void free_block_quant_sources(h3_dit *dit, h3_dit_block *block) {
     if (block->gate_int8) free_tensor(&block->gate_compress);
 }
 
+/* The INT8 core cache stores exactly what the quantize pass produces, so it
+ * only applies when every projection is INT8 and nothing keeps or rewrites
+ * the BF16 sources. */
+static int core_cache_usable(const h3_dit *dit) {
+    return dit->cache_root && dit->int8_mlp && dit->int8_qkv &&
+           dit->int8_attention_out && !dit->fp8_mlp && !dit->fp8_qkv &&
+           !dit->fp8_attention_out && !dit->keep_bf16_mlp &&
+           !dit->keep_bf16_qkv && !dit->keep_bf16_attention_out &&
+           !dit->vsa && !dit->ssd_streaming;
+}
+
+static void core_cache_path(const h3_dit *dit, unsigned index, char *path,
+                            size_t path_size) {
+    snprintf(path, path_size, "%s/block-%02u-int8.bin", dit->cache_root, index);
+}
+
+static size_t core_cache_parts(h3_dit_block *block, h3_wcache_part *parts) {
+    parts[0] = (h3_wcache_part){block->qkv_int8, (size_t)INNER * 3 * HIDDEN,
+                                H3_WCACHE_I8};
+    parts[1] = (h3_wcache_part){block->qkv_scales, INNER * 3, H3_WCACHE_F32};
+    parts[2] = (h3_wcache_part){block->out_int8, (size_t)HIDDEN * INNER,
+                                H3_WCACHE_I8};
+    parts[3] = (h3_wcache_part){block->out_scales, HIDDEN, H3_WCACHE_F32};
+    parts[4] = (h3_wcache_part){block->fc1_int8, (size_t)FFN * 2 * HIDDEN,
+                                H3_WCACHE_I8};
+    parts[5] = (h3_wcache_part){block->fc1_scales, FFN * 2, H3_WCACHE_F32};
+    parts[6] = (h3_wcache_part){block->fc2_int8, (size_t)HIDDEN * FFN,
+                                H3_WCACHE_I8};
+    parts[7] = (h3_wcache_part){block->fc2_scales, HIDDEN, H3_WCACHE_F32};
+    return 8;
+}
+
+/* Allocate the INT8 tensors the quantize pass would create and fill them
+ * from the cache entry; on a miss they are freed and the block loads BF16. */
+static int core_cache_load(h3_dit *dit, h3_dit_block *block, unsigned index) {
+    char path[2048];
+    h3_wcache_part parts[8];
+    core_cache_path(dit, index, path, sizeof(path));
+    block->qkv_int8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)INNER * 3 * HIDDEN);
+    block->qkv_scales = h3_gpu_tensor_new_f32_device(dit->gpu, INNER * 3);
+    block->out_int8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)HIDDEN * INNER);
+    block->out_scales = h3_gpu_tensor_new_f32_device(dit->gpu, HIDDEN);
+    block->fc1_int8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)FFN * 2 * HIDDEN);
+    block->fc1_scales = h3_gpu_tensor_new_f32_device(dit->gpu, FFN * 2);
+    block->fc2_int8 = h3_gpu_tensor_new_i8_device(
+        dit->gpu, (size_t)HIDDEN * FFN);
+    block->fc2_scales = h3_gpu_tensor_new_f32_device(dit->gpu, HIDDEN);
+    size_t count = core_cache_parts(block, parts);
+    int ok = 1;
+    for (size_t part = 0; part < count; part++)
+        if (!parts[part].tensor) ok = 0;
+    ok = ok && h3_wcache_read(path, parts, count);
+    if (!ok) {
+        free_tensor(&block->qkv_int8);
+        free_tensor(&block->qkv_scales);
+        free_tensor(&block->out_int8);
+        free_tensor(&block->out_scales);
+        free_tensor(&block->fc1_int8);
+        free_tensor(&block->fc1_scales);
+        free_tensor(&block->fc2_int8);
+        free_tensor(&block->fc2_scales);
+    }
+    return ok;
+}
+
+static void core_cache_store(h3_dit *dit, unsigned index) {
+    char path[2048];
+    h3_wcache_part parts[8];
+    h3_dit_block *block = &dit->blocks[index];
+    size_t count = core_cache_parts(block, parts);
+    core_cache_path(dit, index, path, sizeof(path));
+    if (h3_wcache_present(path, parts, count)) return;
+    if (!h3_wcache_write(path, parts, count))
+        fprintf(stderr, "h3: cannot write INT8 cache %s\n", path);
+}
+
 /* Flush a deferred INT8 quantize batch: sync stream, then drop BF16 sources.
  * Batching lets CPU shard I/O overlap GPU quantize for prior blocks. */
 static int flush_dit_quant_batch(h3_dit *dit, unsigned *pending,
@@ -1025,8 +1107,10 @@ static int flush_dit_quant_batch(h3_dit *dit, unsigned *pending,
         return 0;
     }
     *quant_open = 0;
-    for (unsigned i = 0; i < *n_pending; i++)
+    for (unsigned i = 0; i < *n_pending; i++) {
+        if (core_cache_usable(dit)) core_cache_store(dit, pending[i]);
         free_block_quant_sources(dit, &dit->blocks[pending[i]]);
+    }
     *n_pending = 0;
     return 1;
 }
@@ -1545,6 +1629,7 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
     int quant_open = 0;
     int stage_timing = getenv("H3_PROFILE") != NULL;
     double wait_io = 0.0, wait_quant = 0.0;
+    unsigned cache_hits = 0;
     for (unsigned index = 0; index < H3_DIT_BLOCKS; index++) {
         if (!dit->block_active[index]) {
             report(progress, opaque, "load transformer core", (int)index + 1,
@@ -1553,6 +1638,20 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
         }
         char prefix[64];
         snprintf(prefix, sizeof(prefix), "blocks.%u.", index);
+        if (core_cache_usable(dit)) {
+            double io_start = stage_timing ? stream_now() : 0.0;
+            int hit = core_cache_load(dit, &dit->blocks[index], index);
+            if (hit && !load_block_norms(dit, &dit->blocks[index], prefix,
+                                         error, error_size))
+                goto core_failed;
+            if (stage_timing) wait_io += stream_now() - io_start;
+            if (hit) {
+                cache_hits++;
+                report(progress, opaque, "load transformer core",
+                       (int)index + 1, H3_DIT_BLOCKS);
+                continue;
+            }
+        }
         if (dit->ssd_streaming) {
             if (!load_block_norms(dit, &dit->blocks[index], prefix,
                                   error, error_size) ||
@@ -1632,7 +1731,8 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
         goto core_failed;
     if (stage_timing)
         fprintf(stderr, "h3 profile: H3 DiT core split   block-io=%7.3fs "
-                        "quantize=%7.3fs\n", wait_io, wait_quant);
+                        "quantize=%7.3fs cached-blocks=%u\n", wait_io,
+                wait_quant, cache_hits);
     if (dit->ssd_streaming) {
         if (!allocate_stream_slot(dit, &dit->stream_slots[0],
                                   error, error_size) ||
@@ -2173,6 +2273,11 @@ static h3_dit *load_dit(const char *weight_directory,
     dit->sigmas = *sigmas;
     dit->weights = h3_weight_store_open(weight_directory, error, error_size);
     if (!dit->weights) goto failed;
+    {
+        char cache_root[1024];
+        if (h3_wcache_root(weight_directory, cache_root, sizeof(cache_root)))
+            dit->cache_root = strdup(cache_root);
+    }
     dit->gpu = h3_gpu_create(shader_source_path, error, error_size);
     if (!dit->gpu) goto failed;
     dit->nax_mlp = dit->fused_mlp && h3_gpu_has_nax_mlp(dit->gpu);
@@ -2238,7 +2343,8 @@ static h3_dit *load_dit(const char *weight_directory,
     schedule_progress schedule_state = {progress, progress_opaque};
     dit->schedule = h3_dit_schedule_precompute(
         dit->weights, dit->gpu, sigmas, dit->video_condition_rows != 0,
-        dit->audio_condition_rows != 0, schedule_report, &schedule_state,
+        dit->audio_condition_rows != 0, dit->cache_root, schedule_report,
+        &schedule_state,
         error, error_size);
     STAGE("AdaLN precompute");
     if (dit->schedule) {
@@ -3982,6 +4088,7 @@ int h3_dit_denoise_euler(h3_dit *dit, float *video_latent,
 
 void h3_dit_free(h3_dit *dit) {
     if (!dit) return;
+    free(dit->cache_root);
     int steps = h3_dit_schedule_steps(dit->schedule);
     if (dit->row_maps) for (int step = 0; step < steps; step++)
         h3_gpu_tensor_free(dit->row_maps[step]);

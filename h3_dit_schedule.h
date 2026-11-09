@@ -22,10 +22,13 @@ typedef void (*h3_dit_schedule_progress)(int completed_blocks,
 /* Materialize every per-step AdaLN value. This intentionally submits one
  * projection at a time, so a 498 MiB block projection is released before the
  * next is loaded. */
+/* cache_root (from h3_wcache_root, or NULL) stores the finished tables keyed
+ * by the timestep features, so a later run skips the 26 GiB of adaln_proj
+ * reads for the same schedule. */
 h3_dit_schedule *h3_dit_schedule_precompute(
     const h3_weight_store *weights, h3_gpu *gpu,
     const h3_sigma_schedule *sigmas, int visual_condition,
-    int audio_condition,
+    int audio_condition, const char *cache_root,
     h3_dit_schedule_progress progress, void *progress_opaque,
     char *error, size_t error_size);
 void h3_dit_schedule_free(h3_dit_schedule *schedule);

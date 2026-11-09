@@ -1224,6 +1224,32 @@ h3_gpu_tensor *h3_gpu_tensor_load_f32(h3_gpu *gpu, const char *path,
     return tensor;
 }
 
+int h3_gpu_tensor_read_file_bytes(h3_gpu_tensor *tensor, const char *path,
+                                  uint64_t file_offset, size_t bytes,
+                                  char *error, size_t error_size) {
+    struct h3_gpu_tensor *obj = tensor_ptr(tensor);
+    if (!obj || !path || !*path || bytes > obj->bytes) {
+        if (error && error_size)
+            snprintf(error, error_size, "invalid file read request");
+        return 0;
+    }
+    int from_cache = 0;
+    int fd = h3_hip_open_weight_fd(path, &from_cache);
+    if (fd < 0) {
+        if (error && error_size)
+            snprintf(error, error_size, "cannot open %s: %s", path,
+                     strerror(errno));
+        return 0;
+    }
+    int ok = h3_hip_load_tensor_from_file(obj, fd, path, bytes,
+                                          (off_t)file_offset);
+    if (!from_cache) close(fd);
+    if (!ok && error && error_size)
+        snprintf(error, error_size, "cannot read %zu bytes from %s", bytes,
+                 path);
+    return ok;
+}
+
 int h3_gpu_tensor_read_file_bf16(h3_gpu_tensor *tensor, const char *path,
                                  uint64_t file_offset, size_t elements,
                                  char *error, size_t error_size) {

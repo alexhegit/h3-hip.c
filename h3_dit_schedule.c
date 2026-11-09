@@ -1,5 +1,6 @@
 #include "h3_dit_schedule.h"
 #include "h3_fasth3.h"
+#include "h3_weight_cache.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -328,10 +329,51 @@ static void adaln_slot_discard(adaln_slot *slot) {
     slot->busy = 0;
 }
 
+static size_t schedule_cache_parts(h3_dit_schedule *schedule,
+                                   h3_wcache_part *parts) {
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++)
+        parts[block] = (h3_wcache_part){
+            schedule->blocks[block],
+            (size_t)schedule->time_rows * BLOCK_OUTPUT, H3_WCACHE_BF16};
+    parts[H3_DIT_BLOCKS] = (h3_wcache_part){
+        schedule->final, (size_t)schedule->time_rows * FINAL_OUTPUT,
+        H3_WCACHE_BF16};
+    return H3_DIT_BLOCKS + 1;
+}
+
+/* Allocate every table and fill it from the cache entry. On a miss or a bad
+ * entry the tables are freed again and precompute runs as usual. */
+static int schedule_cache_load(h3_dit_schedule *schedule, h3_gpu *gpu,
+                               const char *path) {
+    h3_wcache_part parts[H3_DIT_BLOCKS + 1];
+    int ok = 1;
+    for (unsigned block = 0; ok && block < H3_DIT_BLOCKS; block++) {
+        schedule->blocks[block] = h3_gpu_tensor_new_bf16_device(
+            gpu, (size_t)schedule->time_rows * BLOCK_OUTPUT);
+        ok = schedule->blocks[block] != NULL;
+    }
+    if (ok) {
+        schedule->final = h3_gpu_tensor_new_bf16_device(
+            gpu, (size_t)schedule->time_rows * FINAL_OUTPUT);
+        ok = schedule->final != NULL;
+    }
+    if (ok) {
+        size_t count = schedule_cache_parts(schedule, parts);
+        ok = h3_wcache_present(path, parts, count) &&
+             h3_wcache_read(path, parts, count);
+    }
+    if (!ok) {
+        for (unsigned block = 0; block < H3_DIT_BLOCKS; block++)
+            free_tensor(&schedule->blocks[block]);
+        free_tensor(&schedule->final);
+    }
+    return ok;
+}
+
 h3_dit_schedule *h3_dit_schedule_precompute(
     const h3_weight_store *weights, h3_gpu *gpu,
     const h3_sigma_schedule *sigmas, int visual_condition,
-    int audio_condition,
+    int audio_condition, const char *cache_root,
     h3_dit_schedule_progress progress, void *progress_opaque,
     char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
@@ -349,6 +391,26 @@ h3_dit_schedule *h3_dit_schedule_precompute(
     float *features = NULL;
     if (!prepare_rows(schedule, sigmas, visual_condition, audio_condition,
                       &features, error, error_size)) goto failed;
+    char cache_path[2048] = "";
+    if (cache_root && *cache_root) {
+        int flags[2] = {visual_condition, audio_condition};
+        uint64_t key = h3_wcache_hash(
+            features, (size_t)schedule->time_rows * TIME_INPUT * sizeof(float),
+            schedule->time_rows);
+        key = h3_wcache_hash(flags, sizeof(flags), key);
+        snprintf(cache_path, sizeof(cache_path), "%s/adaln-%016llx.bin",
+                 cache_root, (unsigned long long)key);
+        if (schedule_cache_load(schedule, gpu, cache_path)) {
+            if (getenv("H3_PROFILE"))
+                fprintf(stderr, "h3: AdaLN tables from cache %s\n",
+                        cache_path);
+            free(features);
+            if (progress)
+                progress((int)H3_DIT_BLOCKS, (int)H3_DIT_BLOCKS,
+                         progress_opaque);
+            return schedule;
+        }
+    }
     h3_gpu_tensor *time = time_embeddings(weights, gpu, schedule->time_rows,
                                            features, error, error_size);
     free(features);
@@ -487,6 +549,15 @@ block_failed:
     free_tensor(&final_w);
     free_tensor(&final_b);
     h3_gpu_tensor_free(time);
+    if (cache_path[0]) {
+        h3_wcache_part parts[H3_DIT_BLOCKS + 1];
+        int stored = h3_wcache_write(cache_path, parts,
+                                     schedule_cache_parts(schedule, parts));
+        if (getenv("H3_PROFILE"))
+            fprintf(stderr, "h3: AdaLN tables %s cache %s\n",
+                    stored ? "written to" : "could not be written to",
+                    cache_path);
+    }
     return schedule;
 
 failed:
