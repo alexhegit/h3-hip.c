@@ -49,11 +49,12 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 ## Key gotchas
 
 - `H3_HIP_DEVICE=N` or `HIP_VISIBLE_DEVICES=N` selects GPU on multi-GPU boxes. Do not run two weight-streaming T2VA jobs simultaneously.
-- W7900 (gfx1100, 45 GiB usable): DiT activations must stay in VRAM; a pinned-host fallback costs ~12× on SDPA and ~60× on INT8 GEMM. 1344×768 · 15 s dense is 5171 s, peak 40.0 GiB. The test box needs `HIP_VISIBLE_DEVICES=0` (iGPU present) and `H3_FFMPEG=/usr/bin/ffmpeg`. See `docs/perf-runs/W7900_2026-11-09.md`.
+- W7900 (gfx1100, 45 GiB usable): DiT activations must stay in VRAM; a pinned-host fallback costs ~12× on SDPA and ~60× on INT8 GEMM. 1344×768 · 15 s dense is 4624 s with a warm `H3_WEIGHT_CACHE_DIR`, peak 40.0 GiB. The test box needs `HIP_VISIBLE_DEVICES=0` (iGPU present) and `H3_FFMPEG=/usr/bin/ffmpeg`. See `docs/perf-runs/W7900_2026-11-09.md`.
 - Multi-task parallelism is **not supported** on a single GPU (shared kernel state). Use `HIP_VISIBLE_DEVICES` for multi-process isolation. See `docs/DESIGN_MULTI_TASK.md`.
 - `H3_INT8_MLP=1` enables INT8 DiT on all ISAs (default is INT8 on all platforms). Set `H3_INT8_MLP=0` to use BF16.
 - `H3_FP8_MLP=1` enables FP8 DiT on gfx942 only (experimental, uses hipBLASLt). FP8 supersedes INT8 when set.
 - `H3_FP8_CLIP=0.95` (default) weight quantization clip factor. Lower values improve PSNR (+1.2 dB at 0.95 vs 1.0).
+- `H3_WEIGHT_CACHE_DIR=/path` (opt-in) caches INT8 DiT core weights and AdaLN timestep tables per checkpoint fingerprint; the first run writes ~17 GB, later runs skip the BF16 / `adaln_proj` reads with identical output. Bypassed with `H3_FASTH3_LORA` or `H3_VSA`. Weight pread goes serial automatically on rotational disks (`H3_PREAD_THREADS` overrides).
 - `H3_INT8_VAE=1` enables INT8 Video VAE weights (69% VRAM reduction, ~9% slower).
 - `H3_GPU_SAMPLER=1` keeps latents on GPU during Euler denoise (large fox-s2
   win on MI300X; **not** a gfx1151 short-clip win in the 2026-09-03 retune).
