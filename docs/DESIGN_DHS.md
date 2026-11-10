@@ -292,7 +292,11 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 
 ## 11. 传输与通用约定
 
-- HTTP/1.1（keep-alive + chunked），无外部 HTTP 库依赖，C 侧为最小实现
+- HTTP/1.1，无外部 HTTP 库依赖，C 侧为最小实现。每个连接只处理一个
+  请求，响应一律带 `Connection: close`；每个连接一个线程，所以 SSE 流
+  或空闲连接不会挡住其他请求（含 `/cancel`）。读写超时 30 秒
+- 请求体按完整 JSON 解析：空白、键顺序不影响；字段类型不对返回 400，
+  不会悄悄退回默认值
 - 请求/响应体一律 `application/json; charset=utf-8`
 - 所有端点位于 `/v1` 前缀下
 - 进度推送走 SSE：`text/event-stream`，单向，只推不接收
@@ -327,30 +331,41 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 ```json
 {
   "protocol": "v1alpha",
-  "h3_version": "0.16.0-exp",
+  "h3_version": "0.19.0-exp",
   "ready": true,
   "unready_reason": null,
   "model_path": "/models/MiniMax-H3",
   "output_root": "/var/lib/h3d/outputs",
   "media_root": "/var/lib/h3d/media",
   "quota": { "limit_bytes": 21474836480, "used_bytes": 3221225472 },
+  "idle_release_sec": 0,
+  "adapters": { "fasth3": true },
   "workers": [
     { "gpu_index": 0, "arch": "gfx1151", "state": "idle",
-      "current_job": null, "queue_depth": 1 }
+      "current_job": null, "queue_depth": 1,
+      "cache": { "prepared_dit": true, "video_decoder": true,
+                 "embedding_bytes": 81928, "release_pending": false } }
   ],
   "limits": {
     "max_queued_jobs_per_client": 8,
     "prompt_max_chars": 8000,
+    "ref_images_max": 9, "ref_videos_max": 3, "ref_audios_max": 3,
     "ref_image_max_bytes": 52428800,
     "ref_video_max_bytes": 524288000,
     "ref_audio_max_bytes": 104857600
-  }
+  },
+  "geometry": { "multiple": 32, "max_pixels": 1032192,
+                "frames_min": 5, "frames_max": 362, "fps": 24 }
 }
 ```
 
 - `ready=false` 时 `unready_reason` 为人类可读原因（权重缺失、ROCm 未
   初始化等）。此时提交任务返回 503。
 - 插件应在会话早期调用一次，把 workers/limits 告知 agent（skill 可引用）。
+- `workers[].cache` 是生成缓存（prepared DiT、视频 VAE decoder、条件嵌入）
+  是否驻留；驻留时 daemon 占着显存和 pinned 内存，释放见 §13.7。
+  `idle_release_sec` 为 0 表示不按空闲时间自动释放。
+- `adapters.fasth3` 为 true 时可用 `options.fasth3`（见 §13.2）。
 
 ### 13.2 `POST /v1/jobs` — 提交任务
 
@@ -370,11 +385,16 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   "refs": {
     "images": ["/var/lib/h3d/media/a.png"],
     "video": null,
-    "audio": null
+    "audio": null,
+    "first_frame": null,
+    "last_frame": null
   },
   "options": {
     "finalize_partial_on_cancel": false,
+    "release_after": false,
+    "fasth3": false,
     "write_preview_frames": false,
+    "token_reduction": false,
     "extra_args": ["--token-reduction"]
   },
   "idempotency_key": "plugin 生成的可选去重键"
@@ -387,20 +407,35 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
 - `quality.preset=cinematic` 时默认 steps=20/layers=45/reuse=2、864×480；
   `custom` 时必须显式给 steps/layers/reuse；preset 与显式字段同给时，
   **显式字段覆盖 preset**
-- `size`/`duration` 合法组合由 daemon 按 h3-hip.c 已知的几何约束校验
-  （如长片仅验证过 864×480），不在白名单内返回 422 并附允许值列表
-- `mode=Ref2VA` 时 `refs.images` 必填（≥1），容量上限按官方规格：
-  **≤ 9 图 + 3 视频（各 2–15s）+ 3 音频 = 12 文件**；超限返回 400
-- `mode=FL2VA` 时 `refs.images` 为 0/1/2 张关键帧（首帧、末帧、首+末），
-  `refs.video`/`refs.audio` 不接受；T2VA/I2VA 作为 FL2VA 的
-  0/1 图特例走同一路径
+- `size`/`duration` 按 `h3_generate` 自身的限制在提交时校验：宽高为 32
+  的倍数、像素数不超过 768×1344、帧数对齐后在 5..362；`quality` 要求
+  steps 2..1000、layers 35..50、reuse 1..3。不满足返回 422，规则见
+  `/v1/info` 的 `geometry`。`seconds` 按 24 fps 四舍五入成帧数
+- `mode=Ref2VA` 时至少一个引用，容量上限按官方规格：
+  **≤ 9 图 + 3 视频（各 2–15s）+ 3 音频**；超限返回 400。`refs.video`
+  （或 `refs.videos`）与 `refs.audio` 可以是字符串或字符串数组；视频
+  带自身音轨，同 CLI `--ref-video`
+- T2VA/I2VA/FL2VA 走同一路径，关键帧二选一给法：`refs.first_frame` /
+  `refs.last_frame`（可只给末帧），或 `refs.images` 位置形式
+  `[首帧]`、`[首帧, 末帧]`。T2VA 不接受关键帧，I2VA 恰好一个首帧，
+  这三种模式不接受视频/音频引用
 - 提示词中引用文件须用官方 `<Picture X>` / `<Video X>` / `<Audio X>`
-  标签语法（见 skill 文档）；daemon 不解析提示词，仅做文件存在性校验
-- `refs.*` 路径必须在 media root 内，否则 400
-- `options.extra_args` 为逃生口，daemon 原样追加到 CLI 参数；含
-  已废弃或危险参数时返回 422 并指明拒绝项（如 `--frames-dir`、
-  `--output` 由 daemon 托管，拒绝透传）。M3 起 `--token-reduction` 应走
-  §13.6 语义字段，避免只靠 `extra_args`
+  标签语法（见 skill 文档）；daemon 不解析提示词
+- `refs.*` 必须是存在的普通文件，解析符号链接和 `..` 后仍在 media root
+  内，否则 400（`PATH_OUT_OF_ROOT` 或 `VALIDATION_ERROR`）
+- `options.extra_args` 是字符串数组（也接受一个空格分隔的字符串），只
+  接受 daemon 能逐任务设置的参数：`--token-reduction`、`--sol-attn`、
+  `--fbc`、`--vsa`、`--core-reuse N`、`--render-width N`、
+  `--render-height N`、`--fasth3-lora PATH`、`--taeh3 PATH`。其他参数
+  一律 422 `ARG_REJECTED`，不会被悄悄忽略。`options.token_reduction`
+  （§13.6）与 `--token-reduction` 等价，二者矛盾时 422；
+  `token_reduction_schedule` 是进程级环境变量，daemon 不支持，422
+- `options.fasth3=true` 使用 daemon 自己配置的 FastH3 dense 适配器
+  （`H3D_FASTH3_LORA`，缺省为 `tools/download_fasth3_lora.sh` 的下载位置），
+  客户端不需要知道服务器路径；与 `--fasth3-lora PATH` 二选一，同给 422；
+  daemon 没有适配器时 422（`/v1/info` 的 `adapters.fasth3` 为 false）。
+  输出与 CLI `--fasth3-lora` 逐字节相同
+- `options.release_after=true` 见 §13.7
 - `idempotency_key` 有效期内（建议 24h）重复提交返回原 job，不重复入队
 
 响应 202：
@@ -463,6 +498,10 @@ Ref2VA 两份提示词写作指南（HF MiniMaxAI/MiniMax-H3 docs/）。
   MP4 放入 `result.mp4_path`（`result.partial=true`）
 - 已终态 → 返回 409
 - 响应 200：终态 job 对象（同 13.3）
+- 运行中的任务在下一个进度回调处停下；去噪阶段每一步开始前检查，所以最多
+  再跑完当前一步（R9700 864×480 · 5 s dense 约 12 s，CPU 与 GPU Euler
+  采样器相同）。daemon 收到 SIGTERM/SIGINT 时先取消运行中的任务、关闭
+  监听端口，再退出
 
 ### 13.5 `GET /v1/jobs/{job_id}/events` — SSE 进度流
 
@@ -489,7 +528,10 @@ data: {"job_id":"k3v9a2x1","result":{...同13.3...}}
 ```
 
 - 终态事件类型即状态名：`done` / `failed` / `cancelled` / `timeout`，
-  携带完整 job 对象；此后服务端关闭流
+  携带完整 job 对象（发送时生成，长提示词也不截断）；此后服务端结束
+  chunked 流并关闭连接。每个事件以空行结束，标准 SSE 解析器可直接用
+- 取消仍在排队的任务立即进入 `cancelled`；运行中的任务先 `cancelling`，
+  在下一个进度回调时停下
 - 断线重连：客户端带 `Last-Event-ID` 头续传，daemon 保留每 job 最近
   50 条事件 1 小时（MVP 允许直接从头重放当前状态）
 - 心跳：每 15 秒 `event: ping`，防代理断链
@@ -547,6 +589,26 @@ data: {"job_id":"k3v9a2x1","result":{...同13.3...}}
 
 开启预览时，偶发 `event: preview`（路径必须在 output root 内，频率与分辨率由 daemon 限额）。插件不得把每一 DiT step 都当附件发出。
 
+### 13.7 `POST /v1/cache/release` — 释放生成缓存（附加，不升协议号）
+
+daemon 默认在任务之间保留生成缓存，同一 prompt 重跑快一倍，但期间一直
+占着显存和 pinned 内存。与其他 GPU 程序（例如 ComfyUI 的其他模型节点）
+共卡时，客户端用下面三种方式之一把它还回去：
+
+- `POST /v1/cache/release`：空闲 worker 在 100 ms 内清空缓存，daemon
+  等它完成后返回 200 `{"released":true,"workers":[…]}`（`workers` 同
+  §13.1）。worker 忙时 10 秒后返回 202 `{"released":false,…}`，缓存在
+  队列跑空后释放，`workers[].cache.release_pending` 为 true。
+- 提交时 `options.release_after=true`：该任务结束后、状态变为终态之前
+  清空缓存，客户端看到 `done` 时内存已经还回。
+- `H3D_IDLE_RELEASE_SEC=N`：最后一个任务结束 N 秒后自动释放（默认 0，
+  不自动释放）。
+
+释放不改变输出：下一个任务重新准备 DiT（cache miss），md5 与 CLI 相同。
+R9700 实测（864×480 · 5 s FastH3）：缓存驻留 9.5 GiB 显存、19 GiB
+常驻内存；释放后 0.55 GiB / 0.89 GiB；首个任务 104.5 s，命中缓存的
+重跑 61.6 s。
+
 ## 14. 任务生命周期
 
 ```
@@ -593,7 +655,7 @@ queued → preparing → running → finalizing → done
 | 404 | JOB_NOT_FOUND | job_id 不存在 |
 | 404 | JOB_LOST_AFTER_RESTART | daemon 重启后丢失 |
 | 409 | ALREADY_TERMINAL | 对终态 job 再取消 |
-| 422 | UNSUPPORTED_COMBINATION | 几何/模式/preset 组合不在白名单，details 附允许值 |
+| 422 | UNSUPPORTED_COMBINATION | 几何或 quality 超出 `h3_generate` 的限制，message 写明规则 |
 | 422 | ARG_REJECTED | extra_args 含被拒参数，details 指明 |
 | 426 | PROTOCOL_MISMATCH | 协议版本不符，body 附 `server_protocol`/`supported_protocols` |
 | 429 | QUEUE_FULL | 该客户端排队任务超限（见 limits） |
@@ -616,6 +678,8 @@ queued → preparing → running → finalizing → done
 | `H3D_LOG_LEVEL` | `INFO` | DEBUG 开关 |
 | `H3D_LOG_DIR` | `~/.h3d/logs` | 日志目录，10MB×5 轮转 |
 | `H3D_GPUS` | `0` | worker 池 GPU 索引列表（逗号分隔），为后续多卡预留 |
+| `H3D_FASTH3_LORA` | `${H3_FASTH3_LORA_DIR:-./FastH3-4-step-LoRA}/dense-datafree/adapter_model.safetensors` | `options.fasth3` 用的适配器文件；不存在时 `adapters.fasth3=false` |
+| `H3D_IDLE_RELEASE_SEC` | `0` | 最后一个任务结束多少秒后释放生成缓存；0 不自动释放（§13.7） |
 | `H3D_CONFIG_FILE` | （无） | 可选配置文件路径，优先级高于环境变量 |
 
 ## 18. 明确不做与验收
@@ -633,8 +697,10 @@ queued → preparing → running → finalizing → done
 
 ### 18.2 验收
 
-1. **一致性 gate**：daemon 路径跑 fox-s2，产物 md5 与 CLI 路径一致
-   （并入现有 halo-regression；MI210/MI300X 可选扩展）
+1. **一致性 gate**：daemon 路径跑 fox-s2，产物 md5 与 CLI 路径一致。
+   已实现为 `make HIP_ARCH=… serve-regression`（`tools/serve_regression.sh`）：
+   同一构建先跑 CLI，再让 daemon 跑 cache miss 与 cache hit 两次，任何 ISA
+   都以本机 CLI 为基准
 2. **fake daemon 对拍**：插件测试套件在 fake 与真 daemon 上全部通过
 3. **崩溃演练**：kill -9 daemon 后重启，在制任务按 §14 语义呈现，
    队列恢复可用

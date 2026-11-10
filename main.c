@@ -38,7 +38,7 @@ static void usage(const char *program) {
         "      --token-reduction  Pair video tokens in middle DiT blocks\n"
         "                         (faster; visible quality loss — off by default)\n"
         "      --sol-attn         Lossy sparse SDPA for long T2VA (off by\n"
-        "                         default). Supports gfx90a/gfx942/gfx1151.\n"
+        "                         default). Supports gfx90a/gfx942/gfx1151/gfx1201.\n"
         "                         See docs/SOL_ATTN.md\n"
         "      --fbc              First-block cache: skip later DiT blocks\n"
         "                         when block 0's residual is stable (lossy,\n"
@@ -46,6 +46,8 @@ static void usage(const char *program) {
         "      --fasth3-lora PATH Merge a FastH3 dense 4-step LoRA at load\n"
         "                         (off by default). Forces timesteps\n"
         "                         999,749,500,250 and --reuse 1.\n"
+        "      --pika-lora PATH   Pika FL2VA LoRA (6-step renoise, --reuse 1).\n"
+        "      --pika-ref-lora PATH  Pika Ref2VA LoRA (with --ref-image).\n"
         "      --taeh3 PATH       Decode video with the TAEH3 tiny decoder\n"
         "                         (off by default). Softer preview, same\n"
         "                         latents. Audio VAE is unchanged.\n"
@@ -267,6 +269,7 @@ int main(int argc, char **argv) {
            OPT_SOL_ATTN,
            OPT_FBC,
            OPT_FASTH3_LORA,
+           OPT_PIKA_LORA, OPT_PIKA_REF_LORA,
            OPT_TAEH3,
            OPT_VSA,
            OPT_SSD_STREAMING,
@@ -305,6 +308,8 @@ int main(int argc, char **argv) {
         {"sol-attn", no_argument, NULL, OPT_SOL_ATTN},
         {"fbc", no_argument, NULL, OPT_FBC},
         {"fasth3-lora", required_argument, NULL, OPT_FASTH3_LORA},
+        {"pika-lora", required_argument, NULL, OPT_PIKA_LORA},
+        {"pika-ref-lora", required_argument, NULL, OPT_PIKA_REF_LORA},
         {"taeh3", required_argument, NULL, OPT_TAEH3},
         {"vsa", no_argument, NULL, OPT_VSA},
         {"ssd-streaming", no_argument, NULL, OPT_SSD_STREAMING},
@@ -399,6 +404,8 @@ int main(int argc, char **argv) {
             case OPT_SOL_ATTN: params.sol_attn = 1; break;
             case OPT_FBC: params.fbc = 1; break;
             case OPT_FASTH3_LORA: params.fasth3_lora = optarg; break;
+            case OPT_PIKA_LORA: params.pika_lora = optarg; break;
+            case OPT_PIKA_REF_LORA: params.pika_ref_lora = optarg; break;
             case OPT_TAEH3: params.taeh3 = optarg; break;
             case OPT_VSA: params.vsa = 1; break;
             case OPT_SSD_STREAMING: params.ssd_streaming = 1; break;

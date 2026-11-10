@@ -9,10 +9,19 @@ the Makefile does **not** probe the GPU.
 | **MI210** (CDNA2, wave64) | `gfx90a` | INT8 weights (hipBLAS), BF16 activations | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 | **MI300X** (CDNA3, wave64) | `gfx942` | INT8 weights (hipBLAS), BF16 activations | MFMA flash (BF16 QK, FP16 PV, FP32 accum) |
 
-Timed scoreboard SKUs are Strix Halo, MI210, and MI300X. MI250 / MI250X share
+Timed scoreboard SKUs are Strix Halo, MI210, MI300X, and the Radeon AI PRO
+R9700 (`gfx1201`, build with `make HIP_ARCH=gfx1201`). MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.16.0** runs `--vsa` on Strix Halo through a wave32 rocWMMA
+Tagged **v0.19.0** adds a ComfyUI node that renders through `h3 --serve`
+([ComfyUI](ComfyUI.md)) and the daemon changes behind it, and is the first
+public release with the R9700 work. v0.18.0 added the R9700. 1344×768 on its 32 GiB needs
+`H3_INT8_HOST=1`; 1344×768 · 15 s dense is **2787.6 s**. Every case is in
+[`docs/PERFORMANCE.md`](../PERFORMANCE.md). v0.17.0 adds opt-in Pika H3 Flex. It stays off unless
+`--pika-lora` or `--pika-ref-lora` is set. On one MI300X, 832×480 · 5 s
+is **34.97 s**, or **28.68 s** with `--taeh3`. Commands and the full
+tables are in [`docs/PIKA.md`](../PIKA.md). v0.16.0 runs `--vsa` on
+Strix Halo through a wave32 rocWMMA
 fine kernel, and TAEH3 conv runs as a tiled FP32 kernel. On gfx1151 the
 832×480 · 5 s INT8 fixture is dense
 **3477.57 s** and VSA+TAEH3 **226.69 s**
@@ -35,7 +44,7 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.16.0
+git checkout v0.19.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
@@ -85,6 +94,21 @@ export H3_MODEL=$PWD/MiniMax-H3
 ./tools/download_fasth3_lora.sh --dir ./FastH3-4-step-LoRA   # optional 4-step LoRA, ~1.4 GiB
 ./tools/download_fasth3_lora.sh --vsa --dir ./FastH3-4-step-LoRA   # adds the VSA adapter
 ./tools/download_taeh3.sh --dir ./FastH3-4-step-LoRA          # optional tiny video decoder
+./tools/download_pika_lora.sh --dir ./Pika-H3-Flex            # optional Pika FL2VA LoRA, ~2.77 GB
+./tools/download_pika_lora.sh --both --dir ./Pika-H3-Flex     # also the Ref2VA adapter
+```
+
+Pika H3 Flex keeps this MiniMax-H3 tree and adds a rank-128 LoRA plus a
+6-step renoise sampler. Usage, MI300X timings, and the comparison still
+are in [`docs/PIKA.md`](../PIKA.md).
+
+```bash
+./h3 --profile -d "$H3_MODEL" \
+  --pika-lora ./Pika-H3-Flex/fl2va/adapter.safetensors \
+  -p "A red fox walks through fresh snow." \
+  --width 832 --height 480 --seconds 5 \
+  --layers 50 --reuse 1 --seed 42 \
+  -o outputs/pika.mp4
 ```
 
 Dtypes: [T2VA pipeline](T2VA-pipeline.md). Checkpoint stays BF16/F32; INT8 is
@@ -141,7 +165,9 @@ Loopback HTTP for the DSH plugin (protocol v1alpha, not stable):
 ```
 
 Env: `H3D_BIND`, `H3D_PORT`, `H3D_MODEL_PATH`, `H3D_OUTPUT_ROOT`,
-`H3D_MEDIA_ROOT`, `H3D_GPUS`. Spec: [`docs/DESIGN_DHS.md`](../DESIGN_DHS.md).
+`H3D_MEDIA_ROOT`, `H3D_GPUS`, `H3D_FASTH3_LORA`, `H3D_IDLE_RELEASE_SEC`.
+Spec: [`docs/DESIGN_DHS.md`](../DESIGN_DHS.md). To drive it from ComfyUI,
+see [ComfyUI](ComfyUI.md).
 
 ## Optional knobs
 

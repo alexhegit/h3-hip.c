@@ -1,7 +1,7 @@
 # Performance
 
 Headline numbers. Timed SKUs: **Strix Halo (gfx1151)**, **MI210 (gfx90a)**,
-**MI300X (gfx942)**. Build with an explicit `HIP_ARCH`
+**MI300X (gfx942)**, **Radeon AI PRO R9700 (gfx1201)**. Build with an explicit `HIP_ARCH`
 ([Getting started](wiki/Getting-started.md)). MI250 / MI250X share `gfx90a`
 with MI210 but are not these numbers. Wall time moves with page-cache state. **Process E2E** is
 `/usr/bin/time` until `h3: wrote` the muxed MP4. **DiT total** is
@@ -14,9 +14,105 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.16.0 (2026-10-09)
+## Current release — v0.19.0 (2026-11-10)
 
-`h3 --info` prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
+`h3 --info` prints `h3-hip 0.19.0`. First public release with the R9700
+work; adds the ComfyUI node (`integrations/comfyui/`) and the `--serve`
+changes behind it. The R9700 speedups since v0.18.0 below kept the
+checked MP4s identical. The daemon no longer carries Sol-Attn or a LoRA
+path from one job into the next. The R9700 rows below and the ComfyUI
+comparison are the numbers for this tag; only gfx1201 was run.
+
+## v0.18.0 (2026-11-08)
+
+`h3 --info` prints `h3-hip 0.18.0`. Adds the Radeon AI PRO R9700
+(`make HIP_ARCH=gfx1201`). On its 32 GiB, DiT and VAE tensors now stay in
+VRAM, the INT8 int32 scratch is row-chunked, and 1344×768 runs with
+`H3_INT8_HOST=1`. Grouped INT8 no longer falls back to the slow `r64`
+kernel above 65535 tokens, so 1344×768 · 15 s outputs differ from v0.17.0
+on every ISA. Only gfx1201 was run for this tag; gfx1151, gfx90a and gfx942
+were compile-checked ([`KNOWN_ISSUES.md`](KNOWN_ISSUES.md), item X). The
+v0.17.0 Pika and MI210 numbers below are unchanged.
+
+### Radeon AI PRO R9700 (gfx1201), 2026-11-06
+
+One R9700 (RDNA4, 64 CUs, 29.86 GiB), `make HIP_ARCH=gfx1201`, default INT8
+DiT, one job at a time. Every cell is R9700 process E2E in seconds with the
+MI300X ledger number in parentheses. A bare number means MI300X has no
+cell; a dash means the case is not in the matrix. Steps / layers / reuse per
+canvas follow the MI300X matrix: 50 / 50 / 1 on the 5 s canvases, 20 / 45 / 2
+on the 15 s canvases; FastH3, VSA and Pika force their own schedule with
+50 layers, `--reuse 1`. Denoise / SDPA / linear splits, peaks, md5s and
+PSNR / SSIM versus dense:
+[`perf-runs/R9700_2026-11-06.md`](perf-runs/R9700_2026-11-06.md).
+
+| path | 512×512 · 22 frames | 832×480 · 5 s | 864×480 · 15 s | 1344×768 · 5 s ¹ | 1344×768 · 15 s ¹ |
+|---|---:|---:|---:|---:|---:|
+| `bench/fox-s2.sh` (warm) | 35.9 (10.6) | — | — | — | — |
+| `bench/fox-fast.sh` | 46.1 (9.8) | — | — | — | — |
+| dense ² | — | **470.9** (166.9) | **600.9** (213.3) | **2204.7** (668.2) | **2787.6** (947.0) |
+| `--token-reduction` | — | 357.7 (127.6) | 433.1 (149.0) | 1556.3 (439.6) | 1745.7 (611.7) ² |
+| TR, `--reuse 3` (`fox-15s-fast.sh`) | — | — | 342.3 (117.9) | — | — |
+| TR schedule (`fox-15s-sched.sh`) | — | — | 337.7 | — | — |
+| `--fbc` | — | 148.6 (53.3) | 399.6 (136.4) | 491.3 | 1643.2 ² |
+| `--sol-attn` | — | 423.2 (145.6) | 478.2 (216.5) ³ | 1743.2 | 1913.9 (719.2) ² |
+| FastH3 4-step | — | 101.5 (30.1) | 419.3 (108.7) | 278.7 (96.5) | 1254.1 ² |
+| FastH3 + TAEH3 | — | 78.9 (27.7) | 368.0 (89.1) | — | — |
+| VSA | — | 104.8 (32.6) | 282.1 (95.1) ⁴ | — | — |
+| VSA + TAEH3 | — | 76.8 (26.0) | 225.6 (76.7) ⁴ | 188.0 (62.2) | does not fit ⁵ |
+| Pika 6-step | — | 115.7 (35.0) | 577.1 (137.5) | 371.7 (120.1) | 1768.4 ² |
+| Pika + TAEH3 | — | 97.2 (28.7) | 525.3 (119.5) | 316.9 (93.5) | — |
+
+¹ `H3_INT8_HOST=1`; resident INT8 does not fit at 1344×768.
+² Measured with the row-chunked grouped INT8 change. The other cells predate
+it; their outputs are bit-identical with it and only their linear time
+drops (dense: −1 % to −8 % E2E). At 1344×768 · 15 s the change also replaces
+a silent fallback above 65535 rows, so those outputs differ.
+³ MI300X cell is the older-binary A/B in [`SOL_ATTN.md`](SOL_ATTN.md).
+⁴ Needs `H3_INT8_HOST=1` on this canvas too.
+⁵ VSA tile buffers need 11.63 GiB on top of the 24 GiB DiT working set;
+see [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) KI-006.
+
+In v0.19.0: overlapped `H3_INT8_HOST` copies, a leaner
+gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
+**1985.1 s** (from 2204.7 s) with the same MP4, and the video VAE peak from
+9.5 to 5.3 GiB. BF16 VAE activations then cut the 832×480 · 5 s video VAE
+from 21.7 to 16.9 s, again with the same MP4
+([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
+
+Against ComfyUI's native MiniMax-H3 on the same card (same model, steps and
+layers, INT8 main linears, fresh processes; h3-hip after VAE BF16
+activations), h3-hip denoises 1.39× faster at 864×480 · 20 steps and
+finishes the job 1.34× faster; the 4-step turbo rows are 1.48× and 1.27×
+whole job, with caveats
+([`perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md`](perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md)).
+
+Dense is 2.8–3.3× MI300X. fox-s2 and fox-fast are bound by reading ~98 GiB
+of weights on a 59 GiB host. The published RTX 5090 numbers for the
+1344×768 · 5 s job are 1045.4 s baseline, 708.3 s with Sol-Attn, and
+231.2 s full opt.
+
+## v0.17.0 (2026-11-03)
+
+`h3 --info` on that tag prints `h3-hip 0.17.0`. Opt-in `--pika-lora` and
+`--pika-ref-lora` merge a rank-128 LoRA and run six renoise steps.
+They stay off unless set, and they are not part of the `bench/`
+scoreboard. Measured on one MI300X (gfx942), warm cache, default INT8:
+832×480 · 5 s is **34.97 s** (28.68 s with `--taeh3`); 1344×768 · 5 s
+Prompt 1 is **120.10 s** (93.54 s with `--taeh3`). Commands, the other
+canvases, and the comparison still are in [`PIKA.md`](PIKA.md). The
+v0.16.0 Halo tables below are unchanged.
+
+MI210 (gfx90a) was retimed on this tree on 2026-11-05 (`9dc75b1`).
+Warm fox-s2 / fox-fast are **10.76 s** / **18.97 s**. 864×480 · 15 s
+dense is **698 s**, `fox-15s.sh` **476 s**. 1344×768 · 15 s is dense
+**3522 s**, token reduction **2158 s**, Sol-Attn **2837 s**. Ledger:
+[`perf-runs/MI210_2026-11-05.md`](perf-runs/MI210_2026-11-05.md). The
+v0.13 table below keeps the 2026-09-12 MI210 cells.
+
+## v0.16.0 (2026-10-09)
+
+`h3 --info` on that tag prints `h3-hip 0.16.0`. Build with `make HIP_ARCH=gfx1151`,
 `gfx90a`, or `gfx942`. Three opt-in FastH3 paths stay off unless the
 flag is set: `--fasth3-lora` (dense 4-step LoRA), `--taeh3` (tiny video
 decoder), and `--vsa` (sparse video attention, requires the
@@ -191,6 +287,28 @@ other. No PSNR gate was applied.
 Ledger:
 [`perf-runs/MI300X_FASTH3_2026-10-05.md`](perf-runs/MI300X_FASTH3_2026-10-05.md).
 
+### Pika H3 Flex (`--pika-lora`)
+
+Off by default, and not part of the `bench/` scoreboard. How to
+download the adapter and run it is [`PIKA.md`](PIKA.md). The base
+checkpoint stays MiniMax-H3. The flag merges the rank-128 FL2VA LoRA
+and replaces Euler with six renoise steps at 1000, 750, 500, 250, 100,
+40. Layers stay 50 and `--reuse` stays 1. It does not combine with
+`--fasth3-lora`, `--token-reduction`, `--sol-attn`, `--fbc`, `--vsa`,
+SSD streaming, or core reuse above 1. `--pika-ref-lora` is the same
+schedule on the Ref2VA transformer.
+
+One MI300X (gfx942), 2026-11-02, warm cache, default INT8, GPU Euler
+sampler. 832×480 · 5 s, seed 42: Pika process E2E **34.97 s** (denoise
+16.54 s) and Pika+TAEH3 **28.68 s**, next to FastH3 **30.62 s** on that
+machine the same day. 1344×768 · 5 s Prompt 1, seed 0: Pika **120.1 s**,
+Pika+TAEH3 **93.5 s**, denoise 75.3 s for six steps (12.6 s/step).
+864×480 · 15 s fox prompt, 50 layers, reuse 1, no token reduction:
+Pika **137.5 s**, Pika+TAEH3 **119.5 s**. TAEH3 against the full VAE on
+the same Pika latents is 32.01 dB / 0.944 (480p) and 31.58 dB / 0.937
+(768p). Tables and the comparison still:
+[`PIKA.md`](PIKA.md).
+
 On gfx1151 the same 832×480 · 5 s INT8 fixture is **350.38 s** (dense
 adapter) and **299.34 s** with `--taeh3`, against that machine's 50-step
 dense **3477.57 s**. The 864×480 · 15 s fox canvas, 50 layers and reuse 1,
@@ -274,7 +392,8 @@ Build with `make HIP_ARCH=gfx1151`, `gfx90a`, or `gfx942`.
 v0.13.0 vs v0.12.0: quality-path CDNA flash SDPA (K/V prefetch + P-tile
 LDS pad; 864×480 · 15 s dense **215 → 199 s** on MI300X) and Sol-Attn
 past 64k tokens (1344×768 · 15 s). Short-clip process E2E is unchanged
-at the noise floor. Halo / MI210 15 s rows were not re-timed.
+at the noise floor. Halo 15 s rows were not re-timed. MI210 was
+retimed on 2026-11-05; the cells below stay the 2026-09-12 numbers.
 
 | Preset | Strix Halo (gfx1151) | MI210 (gfx90a) | MI300X (gfx942) |
 |--------|---------------------:|---------------:|----------------:|

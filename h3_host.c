@@ -72,6 +72,44 @@ int h3_adapt_canvas(int width, int height, int *adapted_w, int *adapted_h) {
     return 1;
 }
 
+/* Python 3 round() for a non-negative finite value: ties go to even. */
+static int h3_python_round_nonneg(double value) {
+    double whole = floor(value);
+    double frac = value - whole;
+    long long rounded = (long long)whole;
+    if (frac > 0.5 || (frac == 0.5 && (rounded & 1LL))) rounded++;
+    if (rounded > INT_MAX) rounded = INT_MAX;
+    return (int)rounded;
+}
+
+int h3_keyframe_center_crop(int source_width, int source_height,
+                            int canvas_width, int canvas_height,
+                            int *crop_width, int *crop_height,
+                            int *left, int *top) {
+    if (source_width < 1 || source_height < 1 ||
+        canvas_width < 1 || canvas_height < 1 ||
+        !crop_width || !crop_height || !left || !top) return 0;
+    double aspect = (double)canvas_width / (double)canvas_height;
+    int cropped_w;
+    int cropped_h;
+    if ((double)source_width / (double)source_height > aspect) {
+        cropped_h = source_height;
+        cropped_w = h3_python_round_nonneg((double)source_height * aspect);
+        if (cropped_w < 1) cropped_w = 1;
+        if (cropped_w > source_width) cropped_w = source_width;
+    } else {
+        cropped_w = source_width;
+        cropped_h = h3_python_round_nonneg((double)source_width / aspect);
+        if (cropped_h < 1) cropped_h = 1;
+        if (cropped_h > source_height) cropped_h = source_height;
+    }
+    *crop_width = cropped_w;
+    *crop_height = cropped_h;
+    *left = (source_width - cropped_w) / 2;
+    *top = (source_height - cropped_h) / 2;
+    return 1;
+}
+
 int h3_reference_image_canvas(int width, int height,
                               int target_width, int target_height,
                               int max_short_edge,
@@ -182,6 +220,23 @@ int h3_fasth3_schedule_build(h3_sigma_schedule *schedule) {
     }
     schedule->video[4] = 0.0f;
     schedule->audio[4] = 0.0f;
+    return 1;
+}
+
+int h3_pika_schedule_build(h3_sigma_schedule *schedule) {
+    static const int knots[7] = {1000, 750, 500, 250, 100, 40, 0};
+    if (!schedule) return 0;
+    memset(schedule, 0, sizeof(*schedule));
+    schedule->steps = 6;
+    for (int index = 0; index < 7; index++) {
+        double base = (double)knots[index] / 1000.0;
+        double video = H3_VIDEO_SIGMA_SHIFT * base /
+            (1.0 + (H3_VIDEO_SIGMA_SHIFT - 1.0) * base);
+        double audio = H3_AUDIO_SIGMA_SHIFT * base /
+            (1.0 + (H3_AUDIO_SIGMA_SHIFT - 1.0) * base);
+        schedule->video[index] = (float)video;
+        schedule->audio[index] = (float)audio;
+    }
     return 1;
 }
 
@@ -684,5 +739,21 @@ int h3_euler_velocity_step(float *sample, const float *velocity, size_t count,
     float delta = sigma - sigma_next;
     for (size_t index = 0; index < count; index++)
         sample[index] += delta * velocity[index];
+    return 1;
+}
+
+int h3_renoise_velocity_step(float *sample, const float *velocity,
+                             const float *noise, size_t count,
+                             float sigma, float sigma_next) {
+    if (!sample || !velocity || !count || !isfinite(sigma) ||
+        !isfinite(sigma_next) || sigma < 0.0f || sigma_next < 0.0f ||
+        sigma_next > sigma) return 0;
+    if (sigma_next != 0.0f && !noise) return 0;
+    for (size_t index = 0; index < count; index++) {
+        float clean = sample[index] + sigma * velocity[index];
+        sample[index] = sigma_next == 0.0f
+            ? clean
+            : (1.0f - sigma_next) * clean + sigma_next * noise[index];
+    }
     return 1;
 }

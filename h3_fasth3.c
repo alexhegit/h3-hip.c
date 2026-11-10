@@ -151,8 +151,31 @@ static void mark_tensor(const h3_st_tensor *tensor) {
     if (index < fasth3.header.tensor_count) fasth3.used[index] = 1;
 }
 
-static const h3_st_tensor *find_key(const char *key) {
+static const h3_st_tensor *find_named(const char *key) {
     const h3_st_tensor *tensor = h3_st_find(&fasth3.header, key);
+    char prefixed[512];
+    if (!tensor &&
+        snprintf(prefixed, sizeof(prefixed), "transformer.%s", key) <
+            (int)sizeof(prefixed))
+        tensor = h3_st_find(&fasth3.header, prefixed);
+    if (!tensor &&
+        snprintf(prefixed, sizeof(prefixed), "diffusion_model.%s", key) <
+            (int)sizeof(prefixed))
+        tensor = h3_st_find(&fasth3.header, prefixed);
+    return tensor;
+}
+
+static const h3_st_tensor *find_key(const char *key) {
+    const h3_st_tensor *tensor = find_named(key);
+    char peft[512];
+    /* PEFT stores the adapter name: lora_A.default.weight. */
+    if (!tensor && key && ends_with(key, ".weight")) {
+        int stem = (int)strlen(key) - (int)strlen(".weight");
+        if (stem > 0 &&
+            snprintf(peft, sizeof(peft), "%.*s.default.weight", stem, key) <
+                (int)sizeof(peft))
+            tensor = find_named(peft);
+    }
     if (tensor) mark_tensor(tensor);
     return tensor;
 }
@@ -162,6 +185,24 @@ static int shape_is(const h3_st_tensor *tensor, uint32_t rows, uint32_t cols) {
     if (cols == 1 && tensor->ndim == 1 && tensor->shape[0] == rows) return 1;
     return tensor->ndim == 2 && tensor->shape[0] == rows &&
            tensor->shape[1] == cols;
+}
+
+static int factor_shape(const h3_st_tensor *tensor, uint32_t rows,
+                        uint32_t cols) {
+    if (!tensor ||
+        (tensor->dtype != H3_DTYPE_BF16 && tensor->dtype != H3_DTYPE_F32))
+        return 0;
+    if (cols == 1 && tensor->ndim == 1 && tensor->shape[0] == rows) return 1;
+    return tensor->ndim == 2 && tensor->shape[0] == rows &&
+           tensor->shape[1] == cols;
+}
+
+static uint16_t fasth3_f32_bf16(float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    uint32_t lsb = (bits >> 16) & 1u;
+    bits += 0x7fffu + lsb;
+    return (uint16_t)(bits >> 16);
 }
 
 static uint16_t *read_bf16(const h3_st_tensor *tensor, char *error,
@@ -182,6 +223,36 @@ static uint16_t *read_bf16(const h3_st_tensor *tensor, char *error,
         free(data);
         return NULL;
     }
+    return data;
+}
+
+static uint16_t *read_as_bf16(const h3_st_tensor *tensor, char *error,
+                              size_t error_size) {
+    uint64_t elements;
+    if (tensor->dtype == H3_DTYPE_BF16) return read_bf16(tensor, error, error_size);
+    if (tensor->dtype != H3_DTYPE_F32) {
+        fasth3_fail(error, error_size, "FastH3 factor dtype is not BF16 or F32");
+        return NULL;
+    }
+    elements = h3_st_tensor_elements(tensor);
+    if (!elements || elements > SIZE_MAX / sizeof(float)) {
+        fasth3_fail(error, error_size, "FastH3 tensor is too large");
+        return NULL;
+    }
+    float *wide = malloc((size_t)elements * sizeof(float));
+    uint16_t *data = malloc((size_t)elements * sizeof(uint16_t));
+    if (!wide || !data ||
+        !h3_st_read_data(&fasth3.header, tensor, wide,
+                         (size_t)elements * sizeof(float), error, error_size)) {
+        free(wide);
+        free(data);
+        if (error && error_size && !error[0])
+            fasth3_fail(error, error_size, "out of memory reading FastH3 tensor");
+        return NULL;
+    }
+    for (uint64_t index = 0; index < elements; index++)
+        data[index] = fasth3_f32_bf16(wide[index]);
+    free(wide);
     return data;
 }
 
@@ -216,10 +287,26 @@ static int resolve_adapter_path(const char *input, char *output, size_t cap,
     return 1;
 }
 
+static void close_adapter(void) {
+    h3_st_free_header(&fasth3.header);
+    memset(&fasth3.header, 0, sizeof(fasth3.header));
+    free(fasth3.used);
+    fasth3.used = NULL;
+    fasth3.open = 0;
+    fasth3.failed = 0;
+    fasth3.path[0] = '\0';
+}
+
 static int open_adapter(char *error, size_t error_size) {
     const char *env = getenv("H3_FASTH3_LORA");
     const char *strength_env = getenv("H3_FASTH3_STRENGTH");
     char path[1024];
+    /* h3 --serve runs many jobs in one process; a job may name another
+     * adapter (FastH3 dense, the VSA gates, Pika) than the one held open. */
+    if ((fasth3.open || fasth3.failed) && env &&
+        resolve_adapter_path(env, path, sizeof(path), NULL, 0) &&
+        strcmp(path, fasth3.path) != 0)
+        close_adapter();
     if (fasth3.open) return 1;
     if (fasth3.failed) {
         fasth3_fail(error, error_size, "FastH3 LoRA already failed to open");
@@ -235,8 +322,12 @@ static int open_adapter(char *error, size_t error_size) {
         }
     }
     if (!env || !resolve_adapter_path(env, path, sizeof(path), error,
-                                      error_size) ||
-        !h3_st_read_header(path, &fasth3.header, error, error_size)) {
+                                      error_size)) {
+        fasth3.failed = 1;
+        return 0;
+    }
+    snprintf(fasth3.path, sizeof(fasth3.path), "%s", path);
+    if (!h3_st_read_header(path, &fasth3.header, error, error_size)) {
         fasth3.failed = 1;
         return 0;
     }
@@ -247,12 +338,18 @@ static int open_adapter(char *error, size_t error_size) {
         fasth3.failed = 1;
         return 0;
     }
-    snprintf(fasth3.path, sizeof(fasth3.path), "%s", path);
     fasth3.open = 1;
-    fprintf(stderr,
-            "h3: FastH3 LoRA %s strength %.3f "
-            "(W += B @ A, then .diff; 4 steps 999/749/500/250)\n",
-            fasth3.path, fasth3.strength);
+    if (getenv("H3_PIKA") && strcmp(getenv("H3_PIKA"), "0") != 0) {
+        fprintf(stderr,
+                "h3: Pika H3 Flex LoRA %s strength %.3f "
+                "(FP32 factors stored as BF16; W += B @ A; 6-step renoise)\n",
+                fasth3.path, fasth3.strength);
+    } else {
+        fprintf(stderr,
+                "h3: FastH3 LoRA %s strength %.3f "
+                "(W += B @ A, then .diff; 4 steps 999/749/500/250)\n",
+                fasth3.path, fasth3.strength);
+    }
     return 1;
 }
 
@@ -290,11 +387,11 @@ static int load_factor(h3_gpu *gpu, const char *key, uint32_t rows,
         snprintf(error, error_size, "FastH3 adapter is missing %s", key);
         return 0;
     }
-    if (!shape_is(tensor, rows, cols)) {
+    if (!factor_shape(tensor, rows, cols)) {
         snprintf(error, error_size, "FastH3 %s has the wrong shape", key);
         return 0;
     }
-    host = read_bf16(tensor, error, error_size);
+    host = read_as_bf16(tensor, error, error_size);
     if (!host) return 0;
     *out = upload_bf16(gpu, host, (size_t)rows * (size_t)cols, error,
                        error_size);
@@ -308,7 +405,7 @@ static int apply_gemm(h3_gpu *gpu, h3_gpu_tensor *weight, size_t weight_elem,
                       size_t error_size) {
     h3_gpu_tensor *a = NULL;
     h3_gpu_tensor *b = NULL;
-    const h3_st_tensor *a_tensor = h3_st_find(&fasth3.header, a_key);
+    const h3_st_tensor *a_tensor = find_key(a_key);
     uint32_t rank;
     int ok = 0;
     if (!a_tensor || a_tensor->ndim != 2 || a_tensor->shape[1] != cols ||
@@ -397,7 +494,7 @@ static int apply_fc1(h3_gpu *gpu, h3_gpu_tensor *weight, const char *stem,
         fasth3_fail(error, error_size, "FastH3 fc1 key is too long");
         return 0;
     }
-    a_tensor = h3_st_find(&fasth3.header, a_key);
+    a_tensor = find_key(a_key);
     if (!a_tensor || a_tensor->ndim != 2 || a_tensor->shape[1] != cols ||
         a_tensor->shape[0] == 0 || a_tensor->shape[0] > 4096u) {
         snprintf(error, error_size, "FastH3 %s is not rank x %u", a_key, cols);
@@ -435,7 +532,7 @@ static int apply_plain(h3_gpu *gpu, h3_gpu_tensor *weight, const char *stem,
             fasth3_fail(error, error_size, "FastH3 key is too long");
             return 0;
         }
-        if (h3_st_find(&fasth3.header, a_key)) {
+        if (find_key(a_key)) {
             if (snprintf(b_key, sizeof(b_key), "%s.lora_B.weight", stem) >=
                 (int)sizeof(b_key)) {
                 fasth3_fail(error, error_size, "FastH3 key is too long");
@@ -455,9 +552,8 @@ static int apply_plain(h3_gpu *gpu, h3_gpu_tensor *weight, const char *stem,
         fasth3_fail(error, error_size, "FastH3 key is too long");
         return 0;
     }
-    diff = h3_st_find(&fasth3.header, key);
+    diff = find_key(key);
     if (!diff) return 1;
-    mark_tensor(diff);
     return apply_diff(gpu, weight, diff, rows, cols, weight_f32, error,
                       error_size);
 }
@@ -467,14 +563,6 @@ static float fasth3_bf16_f32(uint16_t bits) {
     float value;
     memcpy(&value, &wide, sizeof(value));
     return value;
-}
-
-static uint16_t fasth3_f32_bf16(float value) {
-    uint32_t bits;
-    memcpy(&bits, &value, sizeof(bits));
-    uint32_t lsb = (bits >> 16) & 1u;
-    bits += 0x7fffu + lsb;
-    return (uint16_t)(bits >> 16);
 }
 
 int h3_fasth3_load_gate(h3_gpu *gpu, unsigned block, uint32_t rows,
@@ -592,7 +680,7 @@ int h3_fasth3_finish(char *error, size_t error_size) {
         error = local;
         error_size = sizeof(local);
     }
-    if (!fasth3.open && !open_adapter(error, error_size)) return 0;
+    if (!open_adapter(error, error_size)) return 0;
     const char *vsa_env = getenv("H3_VSA");
     int vsa = vsa_env && vsa_env[0] && strcmp(vsa_env, "0") != 0;
     int gate_unused = 0;
@@ -601,6 +689,31 @@ int h3_fasth3_finish(char *error, size_t error_size) {
         if (fasth3.used[index]) {
             applied++;
             continue;
+        }
+        if (name && (ends_with(name, ".alpha") ||
+                     ends_with(name, ".lora_alpha"))) {
+            const h3_st_tensor *alpha = &fasth3.header.tensors[index];
+            float value = 0.0f;
+            int unit = 0;
+            if (h3_st_tensor_elements(alpha) == 1 &&
+                alpha->dtype == H3_DTYPE_F32 &&
+                h3_st_read_data(&fasth3.header, alpha, &value, sizeof(value),
+                                error, error_size))
+                unit = value == 128.0f || value == 1.0f;
+            else if (h3_st_tensor_elements(alpha) == 1 &&
+                     alpha->dtype == H3_DTYPE_BF16) {
+                uint16_t bits = 0;
+                if (h3_st_read_data(&fasth3.header, alpha, &bits, sizeof(bits),
+                                    error, error_size)) {
+                    value = fasth3_bf16_f32(bits);
+                    unit = value == 128.0f || value == 1.0f;
+                }
+            }
+            if (unit) {
+                fasth3.used[index] = 1;
+                applied++;
+                continue;
+            }
         }
         if (name && strstr(name, "to_gate_compress")) gate_unused = 1;
         if (!pending && error && error_size && name) {
@@ -617,7 +730,10 @@ int h3_fasth3_finish(char *error, size_t error_size) {
                 pending);
         return 0;
     }
-    fprintf(stderr, "h3: FastH3 merged %zu adapter tensors\n", applied);
+    fprintf(stderr, "h3: %s merged %zu adapter tensors\n",
+            getenv("H3_PIKA") && strcmp(getenv("H3_PIKA"), "0") != 0
+                ? "Pika H3 Flex" : "FastH3",
+            applied);
     return 1;
 }
 

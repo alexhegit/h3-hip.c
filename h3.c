@@ -15,6 +15,7 @@
 #include "h3_weights.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -169,6 +170,20 @@ failed:
     return NULL;
 }
 
+static int h3_pika_requested(const h3_params *params) {
+    return (params->pika_lora && params->pika_lora[0]) ||
+           (params->pika_ref_lora && params->pika_ref_lora[0]);
+}
+
+/* FL2VA and Ref2VA adapters are different files. The active one follows
+ * whether this generation has references. */
+static const char *h3_pika_active_path(const h3_params *params) {
+    if (params->reference_count)
+        return params->pika_ref_lora && params->pika_ref_lora[0]
+            ? params->pika_ref_lora : NULL;
+    return params->pika_lora && params->pika_lora[0] ? params->pika_lora : NULL;
+}
+
 static char *h3_prepared_key(const char *conditioning,
                              const h3_params *params,
                              int render_width, int render_height) {
@@ -176,7 +191,7 @@ static char *h3_prepared_key(const char *conditioning,
     if (!h3_key_append(
             &key,
             "%s|shape=%dx%dx%d|steps=%d|layers=%d|reuse-core=%d|reduce=%d"
-            "|sol-attn=%d|fbc=%d|fasth3=%s|vsa=%d|row-fc2=%d|reference-rope=%d"
+            "|sol-attn=%d|fbc=%d|fasth3=%s|pika=%s|pika-ref=%s|vsa=%d|row-fc2=%d|reference-rope=%d"
             "|ssd-streaming=%d"
             "|slow=%d%d%d%d%d%d%d%d%d%d",
             conditioning, render_width, render_height, params->frames,
@@ -184,6 +199,10 @@ static char *h3_prepared_key(const char *conditioning,
             params->token_reduction, params->sol_attn, params->fbc,
             params->fasth3_lora && params->fasth3_lora[0] ?
                 params->fasth3_lora : "0",
+            params->pika_lora && params->pika_lora[0] ?
+                params->pika_lora : "0",
+            params->pika_ref_lora && params->pika_ref_lora[0] ?
+                params->pika_ref_lora : "0",
             params->vsa,
             params->use_int8_row_fc2,
             params->use_reference_rope,
@@ -568,6 +587,39 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
     if (params->fbc && params->core_reuse > 1) {
         h3_set_error(ctx, "first-block cache cannot be combined with core reuse");
         return 0;
+    }
+    if (h3_pika_requested(params) &&
+        params->fasth3_lora && params->fasth3_lora[0]) {
+        h3_set_error(ctx, "Pika H3 Flex cannot be combined with --fasth3-lora");
+        return 0;
+    }
+    if (params->pika_ref_lora && params->pika_ref_lora[0] &&
+        !params->reference_count) {
+        h3_set_error(ctx, "Pika Ref2VA LoRA requires a reference (--ref-image)");
+        return 0;
+    }
+    if (params->reference_count && params->pika_lora && params->pika_lora[0] &&
+        !(params->pika_ref_lora && params->pika_ref_lora[0])) {
+        h3_set_error(ctx,
+            "references use the Ref2VA transformer; pass --pika-ref-lora");
+        return 0;
+    }
+    if (h3_pika_requested(params)) {
+        if (params->denoise_reuse != 1) {
+            h3_set_error(ctx, "Pika H3 Flex requires --reuse 1");
+            return 0;
+        }
+        if (params->dit_layers != H3_DEFAULT_DIT_LAYERS) {
+            h3_set_error(ctx, "Pika H3 Flex keeps all 50 DiT layers");
+            return 0;
+        }
+        if (params->token_reduction || params->sol_attn || params->fbc ||
+            params->vsa || params->ssd_streaming || params->core_reuse > 1) {
+            h3_set_error(ctx,
+                "Pika H3 Flex cannot be combined with token reduction, "
+                "sol-attn, first-block cache, VSA, SSD streaming, or core reuse");
+            return 0;
+        }
     }
     if (params->fasth3_lora && params->fasth3_lora[0]) {
         if (params->denoise_reuse != 1) {
@@ -958,18 +1010,41 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         fprintf(stderr,
                 "h3: --token-reduction is on: faster DiT, visible quality "
                 "loss (off by default)\n");
+    /* The DiT reads H3_SOL_ATTN at load. In a process that generates more
+     * than once (h3 --serve), a later call without sol_attn must not inherit
+     * the value an earlier call set; a value the user exported is kept. */
+    static int sol_attn_env_ours;
+    if (!params->sol_attn && sol_attn_env_ours) {
+        unsetenv("H3_SOL_ATTN");
+        sol_attn_env_ours = 0;
+    }
     if (params->sol_attn) {
+        const char *sol_env = getenv("H3_SOL_ATTN");
+        if (!sol_env || !strcmp(sol_env, "0")) sol_attn_env_ours = 1;
         setenv("H3_SOL_ATTN", "1", 1);
         fprintf(stderr,
                 "h3: --sol-attn is on: faster long SDPA, visible quality "
-                "loss (off by default). Supported on gfx90a, gfx942, and "
-                "gfx1151. See docs/SOL_ATTN.md.\n");
+                "loss (off by default). Supported on gfx90a, gfx942, "
+                "gfx1151, and gfx1201. See docs/SOL_ATTN.md.\n");
     }
     setenv("H3_FBC", params->fbc ? "1" : "0", 1);
-    setenv("H3_FASTH3_LORA",
-           params->fasth3_lora && params->fasth3_lora[0] ? params->fasth3_lora
-                                                         : "",
-           1);
+    {
+        const char *lora_path = h3_pika_active_path(params);
+        if (!lora_path && params->fasth3_lora && params->fasth3_lora[0])
+            lora_path = params->fasth3_lora;
+        setenv("H3_FASTH3_LORA", lora_path ? lora_path : "", 1);
+    }
+    setenv("H3_PIKA", h3_pika_active_path(params) ? "1" : "0", 1);
+    {
+        char seed_text[32];
+        snprintf(seed_text, sizeof(seed_text), "%" PRIu64, params->seed);
+        setenv("H3_PIKA_SEED", seed_text, 1);
+    }
+    /* Pika's six renoise steps want the GPU Euler path on MI300X. Do not
+     * override an explicit H3_GPU_SAMPLER / H3_CPU_SAMPLER choice. */
+    if (h3_pika_active_path(params) &&
+        !getenv("H3_GPU_SAMPLER") && !getenv("H3_CPU_SAMPLER"))
+        setenv("H3_GPU_SAMPLER", "1", 0);
     setenv("H3_TAEH3",
            params->taeh3 && params->taeh3[0] ? params->taeh3 : "", 1);
     setenv("H3_VSA", params->vsa ? "1" : "0", 1);
@@ -1356,11 +1431,21 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             if (progress.cancelled) goto cleanup;
         }
     } else {
+        h3_image_fit first_fit = H3_IMAGE_FIT_STRETCH;
+        h3_image_fit last_fit = H3_IMAGE_FIT_COVER;
+        if (h3_pika_active_path(params) &&
+            (params->first_frame || params->last_frame)) {
+            first_fit = H3_IMAGE_FIT_ASPECT_CROP;
+            last_fit = H3_IMAGE_FIT_ASPECT_CROP;
+            fprintf(stderr,
+                    "h3: Pika keyframes are center-cropped to the canvas "
+                    "aspect, then resized.\n");
+        }
         if (params->first_frame) {
             keyframes[keyframe_count++] = 0;
             if (!h3_ffmpeg_read_image_f32(
                     params->first_frame, render_width, render_height,
-                    H3_IMAGE_FIT_STRETCH, &condition_pixels[visual_count],
+                    first_fit, &condition_pixels[visual_count],
                     detail, sizeof(detail))) {
                 h3_set_error(ctx, "%s", detail);
                 goto cleanup;
@@ -1374,7 +1459,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             keyframes[keyframe_count++] = temporal.frame_count - 1;
             if (!h3_ffmpeg_read_image_f32(
                     params->last_frame, render_width, render_height,
-                    H3_IMAGE_FIT_COVER, &condition_pixels[visual_count],
+                    last_fit, &condition_pixels[visual_count],
                     detail, sizeof(detail))) {
                 h3_set_error(ctx, "%s", detail);
                 goto cleanup;
@@ -1591,7 +1676,16 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         goto cleanup;
     }
     h3_sigma_schedule sigmas;
-    if (params->fasth3_lora && params->fasth3_lora[0]) {
+    if (h3_pika_active_path(params)) {
+        if (!h3_pika_schedule_build(&sigmas)) {
+            h3_set_error(ctx, "cannot construct the Pika H3 Flex sigma schedule");
+            goto cleanup;
+        }
+        fprintf(stderr,
+                "h3: Pika H3 Flex schedule overrides --steps %d with 6 "
+                "evaluations at timesteps 1000, 750, 500, 250, 100, 40\n",
+                params->steps);
+    } else if (params->fasth3_lora && params->fasth3_lora[0]) {
         if (!h3_fasth3_schedule_build(&sigmas)) {
             h3_set_error(ctx, "cannot construct the FastH3 sigma schedule");
             goto cleanup;
@@ -1721,12 +1815,15 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         h3_weight_warmup_start(&decode_warmup, audio_vae_path,
                                params->taeh3 && params->taeh3[0] ? NULL
                                                                  : vae_path);
-    if (!h3_dit_denoise_euler_preview(
+    h3_dit_set_stop_flag(dit, &progress.cancelled);
+    int denoised = h3_dit_denoise_euler_preview(
             dit, video, audio, params->denoise_reuse,
             h3_dit_progress_bridge, &progress,
             preview_decoder ? h3_deliver_denoise_preview : NULL,
             preview_decoder ? &live_preview : NULL,
-            detail, sizeof(detail))) {
+            detail, sizeof(detail));
+    h3_dit_set_stop_flag(dit, NULL);
+    if (!denoised) {
         if (!live_preview.failed) h3_set_error(ctx, "%s", detail);
         if (dit_is_cached) {
             ctx->dit = NULL;

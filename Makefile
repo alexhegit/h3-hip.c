@@ -14,12 +14,19 @@ ifeq ($(H3_BACKEND),hip)
   HIPCC := hipcc
   ROCM_PATH ?= /opt/rocm
   # No hardware probe. Pass HIP_ARCH to match the GPU you are building for:
-  #   gfx1151  Strix Halo (RDNA)
-  #   gfx90a   MI210 / MI250X (CDNA2)
-  #   gfx942   MI300X (CDNA3)
+  #   gfx1151  Strix Halo (RDNA3.5, wave32)
+  #   gfx1201  Radeon AI PRO R9700 (RDNA4, wave32); gfx1200 is the same path
+  #   gfx90a   MI210 / MI250X (CDNA2, wave64)
+  #   gfx942   MI300X (CDNA3, wave64)
   ifneq ($(MAKECMDGOALS),clean)
+    ifeq ($(wildcard $(ROCM_PATH)/include/hip/hip_runtime.h),)
+      ROCM_PATH := $(shell hipconfig --rocmpath 2>/dev/null)
+    endif
+    ifeq ($(wildcard $(ROCM_PATH)/include/hip/hip_runtime.h),)
+      $(error ROCM_PATH ($(ROCM_PATH)) has no hip/hip_runtime.h. Install ROCm or put hipconfig on PATH (TheRock wheels: the runtime bin directory).)
+    endif
     ifndef HIP_ARCH
-      $(error HIP_ARCH is required. Supported: gfx1151 (Strix Halo), gfx90a (MI210/MI250X), gfx942 (MI300X). Example: make HIP_ARCH=gfx942)
+      $(error HIP_ARCH is required. Supported: gfx1151 (Strix Halo), gfx1201 (Radeon AI PRO R9700), gfx90a (MI210/MI250X), gfx942 (MI300X). Example: make HIP_ARCH=gfx1201)
     endif
   endif
   CFLAGS := -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow \
@@ -30,7 +37,8 @@ ifeq ($(H3_BACKEND),hip)
 	-I$(ROCM_PATH)/include --offload-arch=$(HIP_ARCH)
   HIPCFLAGS_C := -std=c11 -O3 -DH3_HIP -I. -Ikernels \
 	-I$(ROCM_PATH)/include
-  LDLIBS := -L$(ROCM_PATH)/lib -lamdhip64 -lhipblas -lhipblaslt -lm -pthread
+  LDLIBS := -L$(ROCM_PATH)/lib -Wl,-rpath,$(ROCM_PATH)/lib \
+	-lamdhip64 -lhipblas -lhipblaslt -lm -pthread
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \
 	backends/h3_hip_probe.o backends/h3_device.o \
 	backends/h3_tokenizer.o kernels/h3_kernels.o \
@@ -38,6 +46,9 @@ ifeq ($(H3_BACKEND),hip)
 	kernels/h3_kernels_vsa.o
   ICU_CFLAGS := $(shell pkg-config --cflags icu-uc 2>/dev/null)
   ICU_LIBS := $(shell pkg-config --libs icu-uc 2>/dev/null)
+  ifeq ($(ICU_LIBS),)
+    ICU_LIBS := -licuuc
+  endif
   CFLAGS += $(ICU_CFLAGS)
   LDLIBS += $(ICU_LIBS)
   LINK := $(HIPCC)
@@ -64,7 +75,7 @@ DAEMON_OBJ := $(DAEMON_C:.c=.o)
 CLI_OBJ := main.o h3_cli.o linenoise.o $(DAEMON_OBJ)
 
 .PHONY: all test parity real-parity clean hip-smoke hip-test hip-test-strict \
-	hip-functional halo-regression
+	hip-functional halo-regression serve-regression
 
 all: h3 libh3.a
 
@@ -208,6 +219,9 @@ hip-test-strict: hip-test h3_hip_real_dit_smoke
 
 halo-regression:
 	./tools/halo_regression.sh
+
+serve-regression:
+	HIP_ARCH=$(HIP_ARCH) H3_MODEL="$(H3_MODEL)" ./tools/serve_regression.sh
 
 hip-functional: h3_hip_encoder_roundtrip h3_hip_audio_smoke h3_hip_vision_smoke \
 	h3_hip_text_smoke h3_hip_multimodal_smoke h3_hip_ref2va_smoke

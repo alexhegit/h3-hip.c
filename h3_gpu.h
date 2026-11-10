@@ -91,6 +91,8 @@ int h3_gpu_tensor_read_bf16(const h3_gpu_tensor *tensor, uint16_t *values,
                             size_t elements);
 int h3_gpu_tensor_read_i8(const h3_gpu_tensor *tensor, int8_t *values,
                           size_t elements);
+int h3_gpu_tensor_write_i8(h3_gpu_tensor *tensor, const int8_t *values,
+                           size_t elements);
 int h3_gpu_tensor_write_f32(h3_gpu_tensor *tensor, const float *values,
                             size_t elements);
 int h3_gpu_tensor_write_f32_range(h3_gpu_tensor *tensor,
@@ -107,6 +109,33 @@ int h3_gpu_begin(h3_gpu *gpu);
  * the same ordered queue. h3_gpu_submit() waits and validates the whole chain. */
 int h3_gpu_continue(h3_gpu *gpu);
 int h3_gpu_submit(h3_gpu *gpu);
+
+/* Page-locked host memory the GPU can read without a staging copy. */
+void *h3_gpu_host_pinned_alloc(size_t bytes);
+void h3_gpu_host_pinned_free(void *host);
+/* A second ordered queue for host-to-device copies that overlap compute.
+ * Events order it against the compute queue on the GPU; nothing here blocks
+ * the host except h3_gpu_copy_sync(). Waiting on a never-recorded event is a
+ * no-op. The source of h3_gpu_copy_to_device_async() must be pinned and must
+ * stay untouched until the copy has drained. */
+typedef struct h3_gpu_event h3_gpu_event;
+h3_gpu_event *h3_gpu_event_new(h3_gpu *gpu);
+void h3_gpu_event_free(h3_gpu_event *event);
+int h3_gpu_record_compute(h3_gpu *gpu, h3_gpu_event *event);
+int h3_gpu_compute_wait(h3_gpu *gpu, h3_gpu_event *event);
+int h3_gpu_record_copy(h3_gpu *gpu, h3_gpu_event *event);
+int h3_gpu_copy_wait(h3_gpu *gpu, h3_gpu_event *event);
+int h3_gpu_copy_to_device_async(h3_gpu *gpu, h3_gpu_tensor *destination,
+                                const void *pinned_source, size_t bytes);
+int h3_gpu_copy_sync(h3_gpu *gpu);
+
+/* A BF16 copy of an F32 linear weight when h3_gpu_linear_f32 would round that
+ * weight to BF16 itself (RDNA WMMA path), else NULL. h3_gpu_linear_f32 takes
+ * either form and gives the same result for activations of 256+ rows. */
+h3_gpu_tensor *h3_gpu_linear_f32_bf16_weight(h3_gpu *gpu,
+                                             const h3_gpu_tensor *weight,
+                                             uint32_t input_dim,
+                                             uint32_t output_dim);
 const char *h3_gpu_error(const h3_gpu *gpu);
 int h3_gpu_get_stats(const h3_gpu *gpu, h3_gpu_stats *stats);
 /* Optional benchmark labels. With H3_PROFILE set, marks and context teardown
@@ -796,6 +825,13 @@ int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
                       size_t sample_offset, const h3_gpu_tensor *last,
                       const h3_gpu_tensor *previous, uint32_t elements,
                       float delta, float ratio);
+/* Pika step: x0 = sample + sigma * velocity, then
+ * sample = (1 - sigma_next) * x0 + sigma_next * noise.
+ * noise may be NULL when sigma_next is 0. noise_offset indexes into noise. */
+int h3_gpu_renoise_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
+                        size_t sample_offset, const h3_gpu_tensor *velocity,
+                        const h3_gpu_tensor *noise, size_t noise_offset,
+                        uint32_t elements, float sigma, float sigma_next);
 int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          const h3_gpu_tensor *gate,
                          const h3_gpu_tensor *up, uint32_t elements);

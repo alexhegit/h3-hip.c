@@ -776,11 +776,19 @@ h3_linear_f32_r128_kernel(const float *input, const float *weight,
  * into registers so the global loads overlap the mma chain. Opt out with
  * H3_F32_WMMA=0. */
 
-template <int BM, int BN, int BK, int WM, int WN, int PAD>
+/* WT = uint16_t takes weights already rounded to BF16 with h3_f32_to_bf16,
+ * the same rounding the F32 variant applies on the way into LDS, so the
+ * matrix operands and the result are bit-identical while weight reads halve.
+ * AT = uint16_t does the same for activations written by a BF16-output
+ * producer. */
+template <int BM, int BN, int BK, int WM, int WN, int PAD,
+          typename WT = float, typename AT = float>
 __global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32)
-h3_linear_f32_wmma_kernel(const float *input, const float *weight,
+h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
                           const float *bias, float *output,
                           h3_linear_args args) {
+    constexpr bool WB16 = sizeof(WT) == 2;
+    constexpr bool AB16 = sizeof(AT) == 2;
     using bf16 = rocwmma::bfloat16_t;
     constexpr int LD = BK + PAD;
     constexpr int WAVES_N = BN / WN;
@@ -811,21 +819,34 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
     const bf16 *pA = reinterpret_cast<const bf16 *>(As);
     const bf16 *pB = reinterpret_cast<const bf16 *>(Bs);
 
-    float4 a_next[AI], b_next[BI];
+    float4 a_next[AB16 ? 1 : AI], b_next[WB16 ? 1 : BI];
+    uint2 a16_next[AB16 ? AI : 1], b16_next[WB16 ? BI : 1];
     auto fetch = [&](uint32_t k0) {
 #pragma unroll
         for (int it = 0; it < AI; it++) {
             uint32_t r = block_row + (uint32_t)(row0 + it * ROW_STEP);
-            a_next[it] = r < rows ? *reinterpret_cast<const float4 *>(
-                                        input + (size_t)r * K + k0 + kq0)
-                                  : make_float4(0.f, 0.f, 0.f, 0.f);
+            if constexpr (AB16) {
+                a16_next[it] = r < rows ? *reinterpret_cast<const uint2 *>(
+                                              input + (size_t)r * K + k0 + kq0)
+                                        : uint2{0u, 0u};
+            } else {
+                a_next[it] = r < rows ? *reinterpret_cast<const float4 *>(
+                                            input + (size_t)r * K + k0 + kq0)
+                                      : make_float4(0.f, 0.f, 0.f, 0.f);
+            }
         }
 #pragma unroll
         for (int it = 0; it < BI; it++) {
             uint32_t r = block_col + (uint32_t)(row0 + it * ROW_STEP);
-            b_next[it] = r < cols ? *reinterpret_cast<const float4 *>(
-                                        weight + (size_t)r * K + k0 + kq0)
-                                  : make_float4(0.f, 0.f, 0.f, 0.f);
+            if constexpr (WB16) {
+                b16_next[it] = r < cols ? *reinterpret_cast<const uint2 *>(
+                                              weight + (size_t)r * K + k0 + kq0)
+                                        : uint2{0u, 0u};
+            } else {
+                b_next[it] = r < cols ? *reinterpret_cast<const float4 *>(
+                                            weight + (size_t)r * K + k0 + kq0)
+                                      : make_float4(0.f, 0.f, 0.f, 0.f);
+            }
         }
     };
     auto stash = [&]() {
@@ -833,15 +854,25 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
         for (int it = 0; it < AI; it++) {
             uint32_t *d = reinterpret_cast<uint32_t *>(
                 As + (row0 + it * ROW_STEP) * LD + kq0);
-            d[0] = h3_pack_bf16x2(a_next[it].x, a_next[it].y);
-            d[1] = h3_pack_bf16x2(a_next[it].z, a_next[it].w);
+            if constexpr (AB16) {
+                d[0] = a16_next[it].x;
+                d[1] = a16_next[it].y;
+            } else {
+                d[0] = h3_pack_bf16x2(a_next[it].x, a_next[it].y);
+                d[1] = h3_pack_bf16x2(a_next[it].z, a_next[it].w);
+            }
         }
 #pragma unroll
         for (int it = 0; it < BI; it++) {
             uint32_t *d = reinterpret_cast<uint32_t *>(
                 Bs + (row0 + it * ROW_STEP) * LD + kq0);
-            d[0] = h3_pack_bf16x2(b_next[it].x, b_next[it].y);
-            d[1] = h3_pack_bf16x2(b_next[it].z, b_next[it].w);
+            if constexpr (WB16) {
+                d[0] = b16_next[it].x;
+                d[1] = b16_next[it].y;
+            } else {
+                d[0] = h3_pack_bf16x2(b_next[it].x, b_next[it].y);
+                d[1] = h3_pack_bf16x2(b_next[it].z, b_next[it].w);
+            }
         }
     };
     auto compute = [&]() {
@@ -880,7 +911,7 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
     __syncthreads();
     compute();
 
-    /* Accumulator element i of every fragment belongs to row 2*i + (lane>>4),
+    /* Accumulator element i belongs to row H3_WMMA_ACC_ROW(i, lane>>4).
      * lane&15 picks the column. */
     uint32_t lane = tid & 31u;
     uint32_t frag_col = lane & 15u, row_half = lane >> 4;
@@ -895,7 +926,7 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
 #pragma unroll
             for (int e = 0; e < 8; e++) {
                 uint32_t row = block_row + wm * (uint32_t)WM +
-                               (uint32_t)i * 16u + 2u * (uint32_t)e + row_half;
+                               (uint32_t)i * 16u + H3_WMMA_ACC_ROW(e, row_half);
                 if (row < rows)
                     output[(size_t)row * cols + col] = acc[i][j].x[e] + b;
             }
@@ -907,7 +938,9 @@ h3_linear_f32_wmma_kernel(const float *input, const float *weight,
  * 16 accumulator fragments (128 VGPRs) and spills, while 32x64 needs 8. Pick
  * with H3_F32_WMMA_CFG; see docs/perf-day9/STATUS.md for the sweep. */
 static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
-                                      uint32_t *threads) {
+                                      uint32_t *threads,
+                                      bool bf16_weight = false,
+                                      bool bf16_input = false) {
     const char *cfg = getenv("H3_F32_WMMA_CFG");
     unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10) : 3u;
 #define H3_WMMA_CASE(BM, BN, WM, WN)                                           \
@@ -915,8 +948,15 @@ static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
         *bm = BM;                                                              \
         *bn = BN;                                                              \
         *threads = (BM / WM) * (BN / WN) * 32u;                                 \
-        return reinterpret_cast<const void *>(                                 \
-            h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8>);                  \
+        if (bf16_input)                                                        \
+            return reinterpret_cast<const void *>(                             \
+                h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8, uint16_t,     \
+                                          uint16_t>);                          \
+        return bf16_weight                                                     \
+            ? reinterpret_cast<const void *>(                                  \
+                  h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8, uint16_t>)  \
+            : reinterpret_cast<const void *>(                                  \
+                  h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8>);           \
     } while (0)
     switch (choice) {
     case 1: H3_WMMA_CASE(256, 128, 64, 64);
@@ -1120,6 +1160,120 @@ __global__ void h3_conv3d_f32_kernel(const float *input, const float *weight,
     output[output_batch + spatial * args.output_channels + out] = sum;
 }
 
+/* Weight [out][in][kd][kh][kw] -> [kd][kh][kw][in][out], so the tiled kernel
+ * reads consecutive output channels from consecutive addresses. */
+__global__ void h3_conv3d_weight_transpose_kernel(const float *weight,
+                                                  float *transposed,
+                                                  uint32_t out_channels,
+                                                  uint32_t in_channels,
+                                                  uint32_t taps) {
+    size_t index = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t total = (size_t)out_channels * in_channels * taps;
+    if (index >= total) return;
+    uint32_t out = (uint32_t)(index % out_channels);
+    size_t rest = index / out_channels;
+    uint32_t in = (uint32_t)(rest % in_channels);
+    uint32_t tap = (uint32_t)(rest / in_channels);
+    transposed[index] =
+        weight[((size_t)out * in_channels + in) * taps + tap];
+}
+
+/* Same per-output sum as h3_conv3d_f32_kernel: bias, then fmaf over
+ * kd, kh, kw, input channel in that order, so results are bit-identical.
+ * A 256-thread block owns OC_T output channels x SP_T spatial outputs; each
+ * thread keeps (OC_T/16) x (SP_T/16) sums and shares IC_T-channel slices of
+ * input and weight through LDS. */
+template <int OC_T, int SP_T, int IC_T>
+__global__ __launch_bounds__(256) void h3_conv3d_f32_tiled_kernel(
+    const float *input, const float *weight_t, const float *bias,
+    float *output, h3_conv3d_args args) {
+    constexpr int OJ = OC_T / 16, SK = SP_T / 16;
+    __shared__ float ws[IC_T][OC_T];
+    __shared__ float xs[IC_T][SP_T + 1];
+    __shared__ size_t base[SP_T];
+    const uint32_t tid = threadIdx.x;
+    const uint32_t tx = tid % 16u, ty = tid / 16u;
+    const uint32_t out0 = blockIdx.y * OC_T;
+    const uint64_t sp0 = (uint64_t)blockIdx.x * SP_T;
+    const uint32_t batch = blockIdx.z;
+    const uint32_t C = args.input_channels, O = args.output_channels;
+    const uint64_t spatial_count = (uint64_t)args.output_depth *
+                                   args.output_height * args.output_width;
+    const size_t input_batch = ((size_t)batch * args.input_depth *
+                                args.input_height * args.input_width) * C;
+    for (uint32_t s = tid; s < (uint32_t)SP_T; s += 256u) {
+        uint64_t spatial = sp0 + s;
+        size_t b = 0;
+        if (spatial < spatial_count) {
+            uint32_t x = (uint32_t)(spatial % args.output_width);
+            uint64_t plane = spatial / args.output_width;
+            uint32_t y = (uint32_t)(plane % args.output_height);
+            uint32_t t = (uint32_t)(plane / args.output_height);
+            b = input_batch +
+                (((size_t)(t * args.stride_depth) * args.input_height +
+                  y * args.stride_height) * args.input_width +
+                 x * args.stride_width) * C;
+        }
+        base[s] = b;
+    }
+    float acc[SK][OJ];
+#pragma unroll
+    for (int j = 0; j < OJ; j++) {
+        uint32_t out = out0 + tx + 16u * j;
+        float init = (args.has_bias && out < O) ? bias[out] : 0.0f;
+#pragma unroll
+        for (int k = 0; k < SK; k++) acc[k][j] = init;
+    }
+    __syncthreads();
+    uint32_t tap = 0;
+    for (uint32_t kd = 0; kd < args.kernel_depth; kd++)
+    for (uint32_t kh = 0; kh < args.kernel_height; kh++)
+    for (uint32_t kw = 0; kw < args.kernel_width; kw++, tap++) {
+        const size_t tap_offset =
+            (((size_t)kd * args.input_height + kh) * args.input_width + kw) *
+            C;
+        for (uint32_t ic0 = 0; ic0 < C; ic0 += IC_T) {
+            const uint32_t icn = C - ic0 < (uint32_t)IC_T ? C - ic0 : IC_T;
+            for (uint32_t e = tid; e < (uint32_t)(IC_T * OC_T); e += 256u) {
+                uint32_t i = e / OC_T, o = e % OC_T;
+                ws[i][o] = (i < icn && out0 + o < O) ?
+                    weight_t[((size_t)tap * C + ic0 + i) * O + out0 + o] :
+                    0.0f;
+            }
+            for (uint32_t e = tid; e < (uint32_t)(IC_T * SP_T); e += 256u) {
+                uint32_t i = e % IC_T, s = e / IC_T;
+                xs[i][s] = (i < icn && sp0 + s < spatial_count) ?
+                    input[base[s] + tap_offset + ic0 + i] : 0.0f;
+            }
+            __syncthreads();
+            for (uint32_t i = 0; i < icn; i++) {
+                float w[OJ], x[SK];
+#pragma unroll
+                for (int j = 0; j < OJ; j++) w[j] = ws[i][tx + 16u * j];
+#pragma unroll
+                for (int k = 0; k < SK; k++) x[k] = xs[i][ty + 16u * k];
+#pragma unroll
+                for (int k = 0; k < SK; k++)
+#pragma unroll
+                    for (int j = 0; j < OJ; j++)
+                        acc[k][j] = fmaf(x[k], w[j], acc[k][j]);
+            }
+            __syncthreads();
+        }
+    }
+    const size_t output_batch = ((size_t)batch * spatial_count) * O;
+#pragma unroll
+    for (int k = 0; k < SK; k++) {
+        uint64_t spatial = sp0 + ty + 16u * k;
+        if (spatial >= spatial_count) continue;
+#pragma unroll
+        for (int j = 0; j < OJ; j++) {
+            uint32_t out = out0 + tx + 16u * j;
+            if (out < O) output[output_batch + spatial * O + out] = acc[k][j];
+        }
+    }
+}
+
 /* HIP/CUDA grid.y and grid.z are limited to 65535. A 22-frame 256px encoder
  * tile has T*H*W = 1,441,792, and a single huge launch wedged gfx1151
  * (amdgpu GPU reset). Chunk the grid so each packet stays in limits.
@@ -1139,6 +1293,19 @@ static int h3_conv1d_tiled_on(void) {
     }
     return cached;
 }
+
+/* H3_CONV3D_TILED=0 restores the one-thread-per-output Conv3d kernel. */
+static int h3_conv3d_tiled_on(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("H3_CONV3D_TILED");
+        cached = (!e || strcmp(e, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+static float *h3_conv3d_weight_scratch = NULL;
+static size_t h3_conv3d_weight_scratch_bytes = 0;
 
 static int h3_hip_launch(const void *kernel, dim3 grid, dim3 block,
                          void **kernel_args, hipStream_t stream) {
@@ -1253,6 +1420,36 @@ extern "C" int h3_launch_conv3d_f32(const float *input, const float *weight,
         return 1;
     }
     if (spatial_count > UINT32_MAX) return 0;
+    if (h3_conv3d_tiled_on()) {
+        uint32_t taps = host_args.kernel_depth * host_args.kernel_height *
+                        host_args.kernel_width;
+        size_t weight_count = (size_t)host_args.output_channels *
+                              host_args.input_channels * taps;
+        if (weight_count * sizeof(float) > h3_conv3d_weight_scratch_bytes) {
+            float *next = NULL;
+            if (hipMalloc(&next, weight_count * sizeof(float)) != hipSuccess)
+                return 0;
+            if (h3_conv3d_weight_scratch)
+                (void)hipFree(h3_conv3d_weight_scratch);
+            h3_conv3d_weight_scratch = next;
+            h3_conv3d_weight_scratch_bytes = weight_count * sizeof(float);
+        }
+        float *weight_t = h3_conv3d_weight_scratch;
+        hipLaunchKernelGGL(h3_conv3d_weight_transpose_kernel,
+                           dim3((unsigned)((weight_count + 255u) / 256u)),
+                           dim3(256), 0, stream, weight, weight_t,
+                           host_args.output_channels,
+                           host_args.input_channels, taps);
+        if (hipGetLastError() != hipSuccess) return 0;
+        constexpr int OC_T = 64, SP_T = 64, IC_T = 16;
+        dim3 grid((unsigned)((spatial_count + SP_T - 1) / SP_T),
+                  (host_args.output_channels + OC_T - 1) / OC_T,
+                  host_args.batch);
+        hipLaunchKernelGGL((h3_conv3d_f32_tiled_kernel<OC_T, SP_T, IC_T>),
+                           grid, dim3(256), 0, stream, input,
+                           (const float *)weight_t, bias, output, host_args);
+        return hipGetLastError() == hipSuccess;
+    }
     dim3 block(256, 1, 1);
     uint32_t total_spatial = (uint32_t)spatial_count;
     uint32_t chunk = H3_HIP_CONV3D_SPATIAL_CHUNK;
@@ -1274,6 +1471,58 @@ extern "C" int h3_launch_conv3d_f32(const float *input, const float *weight,
         offset += span;
     }
     return 1;
+}
+
+/* True when h3_launch_linear_f32 sends an input_dim x output_dim weight to the
+ * BF16 WMMA kernel, which rounds it to BF16 anyway; such a weight can then be
+ * stored as BF16 once. Rows are not known at load time: below 256 rows the
+ * F32 path would use r128, so callers only convert weights whose activations
+ * always have more. H3_F32_BF16_WEIGHT=0 keeps F32 weights. */
+extern "C" int h3_linear_f32_takes_bf16_weight(uint32_t input_dim,
+                                               uint32_t output_dim) {
+    const char *e = getenv("H3_F32_BF16_WEIGHT");
+    if (e && strcmp(e, "0") == 0) return 0;
+    if (getenv("H3_F32_LEGACY")) return 0;
+    if (getenv("H3_F32_R64") && strcmp(getenv("H3_F32_R64"), "0") != 0)
+        return 0;
+    return input_dim % 32u == 0 && input_dim >= 512u && output_dim >= 512u &&
+           !h3_f32_hipblas_on() && h3_f32_wmma_on();
+}
+
+extern "C" int h3_launch_linear_f32_wbf16(const float *input,
+                                          const uint16_t *weight,
+                                          const float *bias, float *output,
+                                          const h3_linear_args *args,
+                                          hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    if (host_args.input_dim % 32u) return 0;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    uint32_t bm = 0, bn = 0, threads = 0;
+    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true);
+    dim3 grid((host_args.output_dim + bn - 1u) / bn,
+              (host_args.rows + bm - 1u) / bm, 1);
+    h3_f32_stats_add("wmma-bf16w", &host_args);
+    return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, 0,
+                           stream) == hipSuccess;
+}
+
+/* Both operands already BF16; only for weights that passed
+ * h3_linear_f32_takes_bf16_weight, with rows >= 256 as there. */
+extern "C" int h3_launch_linear_bf16a_wbf16(const uint16_t *input,
+                                            const uint16_t *weight,
+                                            const float *bias, float *output,
+                                            const h3_linear_args *args,
+                                            hipStream_t stream) {
+    h3_linear_args host_args = *args;
+    if (host_args.input_dim % 32u) return 0;
+    void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
+    uint32_t bm = 0, bn = 0, threads = 0;
+    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true, true);
+    dim3 grid((host_args.output_dim + bn - 1u) / bn,
+              (host_args.rows + bm - 1u) / bm, 1);
+    h3_f32_stats_add("wmma-bf16aw", &host_args);
+    return hipLaunchKernel(kernel, grid, dim3(threads), kernel_args, 0,
+                           stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
@@ -2052,6 +2301,18 @@ extern "C" int h3_launch_quantize_bf16_int8_groups(
 #include <hip/hip_fp8.h>
 #endif
 
+/* E4M3 FNUZ is the gfx942 format. The converting constructor is not available
+ * when this file is compiled for RDNA, and FP8 DiT is not launched there. */
+__device__ inline uint8_t h3_fp8_e4m3_fnuz_bits(float val) {
+#if defined(__gfx942__)
+    __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
+    return fp8_val.__x;
+#else
+    (void)val;
+    return 0;
+#endif
+}
+
 __global__ void h3_quantize_bf16_fp8_rows_kernel(
     const uint16_t *input, void *output, float *scales,
     h3_int8_quant_args args) {
@@ -2139,8 +2400,7 @@ __global__ void h3_quantize_bf16_fp8_rows_kernel(
                 float val = h3_bf16_to_f32(vals[i]) * inverse;
                 if (val > FP8_MAX) val = FP8_MAX;
                 if (val < -FP8_MAX) val = -FP8_MAX;
-                __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
-                qpack |= (uint32_t)(fp8_val.__x) << (8 * i);
+                qpack |= (uint32_t)h3_fp8_e4m3_fnuz_bits(val) << (8 * i);
             }
             *reinterpret_cast<uint32_t *>((uint8_t *)output + base + column) = qpack;
         }
@@ -2149,8 +2409,7 @@ __global__ void h3_quantize_bf16_fp8_rows_kernel(
             float val = h3_bf16_to_f32(input[base + column]) * inverse;
             if (val > FP8_MAX) val = FP8_MAX;
             if (val < -FP8_MAX) val = -FP8_MAX;
-            __hip_fp8_e4m3_fnuz fp8_val = (__hip_fp8_e4m3_fnuz)val;
-            ((uint8_t *)output)[base + column] = fp8_val.__x;
+            ((uint8_t *)output)[base + column] = h3_fp8_e4m3_fnuz_bits(val);
         }
     }
 }
@@ -2282,7 +2541,8 @@ __device__ inline int32_t h3_i8dot4_scalar(int32_t a, int32_t b, int32_t acc) {
 /* gfx11/1151: packed signed int8 dot. CDNA: sdot4. Scalar fallback otherwise. */
 __device__ inline int32_t h3_i8dot4(int32_t a, int32_t b, int32_t acc) {
 #if defined(__gfx1151__) || defined(__gfx1150__) || defined(__gfx1100__) || \
-    defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__)
+    defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || \
+    defined(__gfx1200__) || defined(__gfx1201__)
     return __builtin_amdgcn_sudot4(true, a, true, b, acc, false);
 #elif defined(__has_builtin) && __has_builtin(__builtin_amdgcn_sdot4)
     return __builtin_amdgcn_sdot4(a, b, acc, false);
@@ -3536,8 +3796,47 @@ static int h3_int8_ensure_f32_scratch(size_t bytes) {
     return 1;
 }
 
+/* Cap on the int32 GEMM product per hipBLAS call. H3_INT8_I32_CHUNK_MIB=0
+ * removes the cap. */
+static size_t h3_int8_i32_chunk_bytes(void) {
+    static size_t cached = (size_t)-1;
+    if (cached == (size_t)-1) {
+        const char *e = getenv("H3_INT8_I32_CHUNK_MIB");
+        unsigned long mib = e && *e ? strtoul(e, NULL, 10) : 1024ul;
+        cached = (size_t)mib << 20;
+    }
+    return cached;
+}
+
 static int8_t *h3_int8_pack_scratch = NULL;
 static size_t h3_int8_pack_scratch_bytes = 0;
+
+/* Pipeline phases run one after another in separate contexts. Scratch sized
+ * by the DiT sequence would otherwise stay allocated through the VAE. */
+extern "C" void h3_kernels_release_scratch(void) {
+    (void)hipDeviceSynchronize();
+    (void)hipFree(h3_sdpa_scratch);
+    h3_sdpa_scratch = NULL;
+    h3_sdpa_scratch_bytes = 0;
+    (void)hipFree(h3_sdpa_bf16_scratch);
+    h3_sdpa_bf16_scratch = NULL;
+    h3_sdpa_bf16_scratch_bytes = 0;
+    (void)hipFree(h3_sdpa_bf16_direct_scratch);
+    h3_sdpa_bf16_direct_scratch = NULL;
+    h3_sdpa_bf16_direct_scratch_bytes = 0;
+    (void)hipFree(h3_int8_i32_scratch);
+    h3_int8_i32_scratch = NULL;
+    h3_int8_i32_scratch_bytes = 0;
+    (void)hipFree(h3_int8_f32_scratch);
+    h3_int8_f32_scratch = NULL;
+    h3_int8_f32_scratch_bytes = 0;
+    (void)hipFree(h3_int8_pack_scratch);
+    h3_int8_pack_scratch = NULL;
+    h3_int8_pack_scratch_bytes = 0;
+    (void)hipFree(h3_conv3d_weight_scratch);
+    h3_conv3d_weight_scratch = NULL;
+    h3_conv3d_weight_scratch_bytes = 0;
+}
 
 static int h3_int8_ensure_i8_scratch(size_t bytes) {
     if (bytes <= h3_int8_pack_scratch_bytes) return 1;
@@ -3741,6 +4040,68 @@ h3_i32_grouped_reduce_to_bf16_kernel(const int32_t *acc, const float *sa,
     }
 }
 
+/* Same planes, but the arithmetic of the per-group loop epilogue
+ * (h3_i32_grouped_scale_epilogue_kernel): t = v * sa * sb, then t += partial
+ * for every group after the first. Rows past the batched cap use this so the
+ * result matches the loop path bit for bit. */
+__global__ void __launch_bounds__(256)
+h3_i32_grouped_reduce_seq_to_bf16_kernel(const int32_t *acc, const float *sa,
+                                         const float *sb, uint16_t *out,
+                                         uint32_t rows, uint32_t cols,
+                                         uint32_t groups) {
+    /* The loop epilogue compiles to mul, mul, add; a fused v_fmac here
+     * rounds differently. */
+#pragma clang fp contract(off)
+    uint32_t row = blockIdx.y;
+    uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 4u;
+    if (row >= rows || col >= cols) return;
+    size_t plane = (size_t)rows * cols;
+    uint16_t *dst = out + (size_t)row * cols + col;
+    if (col + 3u < cols) {
+        float p0 = 0.0f, p1 = 0.0f, p2 = 0.0f, p3 = 0.0f;
+        for (uint32_t g = 0; g < groups; g++) {
+            float srow = sa[(size_t)row * groups + g];
+            const int32_t *in =
+                acc + (size_t)g * plane + (size_t)row * cols + col;
+            int4 v = *reinterpret_cast<const int4 *>(in);
+            float t0 = (float)v.x * srow * sb[col];
+            float t1 = (float)v.y * srow * sb[col + 1u];
+            float t2 = (float)v.z * srow * sb[col + 2u];
+            float t3 = (float)v.w * srow * sb[col + 3u];
+            if (g) {
+                t0 += p0;
+                t1 += p1;
+                t2 += p2;
+                t3 += p3;
+            }
+            p0 = t0;
+            p1 = t1;
+            p2 = t2;
+            p3 = t3;
+        }
+        uint16_t o0 = h3_f32_to_bf16(p0);
+        uint16_t o1 = h3_f32_to_bf16(p1);
+        uint16_t o2 = h3_f32_to_bf16(p2);
+        uint16_t o3 = h3_f32_to_bf16(p3);
+        uint2 packed;
+        packed.x = (uint32_t)o0 | ((uint32_t)o1 << 16);
+        packed.y = (uint32_t)o2 | ((uint32_t)o3 << 16);
+        *reinterpret_cast<uint2 *>(dst) = packed;
+    } else {
+        for (uint32_t j = 0; col + j < cols; j++) {
+            float p = 0.0f;
+            for (uint32_t g = 0; g < groups; g++) {
+                float srow = sa[(size_t)row * groups + g];
+                int32_t v = acc[(size_t)g * plane + (size_t)row * cols + col + j];
+                float t = (float)v * srow * sb[col + j];
+                if (g) t += p;
+                p = t;
+            }
+            dst[j] = h3_f32_to_bf16(p);
+        }
+    }
+}
+
 static int h3_int8_hipblas_opt_in(int fc1_swiglu) {
     static int plain = -1;
     static int fc1 = -1;
@@ -3771,36 +4132,56 @@ static int h3_int8_hipblas_linear(const int8_t *input, const int8_t *weight,
     if (args->input_dim % 4u || args->input_dim < 32u || gemm_n < 16u)
         return 0;
     if (!h3_int8_ensure_hipblas(stream)) return 0;
-    size_t bytes = (size_t)args->rows * gemm_n * sizeof(int32_t);
+    /* The int32 product is untracked device memory. Unchunked it is
+     * rows x gemm_n x 4 bytes (12.5 GiB for 1344x768 15 s fc1), which on a
+     * 32 GiB card pushes tracked tensors into pinned host memory. Integer
+     * GEMM rows are independent, so chunking does not change the result. */
+    uint32_t chunk_rows = args->rows;
+    const size_t chunk_cap = h3_int8_i32_chunk_bytes();
+    if (chunk_cap && (size_t)chunk_rows * gemm_n * sizeof(int32_t) > chunk_cap) {
+        size_t fit = chunk_cap / ((size_t)gemm_n * sizeof(int32_t));
+        fit &= ~(size_t)255;
+        if (fit < 256u) fit = 256u;
+        if (fit < chunk_rows) chunk_rows = (uint32_t)fit;
+    }
+    size_t bytes = (size_t)chunk_rows * gemm_n * sizeof(int32_t);
     if (!h3_int8_ensure_i32_scratch(bytes)) return 0;
     int32_t alpha = 1, beta = 0;
     int m = (int)gemm_n;
-    int n = (int)args->rows;
     int k = (int)args->input_dim;
+    uint32_t cols = hidden;
+    uint32_t out_stride = hidden;
     int split = h3_int8_split_on();
     static hipEvent_t gemm_start = NULL, gemm_stop = NULL;
     static hipEvent_t epi_start = NULL, epi_stop = NULL;
-    if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
-    if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, n, k, &alpha,
-                      weight, HIP_R_8I, k, input, HIP_R_8I, k, &beta,
-                      h3_int8_i32_scratch, HIP_R_32I, m, HIPBLAS_COMPUTE_32I,
-                      HIPBLAS_GEMM_DEFAULT) != HIPBLAS_STATUS_SUCCESS) {
-        return 0;
-    }
-    if (split) h3_int8_split_end(gemm_start, gemm_stop, stream, "gemm");
-    uint32_t rows = args->rows;
-    uint32_t cols = hidden;
-    dim3 block(256, 1, 1);
-    dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
-    void *ep_host[] = {&h3_int8_i32_scratch, &input_scales, &weight_scales,
-                       &output, &rows, &cols};
     const void *ep = fc1_swiglu ?
         reinterpret_cast<const void *>(h3_i32_swiglu_to_bf16_kernel) :
         reinterpret_cast<const void *>(h3_i32_scale_to_bf16_kernel);
-    if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
-    int ok = hipLaunchKernel(ep, grid, block, ep_host, 0, stream) == hipSuccess;
-    if (split && ok) h3_int8_split_end(epi_start, epi_stop, stream, "epilogue");
-    return ok;
+    for (uint32_t row0 = 0; row0 < args->rows; row0 += chunk_rows) {
+        uint32_t rows = args->rows - row0;
+        if (rows > chunk_rows) rows = chunk_rows;
+        const int8_t *chunk_input = input + (size_t)row0 * args->input_dim;
+        const float *chunk_scales = input_scales + row0;
+        uint16_t *chunk_output = output + (size_t)row0 * out_stride;
+        if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+        if (hipblasGemmEx(h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, (int)rows,
+                          k, &alpha, weight, HIP_R_8I, k, chunk_input,
+                          HIP_R_8I, k, &beta, h3_int8_i32_scratch, HIP_R_32I,
+                          m, HIPBLAS_COMPUTE_32I,
+                          HIPBLAS_GEMM_DEFAULT) != HIPBLAS_STATUS_SUCCESS) {
+            return 0;
+        }
+        if (split) h3_int8_split_end(gemm_start, gemm_stop, stream, "gemm");
+        dim3 block(256, 1, 1);
+        dim3 grid(((cols + 3u) / 4u + 255u) / 256u, rows, 1);
+        void *ep_host[] = {&h3_int8_i32_scratch, &chunk_scales, &weight_scales,
+                           &chunk_output, &rows, &cols};
+        if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+        if (hipLaunchKernel(ep, grid, block, ep_host, 0, stream) != hipSuccess)
+            return 0;
+        if (split) h3_int8_split_end(epi_start, epi_stop, stream, "epilogue");
+    }
+    return 1;
 }
 
 static int h3_int8_grouped_hipblas_on(void) {
@@ -3912,6 +4293,53 @@ static int h3_int8_hipblas_grouped_linear(
                 h3_int8_split_end(epi_start, epi_stop, stream, "grouped-reduce");
             return ok;
         }
+    }
+
+    /* Too many rows for one batched call: run it per row chunk and reduce
+     * with the loop epilogue's arithmetic, so the output matches the
+     * per-group loop below bit for bit at ~3x its speed (14 K=1024 GEMMs
+     * and 14 plane round trips per call otherwise). H3_INT8_GROUPED_CHUNK=0
+     * keeps the loop. */
+    const char *chunk_env = getenv("H3_INT8_GROUPED_CHUNK");
+    int want_chunk = !want_loop && groups > 1u &&
+                     (!chunk_env || strcmp(chunk_env, "0") != 0);
+    size_t chunk_cap = h3_int8_i32_chunk_bytes();
+    if (!chunk_cap) chunk_cap = batched_cap;
+    size_t chunk_rows = chunk_cap / ((size_t)cols * groups * sizeof(int32_t));
+    chunk_rows &= ~(size_t)255;
+    if (want_chunk && chunk_rows >= 256u &&
+        h3_int8_ensure_i32_scratch(chunk_rows * cols * groups *
+                                   sizeof(int32_t))) {
+        for (uint32_t r0 = 0; r0 < rows; r0 += (uint32_t)chunk_rows) {
+            uint32_t rc = rows - r0;
+            if (rc > chunk_rows) rc = (uint32_t)chunk_rows;
+            const int8_t *chunk_in = input + (size_t)r0 * k_full;
+            const float *chunk_sa = input_scales + (size_t)r0 * groups;
+            uint16_t *chunk_out = output + (size_t)r0 * cols;
+            if (split) h3_int8_split_begin(&gemm_start, &gemm_stop, stream);
+            hipblasStatus_t st = hipblasGemmStridedBatchedEx(
+                h3_hipblas, HIPBLAS_OP_T, HIPBLAS_OP_N, m, (int)rc, k, &alpha,
+                weight, HIP_R_8I, lda, (hipblasStride)group_size, chunk_in,
+                HIP_R_8I, lda, (hipblasStride)group_size, &beta,
+                h3_int8_i32_scratch, HIP_R_32I, m,
+                (hipblasStride)((size_t)m * rc), (int)groups,
+                HIPBLAS_COMPUTE_32I, HIPBLAS_GEMM_DEFAULT);
+            if (split) h3_int8_split_end(gemm_start, gemm_stop, stream,
+                                         "grouped-gemm-chunk");
+            if (st != HIPBLAS_STATUS_SUCCESS) return 0;
+            dim3 chunk_grid(((cols + 3u) / 4u + 255u) / 256u, rc, 1);
+            void *red[] = {&h3_int8_i32_scratch, &chunk_sa, &weight_scales,
+                           &chunk_out, &rc, &cols, &groups};
+            if (split) h3_int8_split_begin(&epi_start, &epi_stop, stream);
+            if (hipLaunchKernel(
+                    reinterpret_cast<const void *>(
+                        h3_i32_grouped_reduce_seq_to_bf16_kernel),
+                    chunk_grid, block, red, 0, stream) != hipSuccess)
+                return 0;
+            if (split) h3_int8_split_end(epi_start, epi_stop, stream,
+                                         "grouped-reduce-seq");
+        }
+        return 1;
     }
 
     if (!h3_int8_ensure_i32_scratch(plane_bytes)) return 0;

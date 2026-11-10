@@ -1,17 +1,20 @@
 # AGENTS.md — h3-hip.c
 
-HIP port of antirez/h3.c for AMD GPUs. One tree, three ISAs.
+HIP port of antirez/h3.c for AMD GPUs. One tree, four ISAs.
 
 ## Build
 
 `HIP_ARCH` is **required** on every build (except `make clean`). The Makefile will error without it.
 
 ```bash
-make HIP_ARCH=gfx1151 -j$(nproc) h3   # Strix Halo (RDNA)
+make HIP_ARCH=gfx1151 -j$(nproc) h3   # Strix Halo (RDNA3.5, wave32)
+make HIP_ARCH=gfx1201 -j$(nproc) h3   # Radeon AI PRO R9700 (RDNA4, wave32)
 make HIP_ARCH=gfx90a  -j$(nproc) h3   # MI210 / MI250X (CDNA2)
 make HIP_ARCH=gfx942  -j$(nproc) h3   # MI300X (CDNA3)
 make clean                              # no HIP_ARCH needed
 ```
+
+`gfx1200` uses the same wave32 path as `gfx1201`. There is no `/opt/rocm` on a TheRock wheel install: put that runtime's `bin` on `PATH` so `hipcc` and `hipconfig` resolve, or pass `ROCM_PATH` as the `_rocm_sdk_devel` prefix.
 
 After changing arch, always `make clean` before rebuilding.
 
@@ -29,6 +32,9 @@ make HIP_ARCH=gfx942 hip-functional
 # Fox-s2 md5 regression gate (Halo only)
 make HIP_ARCH=gfx1151 halo-regression
 # or: ./tools/halo_regression.sh [--clean] [--skip-e2e] [--strict]
+
+# --serve vs CLI fox-s2 md5 gate (any ISA; port 8597, about 100 s)
+make HIP_ARCH=gfx1201 serve-regression
 ```
 
 Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`/home/amd/HF-MODELS/MiniMax-H3`).
@@ -42,13 +48,17 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - **Metal sources** (`h3_gpu.m`, `h3_shaders.metal`, `h3_metal.m`) are reference-only for upstream parity — not compiled on Linux
 - **Major pipelines:** DiT (`h3_dit.c`, `h3_dit_schedule.c`), Video VAE (`h3_video_vae.c`), Audio VAE (`h3_audio_vae.c`), Text encoder (`h3_text_encoder.c`), Vision encoder (`h3_vision_encoder.c`), FFmpeg mux (`h3_ffmpeg.c`)
 - **HTTP daemon (experimental):** `./h3 -d MODEL --serve` → `h3d.c` (loopback JSON+SSE, protocol **v1alpha**). Bind `127.0.0.1:8571` unless `H3D_BIND`/`H3D_PORT` are set. Do not expose the daemon on a public interface. Contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md). Agent plugin lives in a separate repo (`dsh-plugin-h3-hip`).
-- **Wave mode:** gfx1151 uses wave32 (rocWMMA); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
+- **ComfyUI node (experimental):** `integrations/comfyui/` (V3 node API, symlink into `custom_nodes/`), a thin client of `--serve`; `run_workflow.py` queues the API-format graphs in `workflows/` headless. User guide: [`docs/wiki/ComfyUI.md`](docs/wiki/ComfyUI.md).
+- **Wave mode:** gfx1151 and gfx1201 use wave32 (rocWMMA; gfx12 accumulator rows differ, see `H3_WMMA_ACC_ROW`); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
 
 ## Key gotchas
 
 - `H3_HIP_DEVICE=N` or `HIP_VISIBLE_DEVICES=N` selects GPU on multi-GPU boxes. Do not run two weight-streaming T2VA jobs simultaneously.
 - Multi-task parallelism is **not supported** on a single GPU (shared kernel state). Use `HIP_VISIBLE_DEVICES` for multi-process isolation. See `docs/DESIGN_MULTI_TASK.md`.
 - `H3_INT8_MLP=1` enables INT8 DiT on all ISAs (default is INT8 on all platforms). Set `H3_INT8_MLP=0` to use BF16.
+- `H3_INT8_HOST=1` keeps those INT8 linears in host RAM and copies one block to the GPU at a time. Same numbers as resident INT8. This is how 1344×768 fits in 32 GiB. It does not combine with `--ssd-streaming`. The parked weights sit in one pinned arena and two device slots alternate, so block N+1 copies on a second stream while block N runs (+1 slot, ~0.37 GiB). `H3_INT8_HOST_OVERLAP=0`, or a failed pinned allocation, falls back to one slot refilled after each block.
+- On RDNA (WMMA F32 path) the video VAE stores its block linear weights as BF16 at load, the same rounding the kernel applied per call: same output, VAE peak ~9.4 → ~5.1 GiB. `H3_F32_BF16_WEIGHT=0` keeps F32 weights.
+- Device tensors that do not fit under `H3_DEVICE_WEIGHT_RESERVE_GIB` (20 GiB on ≥48 GiB cards, 4 GiB below that) silently fall back to pinned host memory, and kernels then read them over PCIe. On a 32 GiB card that made the 15 s video VAE ~20× slower. `H3_HIP_MEMLOG=1` prints every fallback and the free VRAM at each context.
 - `H3_FP8_MLP=1` enables FP8 DiT on gfx942 only (experimental, uses hipBLASLt). FP8 supersedes INT8 when set.
 - `H3_FP8_CLIP=0.95` (default) weight quantization clip factor. Lower values improve PSNR (+1.2 dB at 0.95 vs 1.0).
 - `H3_INT8_VAE=1` enables INT8 Video VAE weights (69% VRAM reduction, ~9% slower).
@@ -75,22 +85,26 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   the default `bench/` scoreboard. See [issue #4](https://github.com/alexhegit/h3-hip.c/issues/4).
 - `--profile` sets `H3_PROFILE=1` and prints per-phase GPU timing with op-class breakdown.
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
-- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). The daemon currently runs the dense presets only. Covering FastH3, Pika, and the other CLI paths is an unimplemented proposal: `docs/DESIGN_DHS_PATHS.md`.
+- `--pika-lora` / `--pika-ref-lora` merge a Pika H3 Flex rank-128 LoRA and force the 6-step renoise schedule (1000, 750, 500, 250, 100, 40), 50 layers, and `--reuse 1`. `--pika-lora` is FL2VA; references need `--pika-ref-lora`. Do not combine with `--fasth3-lora`, token reduction, sol-attn, fbc, VSA, SSD streaming, or core reuse above 1. `--pika-lora` sets `H3_GPU_SAMPLER=1` unless that variable or `H3_CPU_SAMPLER` is already set. Download: `./tools/download_pika_lora.sh`. See `docs/PIKA.md`.
+- `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). `--serve` has no Pika flag yet; what is left before it fronts every CLI path is in `docs/DESIGN_DHS_PATHS.md`. On a discrete card below 48 GiB `--serve` sets `H3_INT8_HOST=1` itself so the cached DiT leaves room for the video VAE (`docs/KNOWN_ISSUES.md` KI-007); an explicit `H3_INT8_HOST` wins. The daemon keeps its generation cache (9.5 GiB VRAM + 19 GiB RAM after an 864×480 FastH3 job on the R9700) until `POST /v1/cache/release`, a job with `options.release_after`, or `H3D_IDLE_RELEASE_SEC` frees it; output is unchanged (`DESIGN_DHS.md` §13.7). `options.fasth3: true` uses the daemon's own dense FastH3 adapter (`H3D_FASTH3_LORA`, default the `download_fasth3_lora.sh` location; `/v1/info` `adapters.fasth3`). `./tools/h3d_smoke.py` checks a running daemon (validation, concurrency, cancel, SSE, cache release); `--generate --fox-md5 MD5` adds fox-s2 on a cache miss and a cache hit. `make serve-regression` runs it against the same build's CLI (KI-005).
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
 - `linenoise.o` is vendored and compiled with relaxed warnings (`-Wno-conversion`).
 
 ## Model weights
 
-Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). Expected at `./MiniMax-H3/` or set `H3_MODEL`. Partial download: `./tools/download_weights.sh` (`FL2VA/` ~134 GiB for T2VA; `--both` adds `Ref2VA/`). Root `transformer/`, `transformer_ref/`, `text_encoder/`, and `vae/` are unused. The optional 4-step dense LoRA is `./tools/download_fasth3_lora.sh` (`dense-datafree/adapter_model.safetensors`, ~1.4 GiB) and is passed with `--fasth3-lora`. `--vsa` needs the same script's `--vsa` adapter (`vsa-datafree/adapter_model.safetensors`). `--taeh3` takes `./tools/download_taeh3.sh`. All three stay off by default and are not part of the `bench/` scoreboard. MI300X 5 s / 15 s numbers: `docs/perf-runs/MI300X_COMPARE_2026-10-07.md`. The 768p Prompt 1 comparison is `docs/perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`. gfx1151 FastH3 / TAEH3 / VSA, including the wave32 rocWMMA fine kernel and the tiled TAEH3 conv (5 s VSA+TAEH3 226.69 s), is `docs/perf-runs/HALO_FASTH3_2026-10-09.md`.
+Official checkpoint: [MiniMaxAI/MiniMax-H3](https://huggingface.co/MiniMaxAI/MiniMax-H3). Expected at `./MiniMax-H3/` or set `H3_MODEL`. Partial download: `./tools/download_weights.sh` (`FL2VA/` ~134 GiB for T2VA; `--both` adds `Ref2VA/`). Root `transformer/`, `transformer_ref/`, `text_encoder/`, and `vae/` are unused. The optional 4-step dense LoRA is `./tools/download_fasth3_lora.sh` (`dense-datafree/adapter_model.safetensors`, ~1.4 GiB) and is passed with `--fasth3-lora`. The optional Pika H3 Flex LoRAs are `./tools/download_pika_lora.sh` (`fl2va/adapter.safetensors`, ~2.77 GB; `--both` adds Ref2VA) and are passed with `--pika-lora` / `--pika-ref-lora`. Do not download that repo's base-weight copy. `--vsa` needs the same script's `--vsa` adapter (`vsa-datafree/adapter_model.safetensors`). `--taeh3` takes `./tools/download_taeh3.sh`. All three stay off by default and are not part of the `bench/` scoreboard. MI300X 5 s / 15 s numbers: `docs/perf-runs/MI300X_COMPARE_2026-10-07.md`. The 768p Prompt 1 comparison is `docs/perf-runs/MI300X_VS_NVIDIA_768P_2026-10-07.md`. gfx1151 FastH3 / TAEH3 / VSA, including the wave32 rocWMMA fine kernel and the tiled TAEH3 conv (5 s VSA+TAEH3 226.69 s), is `docs/perf-runs/HALO_FASTH3_2026-10-09.md`.
 
 ## Documentation
 
 - `docs/BEST_PRACTICE.md` — quick reference for optimal settings
 - `docs/PERFORMANCE.md` — scoreboard; MI300X process E2E vs DiT total
+- `docs/perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md` — R9700 vs ComfyUI native MiniMax-H3 (method, medians, caveats, quotable claim)
 - `docs/perf-runs/MI300X_2026-09-18_full.md` — 2026-09-18 MI300X retake
+- `docs/PIKA.md` — opt-in Pika H3 Flex (download, commands, MI300X speed, quality)
 - `docs/SOL_ATTN.md` — opt-in lossy Sol-Attn (speed vs quality vs dense)
 - `docs/KNOWN_ISSUES.md` — tracked gaps (CPU Euler sampler, nearest-neighbor host scale, etc.)
 - `docs/DESIGN_MULTI_TASK.md` — multi-task parallelism design options
 - `docs/DESIGN_DHS.md` — `--serve` daemon protocol v1alpha and DSH plugin phases
-- `docs/DESIGN_DHS_PATHS.md` — unimplemented proposal: `--serve` fronts every CLI generation path
-- `docs/wiki/` — Getting started, T2VA pipeline, Long video
+- `docs/DESIGN_DHS_PATHS.md` — `--serve` fronting every CLI generation path: what landed, what is left (Pika)
+- `docs/DESIGN_SERVE_CLIENTS.md` — plan/tracker: ComfyUI through `--serve` (daemon gate + idle VRAM release, in-tree node, wiki tutorial, public release)
+- `docs/wiki/` — Getting started, T2VA pipeline, Long video, ComfyUI

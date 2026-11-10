@@ -28,6 +28,13 @@ __device__ __host__ inline uint16_t h3_f32_to_bf16(float value) {
     return *reinterpret_cast<uint16_t *>(&bf16);
 }
 
+/* Round-to-nearest-even like __float2bfloat16 for every non-NaN input, without
+ * its NaN test. Only for values that cannot be NaN (softmax P). */
+__device__ inline uint16_t h3_f32_to_bf16_finite(float value) {
+    uint32_t bits = __float_as_uint(value);
+    return (uint16_t)((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
+}
+
 /* Two bf16 in one dword so an LDS tile can be filled with b32 stores. */
 __device__ inline uint32_t h3_pack_bf16x2(float low, float high) {
     return (uint32_t)h3_f32_to_bf16(low) |
@@ -171,7 +178,19 @@ __global__ void h3_swiglu_bf16_kernel(const uint16_t *fused, uint16_t *output,
         h3_f32_to_bf16(gate / (1.0f + expf(-gate)) * up);
 }
 
-__global__ void h3_swiglu_f32_kernel(const float *fused, float *output,
+/* F32 math, F32 or BF16 store. The BF16 store is the h3_f32_to_bf16 rounding
+ * the F32-input WMMA linear applies on load, so a linear fed the BF16 copy
+ * sees the same operands. */
+__device__ inline void h3_store_act(float *output, float value) {
+    *output = value;
+}
+
+__device__ inline void h3_store_act(uint16_t *output, float value) {
+    *output = h3_f32_to_bf16(value);
+}
+
+template <typename OT>
+__global__ void h3_swiglu_f32_kernel(const float *fused, OT *output,
                                      h3_swiglu_args args) {
     uint32_t column = blockIdx.x * blockDim.x + threadIdx.x;
     uint32_t row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -179,8 +198,8 @@ __global__ void h3_swiglu_f32_kernel(const float *fused, float *output,
     uint32_t base = row * args.width * 2;
     float gate = fused[base + column];
     float up = fused[base + args.width + column];
-    output[row * args.width + column] =
-        gate / (1.0f + expf(-gate)) * up;
+    h3_store_act(output + row * args.width + column,
+                 gate / (1.0f + expf(-gate)) * up);
 }
 
 __global__ void h3_clip_f32_kernel(const float *input, float *output,
@@ -457,9 +476,10 @@ __global__ void h3_scale_add_f32_kernel(const float *residual,
  * output. Both results are live: residual carries the block's attention output
  * to the next residual add, output feeds the MLP. Saves one full read+write of
  * the hidden tensor per block. */
+template <typename OT>
 __global__ void h3_scale_add_rms_norm_f32_kernel(
     float *residual, const float *branch, const float *scale,
-    const float *norm_weight, float *output, h3_norm_args args) {
+    const float *norm_weight, OT *output, h3_norm_args args) {
     uint32_t row = blockIdx.x;
     uint32_t tid = threadIdx.x;
     uint32_t threads = blockDim.x;
@@ -481,8 +501,8 @@ __global__ void h3_scale_add_rms_norm_f32_kernel(
     }
     float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
     for (uint32_t column = tid; column < args.width; column += threads) {
-        output[row * args.width + column] =
-            r[column] * inverse * norm_weight[column];
+        h3_store_act(output + row * args.width + column,
+                     r[column] * inverse * norm_weight[column]);
     }
 }
 
@@ -514,8 +534,9 @@ __global__ void h3_geglu_f32_kernel(const float *gate, const float *linear,
     output[gid] = gelu * linear[gid];
 }
 
+template <typename OT>
 __global__ void h3_rms_norm_f32_kernel(const float *input, const float *weight,
-                                       float *output, h3_norm_args args) {
+                                       OT *output, h3_norm_args args) {
     uint32_t row = blockIdx.x;
     uint32_t tid = threadIdx.x;
     uint32_t threads = blockDim.x;
@@ -534,8 +555,8 @@ __global__ void h3_rms_norm_f32_kernel(const float *input, const float *weight,
     }
     float inverse = rsqrtf(reductions[0] / float(args.width) + args.epsilon);
     for (uint32_t column = tid; column < args.width; column += threads) {
-        output[row * args.width + column] =
-            x[column] * inverse * weight[column];
+        h3_store_act(output + row * args.width + column,
+                     x[column] * inverse * weight[column]);
     }
 }
 
@@ -2202,6 +2223,8 @@ h3_sdpa_bf16_wave_d128_q6_vec_kernel(const uint16_t *query, const uint16_t *key,
  *   matrix_a row_major  lane l -> row l&15,  element i -> k 8*(l>>4)+i
  *   matrix_b col_major  lane l -> col l&15,  element i -> k 8*(l>>4)+i
  *   accumulator f32     lane l -> col l&15,  element i -> row 2*i+(l>>4)
+ * gfx1201 (probed, rocWMMA 2.x) keeps that column map. Its accumulator row is
+ * i+8*(l>>4) instead; H3_WMMA_ACC_ROW selects the row at compile time.
  * The accumulator row mapping is what lets the online-softmax rescale stay in
  * registers: element i of every O fragment belongs to row 2*i+(l>>4), so one
  * alpha per element index covers all eight 16-dim output slices.
@@ -2213,8 +2236,10 @@ h3_sdpa_bf16_wave_d128_q6_vec_kernel(const uint16_t *query, const uint16_t *key,
 #define H3_SDPA_WMMA_LD 136u
 
 /* WAVES sets the query block (WAVES*16 rows), which is the K/V reuse factor;
- * BK sets the key tile staged in LDS per iteration. */
-template <uint32_t WAVES, uint32_t BK>
+ * BK sets the key tile staged in LDS per iteration. PF stages the next K/V
+ * tile through registers while the current one is consumed (same arithmetic
+ * and order, so the output is bit-identical to PF=false). */
+template <uint32_t WAVES, uint32_t BK, bool PF = false>
 __global__ void __launch_bounds__(WAVES * 32u)
 h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
                               const uint16_t *value, uint16_t *output,
@@ -2224,11 +2249,25 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
     constexpr uint32_t THREADS = WAVES * 32u;
     constexpr uint32_t NT = BK / 16u;
+    /* +8 halves skews the 16 P rows across LDS banks for the matrix_a load. */
+    constexpr uint32_t SP_LD = PF ? BK + 8u : BK;
+    constexpr uint32_t VEC = 4u;
+    constexpr uint32_t CHUNKS = BK * D / VEC;
+    constexpr uint32_t RPT = PF ? (CHUNKS + THREADS - 1u) / THREADS : 1u;
+    /* PF keeps V transposed in LDS ([dim][key]) so each P@V B-fragment is one
+     * 16-byte load per lane instead of eight 16-bit gathers. A thread moves
+     * two adjacent keys x four dims and writes them as packed key pairs; 16
+     * lanes cover 16 key pairs of one dim chunk, which keeps the stores
+     * bank-conflict free. */
+    constexpr uint32_t LDT = BK + 8u;
+    constexpr uint32_t NPAIR = BK / 2u;
+    constexpr uint32_t PCHUNKS = NPAIR * (D / VEC);
+    constexpr uint32_t VPT = PF ? (PCHUNKS + THREADS - 1u) / THREADS : 1u;
     typedef rocwmma::bfloat16_t bf16;
 
-    __shared__ uint16_t sk[BK * LD];
-    __shared__ uint16_t sv[BK * LD];
-    __shared__ uint16_t sp[WAVES][QROWS * BK];
+    __shared__ __align__(16) uint16_t sk[BK * LD];
+    __shared__ __align__(16) uint16_t sv[PF ? D * LDT : BK * LD];
+    __shared__ __align__(16) uint16_t sp[WAVES][QROWS * SP_LD];
 
     const uint32_t tid = threadIdx.x;
     const uint32_t wave = tid >> 5;
@@ -2275,78 +2314,197 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
     const uint16_t *kp = key + kv_base;
     const uint16_t *vp = value + kv_base;
 
-    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
-        __syncthreads();
-        /* Coalesced uint2 staging: consecutive threads take consecutive
-         * 8-byte chunks; rows past the sequence end are zero filled. */
-        for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
-            uint32_t r = idx >> 7;
-            uint32_t d = idx & 127u;
-            uint32_t g = k0 + r;
-            uint2 kk = uint2{0u, 0u};
-            uint2 vv = uint2{0u, 0u};
-            if (g < sequence) {
-                size_t off = (size_t)g * kv_stride + d;
-                kk = *reinterpret_cast<const uint2 *>(kp + off);
-                vv = *reinterpret_cast<const uint2 *>(vp + off);
+    uint2 kreg[RPT], vreg[2u * VPT];
+    auto load_glob = [&](uint32_t k0) {
+#pragma unroll
+        for (uint32_t u = 0; u < RPT; u++) {
+            uint32_t c = tid + u * THREADS;
+            uint32_t g = k0 + ((c * VEC) >> 7);
+            kreg[u] = uint2{0u, 0u};
+            if (c < CHUNKS && g < sequence) {
+                size_t off = (size_t)g * kv_stride + ((c * VEC) & 127u);
+                kreg[u] = *reinterpret_cast<const uint2 *>(kp + off);
             }
-            *reinterpret_cast<uint2 *>(sk + r * LD + d) = kk;
-            *reinterpret_cast<uint2 *>(sv + r * LD + d) = vv;
         }
+#pragma unroll
+        for (uint32_t u = 0; u < VPT; u++) {
+            uint32_t pc = tid + u * THREADS;
+            uint32_t g = k0 + 2u * (pc % NPAIR);
+            size_t d = (size_t)(pc / NPAIR) * VEC;
+            vreg[2u * u] = uint2{0u, 0u};
+            vreg[2u * u + 1u] = uint2{0u, 0u};
+            if (pc >= PCHUNKS) continue;
+            if (g < sequence)
+                vreg[2u * u] = *reinterpret_cast<const uint2 *>(
+                    vp + (size_t)g * kv_stride + d);
+            if (g + 1u < sequence)
+                vreg[2u * u + 1u] = *reinterpret_cast<const uint2 *>(
+                    vp + (size_t)(g + 1u) * kv_stride + d);
+        }
+    };
+    auto store_lds = [&](void) {
+#pragma unroll
+        for (uint32_t u = 0; u < RPT; u++) {
+            uint32_t c = tid + u * THREADS;
+            if (c >= CHUNKS) continue;
+            uint32_t r = (c * VEC) >> 7;
+            uint32_t d = (c * VEC) & 127u;
+            *reinterpret_cast<uint2 *>(sk + r * LD + d) = kreg[u];
+        }
+#pragma unroll
+        for (uint32_t u = 0; u < VPT; u++) {
+            uint32_t pc = tid + u * THREADS;
+            if (pc >= PCHUNKS) continue;
+            uint32_t r = 2u * (pc % NPAIR);
+            uint32_t d = (pc / NPAIR) * VEC;
+            uint2 lo = vreg[2u * u], hi = vreg[2u * u + 1u];
+            uint32_t *dst = reinterpret_cast<uint32_t *>(sv + d * LDT + r);
+            dst[0] = (lo.x & 0xffffu) | (hi.x << 16);
+            dst[LDT / 2u] = (lo.x >> 16) | (hi.x & 0xffff0000u);
+            dst[LDT] = (lo.y & 0xffffu) | (hi.y << 16);
+            dst[3u * LDT / 2u] = (lo.y >> 16) | (hi.y & 0xffff0000u);
+        }
+    };
+    if constexpr (PF) {
+        load_glob(0u);
+        store_lds();
         __syncthreads();
+    }
+
+    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
+        const bool has_next = k0 + BK < sequence;
+        if constexpr (PF) {
+            if (has_next) load_glob(k0 + BK);
+        } else {
+            __syncthreads();
+            /* Coalesced uint2 staging: consecutive threads take consecutive
+             * 8-byte chunks; rows past the sequence end are zero filled. */
+            for (uint32_t idx = tid * 4u; idx < BK * D; idx += THREADS * 4u) {
+                uint32_t r = idx >> 7;
+                uint32_t d = idx & 127u;
+                uint32_t g = k0 + r;
+                uint2 kk = uint2{0u, 0u};
+                uint2 vv = uint2{0u, 0u};
+                if (g < sequence) {
+                    size_t off = (size_t)g * kv_stride + d;
+                    kk = *reinterpret_cast<const uint2 *>(kp + off);
+                    vv = *reinterpret_cast<const uint2 *>(vp + off);
+                }
+                *reinterpret_cast<uint2 *>(sk + r * LD + d) = kk;
+                *reinterpret_cast<uint2 *>(sv + r * LD + d) = vv;
+            }
+            __syncthreads();
+        }
 
         /* S = Q @ K^T. K is row-major [key][dim] in LDS, so reading it as
          * col_major with the same leading dimension yields K^T directly. */
         rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fs[NT];
 #pragma unroll
-        for (uint32_t t = 0; t < NT; t++) {
-            rocwmma::fill_fragment(fs[t], 0.0f);
+        for (uint32_t t = 0; t < NT; t++) rocwmma::fill_fragment(fs[t], 0.0f);
+        /* Dim slices outermost: each fs[t] still accumulates i = 0..7 in
+         * order, but the NT chains interleave instead of 8 back-to-back
+         * dependent WMMAs. With PF=false the original order is kept. */
+        if constexpr (PF) {
 #pragma unroll
             for (int i = 0; i < 8; i++) {
-                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
-                                  rocwmma::col_major> fk;
-                rocwmma::load_matrix_sync(
-                    fk, reinterpret_cast<const bf16 *>(
-                            sk + t * 16u * LD + (uint32_t)i * 16u),
-                    LD);
-                rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
+#pragma unroll
+                for (uint32_t t = 0; t < NT; t++) {
+                    rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                      rocwmma::col_major> fk;
+                    rocwmma::load_matrix_sync(
+                        fk, reinterpret_cast<const bf16 *>(
+                                sk + t * 16u * LD + (uint32_t)i * 16u),
+                        LD);
+                    rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
+                }
+            }
+        } else {
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+#pragma unroll
+                for (int i = 0; i < 8; i++) {
+                    rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                      rocwmma::col_major> fk;
+                    rocwmma::load_matrix_sync(
+                        fk, reinterpret_cast<const bf16 *>(
+                                sk + t * 16u * LD + (uint32_t)i * 16u),
+                        LD);
+                    rocwmma::mma_sync(fs[t], fq[i], fk, fs[t]);
+                }
             }
         }
 
+        /* Only the last key tile can run past the sequence. */
+        const bool full_tile = PF && k0 + BK <= sequence;
         float alpha[8];
 #pragma unroll
         for (int i = 0; i < 8; i++) {
             float s[NT];
             float m = -1e30f;
+            if (full_tile) {
 #pragma unroll
-            for (uint32_t t = 0; t < NT; t++) {
-                s[t] = k0 + t * 16u + col < sequence
-                           ? fs[t].x[i] * args.scale
-                           : -1e30f;
-                m = fmaxf(m, s[t]);
+                for (uint32_t t = 0; t < NT; t++) {
+                    s[t] = fs[t].x[i] * args.scale;
+                    m = fmaxf(m, s[t]);
+                }
+            } else {
+#pragma unroll
+                for (uint32_t t = 0; t < NT; t++) {
+                    s[t] = k0 + t * 16u + col < sequence
+                               ? fs[t].x[i] * args.scale
+                               : -1e30f;
+                    m = fmaxf(m, s[t]);
+                }
             }
+            if constexpr (PF) {
+                m = fmaxf(m, h3_row16_xor<1>(m));
+                m = fmaxf(m, h3_row16_xor<2>(m));
+                m = fmaxf(m, h3_row16_xor<4>(m));
+                m = fmaxf(m, h3_row16_xor<8>(m));
+            } else {
 #pragma unroll
-            for (int off = 1; off < 16; off <<= 1)
-                m = fmaxf(m, h3_shfl_xor32(m, off));
+                for (int off = 1; off < 16; off <<= 1)
+                    m = fmaxf(m, h3_shfl_xor32(m, off));
+            }
             float new_max = fmaxf(row_max[i], m);
             alpha[i] = h3_fast_exp(row_max[i] - new_max);
-            uint32_t prow = 2u * (uint32_t)i + rowg;
+            uint32_t prow = H3_WMMA_ACC_ROW(i, rowg);
             float ps = 0.0f;
 #pragma unroll
             for (uint32_t t = 0; t < NT; t++) {
                 float p = h3_fast_exp(s[t] - new_max);
                 ps += p;
-                sp[wave][prow * BK + t * 16u + col] = h3_f32_to_bf16(p);
+                sp[wave][prow * SP_LD + t * 16u + col] =
+                    PF ? h3_f32_to_bf16_finite(p) : h3_f32_to_bf16(p);
             }
+            if constexpr (PF) {
+                ps += h3_row16_xor<1>(ps);
+                ps += h3_row16_xor<2>(ps);
+                ps += h3_row16_xor<4>(ps);
+                ps += h3_row16_xor<8>(ps);
+            } else {
 #pragma unroll
-            for (int off = 1; off < 16; off <<= 1) ps += h3_shfl_xor32(ps, off);
+                for (int off = 1; off < 16; off <<= 1)
+                    ps += h3_shfl_xor32(ps, off);
+            }
             row_sum[i] = fmaf(row_sum[i], alpha[i], ps);
             row_max[i] = new_max;
         }
+        /* alpha is exactly 1 when no row max moved; x * 1.0f == x, so the
+         * wave can skip the 64-multiply rescale without changing a bit. */
+        bool rescale = true;
+        if constexpr (PF) {
+            bool moved = false;
 #pragma unroll
-        for (int j = 0; j < 8; j++)
+            for (int i = 0; i < 8; i++) moved |= alpha[i] != 1.0f;
+            rescale = __any(moved);
+        }
+        if (rescale) {
 #pragma unroll
-            for (int i = 0; i < 8; i++) fo[j].x[i] *= alpha[i];
+            for (int j = 0; j < 8; j++)
+#pragma unroll
+                for (int i = 0; i < 8; i++) fo[j].x[i] *= alpha[i];
+        }
 
         /* O += P @ V. sp is written and read by the same wave, so the
          * compiler's LDS dependency tracking covers it without a barrier. */
@@ -2355,16 +2513,35 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
             rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
                               rocwmma::row_major> fp;
             rocwmma::load_matrix_sync(
-                fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), BK);
+                fp, reinterpret_cast<const bf16 *>(sp[wave] + t * 16u), SP_LD);
 #pragma unroll
             for (int j = 0; j < 8; j++) {
-                rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
-                                  rocwmma::row_major> fv;
-                rocwmma::load_matrix_sync(
-                    fv, reinterpret_cast<const bf16 *>(
-                            sv + t * 16u * LD + (uint32_t)j * 16u),
-                    LD);
-                rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+                if constexpr (PF) {
+                    rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                      rocwmma::col_major> fv;
+                    rocwmma::load_matrix_sync(
+                        fv, reinterpret_cast<const bf16 *>(
+                                sv + (uint32_t)j * 16u * LDT + t * 16u),
+                        LDT);
+                    rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+                } else {
+                    rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                                      rocwmma::row_major> fv;
+                    rocwmma::load_matrix_sync(
+                        fv, reinterpret_cast<const bf16 *>(
+                                sv + t * 16u * LD + (uint32_t)j * 16u),
+                        LD);
+                    rocwmma::mma_sync(fo[j], fp, fv, fo[j]);
+                }
+            }
+        }
+
+        if constexpr (PF) {
+            /* Every wave is done with sk/sv: commit the prefetched tile. */
+            if (has_next) {
+                __syncthreads();
+                store_lds();
+                __syncthreads();
             }
         }
     }
@@ -2372,7 +2549,7 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
 #pragma unroll
     for (int i = 0; i < 8; i++) {
         float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
-        uint32_t q_pos = qbase + 2u * (uint32_t)i + rowg;
+        uint32_t q_pos = qbase + H3_WMMA_ACC_ROW(i, rowg);
         if (q_pos < q_row0) continue;
 #pragma unroll
         for (int j = 0; j < 8; j++) {
@@ -2381,6 +2558,15 @@ h3_sdpa_bf16_wmma_d128_kernel(const uint16_t *query, const uint16_t *key,
                 h3_f32_to_bf16(fo[j].x[i] * inv);
         }
     }
+}
+
+template <uint32_t WAVES, uint32_t BK>
+static const void *h3_sdpa_wmma_d128_pick(uint32_t pf) {
+    if (pf)
+        return reinterpret_cast<const void *>(
+            h3_sdpa_bf16_wmma_d128_kernel<WAVES, BK, true>);
+    return reinterpret_cast<const void *>(
+        h3_sdpa_bf16_wmma_d128_kernel<WAVES, BK>);
 }
 
 /* gfx90a/CDNA2 counterpart of the wave32 WMMA kernel above. rocWMMA maps a
@@ -2742,7 +2928,7 @@ h3_sdpa_f32_wmma_d64_kernel(const float *query, const float *key,
                 m = fmaxf(m, h3_shfl_xor32(m, off));
             float new_max = fmaxf(row_max[i], m);
             alpha[i] = h3_fast_exp(row_max[i] - new_max);
-            uint32_t prow = 2u * (uint32_t)i + rowg;
+            uint32_t prow = H3_WMMA_ACC_ROW(i, rowg);
             float ps = 0.0f;
 #pragma unroll
             for (uint32_t t = 0; t < NT; t++) {
@@ -2784,7 +2970,7 @@ h3_sdpa_f32_wmma_d64_kernel(const float *query, const float *key,
 #pragma unroll
     for (int i = 0; i < 8; i++) {
         float inv = row_sum[i] > 0.0f ? 1.0f / row_sum[i] : 0.0f;
-        uint32_t q_pos = qbase + 2u * (uint32_t)i + rowg;
+        uint32_t q_pos = qbase + H3_WMMA_ACC_ROW(i, rowg);
         if (q_pos >= sequence) continue;
 #pragma unroll
         for (uint32_t j = 0; j < ND; j++) {
@@ -3784,6 +3970,20 @@ __global__ void h3_euler_bf16_kernel(float *sample, const uint16_t *last,
     sample[sample_index] = fmaf(args.delta, velocity, sample[sample_index]);
 }
 
+__global__ void h3_renoise_bf16_kernel(float *sample, const uint16_t *velocity,
+                                     const float *noise,
+                                     h3_renoise_args args) {
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gid >= args.elements) return;
+    uint32_t sample_index = args.sample_offset + gid;
+    float clean = fmaf(args.sigma, h3_bf16_to_f32(velocity[gid]),
+                       sample[sample_index]);
+    float next = clean;
+    if (args.use_noise)
+        next = fmaf(args.sigma_next, noise[gid] - clean, clean);
+    sample[sample_index] = next;
+}
+
 static int h3_launch_1d(uint32_t count, hipStream_t stream,
                         const void *kernel, size_t args_size, void **args) {
     if (!count) return 1;
@@ -3899,8 +4099,22 @@ extern "C" int h3_launch_swiglu_f32(const float *fused, float *output,
     dim3 block(16, 16, 1);
     dim3 grid((host_args.width + 15) / 16, (host_args.rows + 15) / 16, 1);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_swiglu_f32_kernel), grid,
-               block, kernel_args, sizeof(kernel_args), stream) == hipSuccess;
+               reinterpret_cast<const void *>(h3_swiglu_f32_kernel<float>),
+               grid, block, kernel_args, sizeof(kernel_args),
+               stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_swiglu_f32_bf16(const float *fused, uint16_t *output,
+                                         const h3_swiglu_args *args,
+                                         hipStream_t stream) {
+    h3_swiglu_args host_args = *args;
+    void *kernel_args[] = {&fused, &output, &host_args};
+    dim3 block(16, 16, 1);
+    dim3 grid((host_args.width + 15) / 16, (host_args.rows + 15) / 16, 1);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(h3_swiglu_f32_kernel<uint16_t>),
+               grid, block, kernel_args, sizeof(kernel_args),
+               stream) == hipSuccess;
 }
 
 extern "C" int h3_launch_clip_f32(const float *input, float *output,
@@ -4061,7 +4275,23 @@ extern "C" int h3_launch_scale_add_rms_norm_f32(
                            &host_args};
     uint32_t threads = h3_row_threads(host_args.width);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_scale_add_rms_norm_f32_kernel),
+               reinterpret_cast<const void *>(
+                   h3_scale_add_rms_norm_f32_kernel<float>),
+               dim3(host_args.rows), dim3(threads), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_scale_add_rms_norm_f32_bf16(
+    float *residual, const float *branch, const float *scale,
+    const float *norm_weight, uint16_t *output, const h3_norm_args *args,
+    hipStream_t stream) {
+    h3_norm_args host_args = *args;
+    void *kernel_args[] = {&residual, &branch, &scale, &norm_weight, &output,
+                           &host_args};
+    uint32_t threads = h3_row_threads(host_args.width);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_scale_add_rms_norm_f32_kernel<uint16_t>),
                dim3(host_args.rows), dim3(threads), kernel_args,
                sizeof(kernel_args), stream) == hipSuccess;
 }
@@ -4106,7 +4336,22 @@ extern "C" int h3_launch_rms_norm_f32(const float *input, const float *weight,
     void *kernel_args[] = {&input, &weight, &output, &host_args};
     uint32_t threads = h3_row_threads(host_args.width);
     return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_rms_norm_f32_kernel),
+               reinterpret_cast<const void *>(h3_rms_norm_f32_kernel<float>),
+               dim3(host_args.rows), dim3(threads), kernel_args,
+               sizeof(kernel_args), stream) == hipSuccess;
+}
+
+extern "C" int h3_launch_rms_norm_f32_bf16(const float *input,
+                                           const float *weight,
+                                           uint16_t *output,
+                                           const h3_norm_args *args,
+                                           hipStream_t stream) {
+    h3_norm_args host_args = *args;
+    void *kernel_args[] = {&input, &weight, &output, &host_args};
+    uint32_t threads = h3_row_threads(host_args.width);
+    return hipLaunchKernel(
+               reinterpret_cast<const void *>(
+                   h3_rms_norm_f32_kernel<uint16_t>),
                dim3(host_args.rows), dim3(threads), kernel_args,
                sizeof(kernel_args), stream) == hipSuccess;
 }
@@ -4347,10 +4592,11 @@ __global__ void h3_transpose_shd_hsd_bf16_kernel(const uint16_t *input,
                                                  uint16_t *output,
                                                  uint32_t sequence,
                                                  uint32_t heads,
-                                                 uint32_t head_dim) {
+                                                 uint32_t head_dim,
+                                                 uint32_t row0) {
     uint32_t dimension = threadIdx.x;
     uint32_t head = blockIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t row = blockIdx.y + row0;
     if (dimension >= head_dim || head >= heads || row >= sequence) return;
     uint32_t src = (row * heads + head) * head_dim + dimension;
     uint32_t dst = (head * sequence + row) * head_dim + dimension;
@@ -4361,25 +4607,44 @@ __global__ void h3_transpose_shd_hsd_f32_kernel(const float *input,
                                                 float *output,
                                                 uint32_t sequence,
                                                 uint32_t heads,
-                                                uint32_t head_dim) {
+                                                uint32_t head_dim,
+                                                uint32_t row0) {
     uint32_t dimension = threadIdx.x;
     uint32_t head = blockIdx.x;
-    uint32_t row = blockIdx.y;
+    uint32_t row = blockIdx.y + row0;
     if (dimension >= head_dim || head >= heads || row >= sequence) return;
     uint32_t src = (row * heads + head) * head_dim + dimension;
     uint32_t dst = (head * sequence + row) * head_dim + dimension;
     output[dst] = input[src];
 }
 
+/* RDNA grid.y stops at 65535. A 15 s 768p clip is past that, so tile the rows. */
+static int h3_transpose_launch(const void *kernel, const void *input,
+                               void *output, uint32_t sequence, uint32_t heads,
+                               uint32_t head_dim, hipStream_t stream) {
+    if (!sequence || !heads || !head_dim || head_dim > 256) return 0;
+    const uint32_t tile = 65535u;
+    for (uint32_t row0 = 0; row0 < sequence;) {
+        uint32_t rows = sequence - row0;
+        if (rows > tile) rows = tile;
+        void *kernel_args[] = {&input, &output, &sequence, &heads, &head_dim,
+                               &row0};
+        if (hipLaunchKernel(kernel, dim3(heads, rows, 1), dim3(head_dim, 1, 1),
+                            kernel_args, sizeof(kernel_args),
+                            stream) != hipSuccess) {
+            return 0;
+        }
+        row0 += rows;
+    }
+    return 1;
+}
+
 extern "C" int h3_launch_transpose_shd_hsd_bf16(
     const uint16_t *input, uint16_t *output, uint32_t sequence, uint32_t heads,
     uint32_t head_dim, hipStream_t stream) {
-    if (!sequence || !heads || !head_dim || head_dim > 256) return 0;
-    void *kernel_args[] = {&input, &output, &sequence, &heads, &head_dim};
-    return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_transpose_shd_hsd_bf16_kernel),
-               dim3(heads, sequence, 1), dim3(head_dim, 1, 1), kernel_args,
-               sizeof(kernel_args), stream) == hipSuccess;
+    return h3_transpose_launch(
+        reinterpret_cast<const void *>(h3_transpose_shd_hsd_bf16_kernel), input,
+        output, sequence, heads, head_dim, stream);
 }
 
 extern "C" int h3_launch_transpose_shd_hsd_f32(const float *input,
@@ -4388,12 +4653,9 @@ extern "C" int h3_launch_transpose_shd_hsd_f32(const float *input,
                                                uint32_t heads,
                                                uint32_t head_dim,
                                                hipStream_t stream) {
-    if (!sequence || !heads || !head_dim || head_dim > 256) return 0;
-    void *kernel_args[] = {&input, &output, &sequence, &heads, &head_dim};
-    return hipLaunchKernel(
-               reinterpret_cast<const void *>(h3_transpose_shd_hsd_f32_kernel),
-               dim3(heads, sequence, 1), dim3(head_dim, 1, 1), kernel_args,
-               sizeof(kernel_args), stream) == hipSuccess;
+    return h3_transpose_launch(
+        reinterpret_cast<const void *>(h3_transpose_shd_hsd_f32_kernel), input,
+        output, sequence, heads, head_dim, stream);
 }
 
 static uint32_t h3_env_u32(const char *name, uint32_t fallback) {
@@ -4416,6 +4678,17 @@ static int h3_hip_gfx90a(void) {
     return cached;
 }
 
+extern "C" int h3_hip_is_gfx12(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    int device = 0;
+    hipDeviceProp_t props;
+    cached = hipGetDevice(&device) == hipSuccess &&
+             hipGetDeviceProperties(&props, device) == hipSuccess &&
+             strncmp(props.gcnArchName, "gfx12", 5) == 0;
+    return cached;
+}
+
 extern "C" int h3_hip_rdna_wmma_default(void) {
     static int cached = -1;
     if (cached >= 0) return cached;
@@ -4426,8 +4699,8 @@ extern "C" int h3_hip_rdna_wmma_default(void) {
         cached = 0;
         return cached;
     }
-    /* gfx11/gfx12: wave32 rocWMMA layouts probed on gfx1151. gfx9 CDNA is
-     * wave64 MFMA, so it must use a separately validated kernel. */
+    /* gfx11/gfx12: wave32 rocWMMA kernels. The accumulator row map differs
+     * (H3_WMMA_ACC_ROW). gfx9 CDNA is wave64 MFMA and uses its own kernel. */
     cached = (strncmp(props.gcnArchName, "gfx11", 5) == 0 ||
               strncmp(props.gcnArchName, "gfx12", 5) == 0) ? 1 : 0;
     return cached;
@@ -4530,18 +4803,21 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
             host_args.sequence >= H3_SDPA_WMMA_QROWS) {
             /* Tile shape knobs for A/B: H3_SDPA_WMMA_WAVES (query block =
              * waves*16) and H3_SDPA_WMMA_BK (key tile). */
-            static uint32_t waves = 0u, bk = 0u;
+            static uint32_t waves = 0u, bk = 0u, pf = 0u;
             if (!waves) {
                 /* 8 waves (128-row query block) x 32-key tile measured best
-                 * on gfx1151 at the DiT shape; see docs/perf-day9. */
-                waves = h3_env_u32("H3_SDPA_WMMA_WAVES", 8u);
+                 * on gfx1151 at the DiT shape; see docs/perf-day9. On gfx12
+                 * the prefetch / transposed-V kernel with 16 waves is 1.6x
+                 * the gfx1151 default at 32k tokens (same output bits). */
+                int gfx12 = h3_hip_is_gfx12();
+                waves = h3_env_u32("H3_SDPA_WMMA_WAVES", gfx12 ? 16u : 8u);
                 bk = h3_env_u32("H3_SDPA_WMMA_BK", 32u);
+                pf = h3_env_u32("H3_SDPA_WMMA_PF", gfx12 ? 1u : 0u) ? 1u : 0u;
             }
             const void *kernel = NULL;
 #define H3_SDPA_WMMA_PICK(w, b)                                              \
     if (waves == (w) && bk == (b))                                           \
-        kernel = reinterpret_cast<const void *>(                             \
-            h3_sdpa_bf16_wmma_d128_kernel<w, b>);
+        kernel = h3_sdpa_wmma_d128_pick<w, b>(pf);
             H3_SDPA_WMMA_PICK(2u, 32u)
             H3_SDPA_WMMA_PICK(4u, 16u)
             H3_SDPA_WMMA_PICK(4u, 32u)
@@ -4551,6 +4827,7 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
             H3_SDPA_WMMA_PICK(8u, 64u)
             H3_SDPA_WMMA_PICK(16u, 16u)
             H3_SDPA_WMMA_PICK(16u, 32u)
+            H3_SDPA_WMMA_PICK(32u, 32u)
 #undef H3_SDPA_WMMA_PICK
             if (!kernel) {
                 waves = 8u;
@@ -4791,5 +5068,16 @@ extern "C" int h3_launch_euler_bf16(float *sample, const uint16_t *last,
     void *kernel_args[] = {&sample, &last, &previous, &host_args};
     return h3_launch_1d(host_args.elements, stream,
                         reinterpret_cast<const void *>(h3_euler_bf16_kernel),
+                        sizeof(kernel_args), kernel_args);
+}
+
+extern "C" int h3_launch_renoise_bf16(float *sample, const uint16_t *velocity,
+                                    const float *noise,
+                                    const h3_renoise_args *args,
+                                    hipStream_t stream) {
+    h3_renoise_args host_args = *args;
+    void *kernel_args[] = {&sample, &velocity, &noise, &host_args};
+    return h3_launch_1d(host_args.elements, stream,
+                        reinterpret_cast<const void *>(h3_renoise_bf16_kernel),
                         sizeof(kernel_args), kernel_args);
 }

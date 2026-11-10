@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <time.h>
 
-#define H3D_VERSION "0.16.0-exp"
+#define H3D_VERSION "0.19.0-exp"
 #define H3D_PROTOCOL "v1alpha"
 #define H3D_DEFAULT_PORT 8571
 #define H3D_MAX_JOB_ID 32
@@ -16,6 +16,12 @@
 #define H3D_MAX_ERROR_MESSAGE 512
 #define H3D_SSE_EVENT_HISTORY 50
 #define H3D_SSE_HEARTBEAT_SEC 15
+#define H3D_MAX_REF_IMAGES 9
+#define H3D_MAX_REF_VIDEOS 3
+#define H3D_MAX_REF_AUDIOS 3
+/* Large enough for a job object with an 8000-character prompt echoed in
+ * the CLI line. */
+#define H3D_JOB_JSON_MAX 49152
 
 /* ── Mode ─────────────────────────────────────────────────────── */
 typedef enum {
@@ -34,16 +40,6 @@ typedef struct {
 } h3d_quality;
 
 #define H3D_QUALITY_DEFAULT_PRESET "fox-fast"
-
-/* ── Geometry validation ──────────────────────────────────────── */
-typedef struct {
-    int width;
-    int height;
-    int frames;
-} h3d_geometry;
-
-/* Pre-validated geometry whitelist (from h3-hip.c testing) */
-#define H3D_MAX_WHITELIST 16
 
 /* ── Job status ───────────────────────────────────────────────── */
 typedef enum {
@@ -96,18 +92,33 @@ typedef struct {
     uint64_t seed;
     int seed_was_set;
 
-    /* References */
-    h3d_ref_entry refs_images[H3D_MAX_REFERENCES];
+    /* Ref2VA references */
+    h3d_ref_entry refs_images[H3D_MAX_REF_IMAGES];
     int refs_image_count;
-    h3d_ref_entry refs_video;
-    int has_refs_video;
-    h3d_ref_entry refs_audio[3];
+    h3d_ref_entry refs_videos[H3D_MAX_REF_VIDEOS];
+    int refs_video_count;
+    h3d_ref_entry refs_audio[H3D_MAX_REF_AUDIOS];
     int refs_audio_count;
+    h3_reference references[H3D_MAX_REFERENCES];
+
+    /* T2VA / I2VA / FL2VA keyframes; empty when unused */
+    char first_frame[1024];
+    char last_frame[1024];
 
     /* Options */
     int finalize_partial_on_cancel;
     int write_preview_frames;
-    char extra_args[2048];
+    int release_after;       /* clear the generation cache before reporting done */
+    char extra_args[2048];   /* normalized echo of the accepted flags */
+    int token_reduction;
+    int sol_attn;
+    int fbc;
+    int vsa;
+    int core_reuse;
+    int render_width;
+    int render_height;
+    char fasth3_lora[1024];
+    char taeh3[1024];
 
     /* Idempotency */
     char idempotency_key[128];
@@ -116,7 +127,7 @@ typedef struct {
     char prompt[8192];
 
     /* CLI echo (for reproduce) */
-    char cli_args[4096];
+    char cli_args[16384];
 
     /* Output */
     char *output_path;
@@ -158,6 +169,13 @@ typedef struct h3d_worker {
     pthread_t thread;
     atomic_int running;
     h3d_job *current_job;
+    /* Set by POST /v1/cache/release; the worker clears it once idle. */
+    atomic_int release_requested;
+    time_t idle_since;   /* end of the last job, 0 before the first */
+    /* Only the worker thread touches the h3 contexts, so it publishes the
+     * cache state here for /v1/info. */
+    pthread_mutex_t cache_lock;
+    h3_cache_info cache;
     struct h3d_worker *next;
 } h3d_worker;
 
@@ -171,6 +189,7 @@ struct h3d_ctx {
     char model_path[1024];         /* compatibility: shared fallback */
     char output_root[1024];
     char media_root[1024];
+    char fasth3_lora[1024];        /* adapter behind options.fasth3; empty if none */
     uint64_t quota_bytes;
     int timeout_tier1;
     int timeout_tier2;
@@ -179,14 +198,12 @@ struct h3d_ctx {
     char log_dir[1024];
     int max_queued_per_client;
     int prompt_max_chars;
+    int idle_release_sec;          /* 0 keeps the cache until asked */
     int gpu_indices[16];
     int gpu_count;
 
-    /* Geometry whitelist */
-    h3d_geometry geometry_whitelist[H3D_MAX_WHITELIST];
-    int geometry_whitelist_count;
-
     /* Runtime state */
+    atomic_int connections;
     h3d_worker *workers;
     int worker_count;
     int server_fd;
@@ -205,27 +222,13 @@ struct h3d_ctx {
 void h3d_config_init(h3d_ctx *ctx);
 int h3d_config_load(h3d_ctx *ctx);
 
-/* ── API: HTTP ────────────────────────────────────────────────── */
-int h3d_http_listen(const char *bind, int port);
-int h3d_http_accept(int server_fd);
-int h3d_http_read_request(int fd, char *method, size_t method_len,
-                          char *path, size_t path_len,
-                          char *headers, size_t headers_len,
-                          char *body, size_t body_len,
-                          size_t *body_out_len);
-void h3d_http_send_response(int fd, int status, const char *status_text,
-                            const char *content_type, const char *body,
-                            size_t body_len);
-void h3d_http_send_headers(int fd, int status, const char *status_text,
-                           const char *extra_headers);
-void h3d_http_send_chunk(int fd, const char *data, size_t len);
-void h3d_http_send_sse_event(int fd, const char *event, const char *data);
-void h3d_http_send_sse_heartbeat(int fd);
-void h3d_http_close(int fd);
+/* ── API: HTTP (h3d_http.h) ───────────────────────────────────── */
+#include "h3d_http.h"
 
 /* ── API: JSON helpers ────────────────────────────────────────── */
 int h3d_json_escape(char *dest, size_t dest_len, const char *src);
 int h3d_json_info_response(h3d_ctx *ctx, char *buf, size_t len);
+int h3d_json_cache_release_response(h3d_ctx *ctx, int released, char *buf, size_t len);
 int h3d_json_job_response(h3d_job *job, char *buf, size_t len);
 int h3d_json_error_response(const h3d_error *error, char *buf, size_t len);
 int h3d_json_queue_full_response(char *buf, size_t len);
@@ -234,18 +237,11 @@ int h3d_json_jobs_list_response(h3d_ctx *ctx, const char *status_filter,
 
 /* ── API: Job management ──────────────────────────────────────── */
 void h3d_jobs_init(h3d_ctx *ctx);
-h3d_job *h3d_job_create(h3d_ctx *ctx, const char *prompt,
-                        const h3d_mode mode,
-                        const int width, const int height,
-                        const int frames, const float seconds,
-                        const h3d_quality *quality,
-                        uint64_t seed, int seed_was_set,
-                        const h3d_ref_entry *refs_images, int ref_image_count,
-                        const h3d_ref_entry *refs_video, int has_video,
-                        const h3d_ref_entry *refs_audio, int ref_audio_count,
-                        int finalize_partial, int write_preview,
-                        const char *extra_args,
-                        const char *idempotency_key);
+/* Allocate a job with an ID and output paths. The caller fills the request
+ * fields, then h3d_job_enqueue makes it visible to the workers. */
+h3d_job *h3d_job_new(h3d_ctx *ctx);
+int h3d_job_enqueue(h3d_ctx *ctx, h3d_job *job);
+void h3d_job_free(h3d_job *job);
 h3d_job *h3d_job_find(h3d_ctx *ctx, const char *job_id);
 h3d_job *h3d_job_find_by_idempotency(h3d_ctx *ctx, const char *key);
 int h3d_job_cancel(h3d_ctx *ctx, const char *job_id);
@@ -261,7 +257,8 @@ void *h3d_worker_loop(void *arg);
 void h3d_workers_shutdown(h3d_ctx *ctx);
 
 /* ── API: Geometry validation ─────────────────────────────────── */
-int h3d_geometry_is_valid(h3d_ctx *ctx, int width, int height, int frames);
+/* Same canvas and frame limits as h3_generate, checked at submit time. */
+int h3d_geometry_is_valid(int width, int height, int frames);
 
 /* ── API: Poster generation ───────────────────────────────────── */
 int h3d_generate_poster(const char *mp4_path, const char *poster_path);
