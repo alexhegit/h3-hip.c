@@ -1010,7 +1010,17 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         fprintf(stderr,
                 "h3: --token-reduction is on: faster DiT, visible quality "
                 "loss (off by default)\n");
+    /* The DiT reads H3_SOL_ATTN at load. In a process that generates more
+     * than once (h3 --serve), a later call without sol_attn must not inherit
+     * the value an earlier call set; a value the user exported is kept. */
+    static int sol_attn_env_ours;
+    if (!params->sol_attn && sol_attn_env_ours) {
+        unsetenv("H3_SOL_ATTN");
+        sol_attn_env_ours = 0;
+    }
     if (params->sol_attn) {
+        const char *sol_env = getenv("H3_SOL_ATTN");
+        if (!sol_env || !strcmp(sol_env, "0")) sol_attn_env_ours = 1;
         setenv("H3_SOL_ATTN", "1", 1);
         fprintf(stderr,
                 "h3: --sol-attn is on: faster long SDPA, visible quality "
