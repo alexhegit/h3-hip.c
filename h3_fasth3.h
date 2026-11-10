@@ -14,6 +14,11 @@ int h3_fasth3_apply(h3_gpu *gpu, h3_gpu_tensor *weight, const char *name,
                     uint32_t rows, uint32_t cols, int weight_f32,
                     char *error, size_t error_size);
 
+/* Count the adapter tensors for one checkpoint name as applied without
+ * touching any weight: the caller restored a result that already has them
+ * merged. No-op when FastH3 is off. */
+int h3_fasth3_skip(const char *name, char *error, size_t error_size);
+
 /* Fail if any adapter tensor was never applied. No-op when FastH3 is off.
  * A VSA adapter without H3_VSA fails here. */
 int h3_fasth3_finish(char *error, size_t error_size);

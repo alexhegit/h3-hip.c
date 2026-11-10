@@ -2,6 +2,7 @@
 #include "h3_audio_vae.h"
 #include "h3_host.h"
 #include "h3_dit.h"
+#include "h3_disk_cache.h"
 #include "h3_ffmpeg.h"
 #include "backends/h3_device.h"
 #include "h3_multimodal.h"
@@ -246,6 +247,59 @@ static int h3_text_embedding_copy(h3_text_embedding *destination,
     destination->width = source->width;
     destination->gpu_stats = source->gpu_stats;
     return 1;
+}
+
+typedef struct {
+    uint64_t tokens;
+    uint64_t width;
+    uint64_t tagged;
+} h3_text_cache_header;
+
+static int h3_text_cache_load(const h3_disk_key *key,
+                              h3_text_embedding *text) {
+    void *payload = NULL;
+    size_t size = 0;
+    memset(text, 0, sizeof(*text));
+    if (!h3_disk_cache_load(key, &payload, &size)) return 0;
+    h3_text_cache_header header;
+    int ok = size >= sizeof(header);
+    if (ok) {
+        memcpy(&header, payload, sizeof(header));
+        ok = header.tokens && header.width && header.tagged <= 1 &&
+             header.tokens <= SIZE_MAX / header.width / sizeof(uint16_t);
+    }
+    size_t elements = ok ? (size_t)(header.tokens * header.width) : 0;
+    size_t tags = ok && header.tagged ? (size_t)header.tokens : 0;
+    ok = ok && size == sizeof(header) + elements * sizeof(uint16_t) + tags;
+    if (ok) {
+        text->values = malloc(elements * sizeof(*text->values));
+        text->tags = tags ? malloc(tags) : NULL;
+        ok = text->values && (!tags || text->tags);
+    }
+    if (ok) {
+        const unsigned char *cursor = (const unsigned char *)payload +
+                                      sizeof(header);
+        memcpy(text->values, cursor, elements * sizeof(*text->values));
+        if (tags) memcpy(text->tags, cursor + elements * sizeof(uint16_t),
+                         tags);
+        text->tokens = (size_t)header.tokens;
+        text->width = (size_t)header.width;
+    } else {
+        h3_text_embedding_free(text);
+    }
+    free(payload);
+    return ok;
+}
+
+static void h3_text_cache_store(const h3_disk_key *key,
+                                const h3_text_embedding *text) {
+    h3_text_cache_header header = {text->tokens, text->width,
+                                   text->tags != NULL};
+    const void *parts[] = {&header, text->values, text->tags};
+    size_t sizes[] = {sizeof(header),
+                      text->tokens * text->width * sizeof(*text->values),
+                      text->tags ? text->tokens : 0};
+    h3_disk_cache_store(key, parts, sizes, 3);
 }
 
 static int h3_conditioning_cache_store(
@@ -1636,13 +1690,27 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             goto cleanup;
         }
         h3_progress_emit(&progress, "text encoder", 0, 50);
-        if (!h3_text_encode_bf16(
+        h3_disk_key text_key;
+        h3_disk_key_init(&text_key, "text");
+        h3_disk_key_add_directory(&text_key, text_path, ".safetensors");
+        h3_disk_key_add_directory(&text_key, text_path, ".json");
+        h3_disk_key_add_bytes(&text_key, "ids", ids,
+                              token_count * sizeof(*ids));
+        if (h3_text_cache_load(&text_key, &text)) {
+            fprintf(stderr, "h3: disk cache hit: prompt embedding "
+                    "(%zu tokens)\n", text.tokens);
+            h3_progress_emit(&progress, "text encoder", 50, 50);
+        } else if (!h3_text_encode_bf16(
                 text_path, "h3_shaders.metal", ids, token_count,
                 h3_text_progress_bridge, &progress, &text,
                 detail, sizeof(detail))) {
+            h3_disk_key_free(&text_key);
             h3_set_error(ctx, "%s", detail);
             goto cleanup;
+        } else {
+            h3_text_cache_store(&text_key, &text);
         }
+        h3_disk_key_free(&text_key);
     }
     conditioned = visual_count != 0 || condition_audio_elements != 0;
     if (ctx->cache_enabled) {
