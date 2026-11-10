@@ -1,6 +1,6 @@
 # ComfyUI through `--serve` — plan and progress
 
-> Branch: `serve-clients`　Base: `r9700`　Status: open
+> Branch: `serve-clients` (merged into `r9700`, private PR #3)　Status: shipped in v0.19.0
 >
 > Decision input: [`perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md`](perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md).
 > Daemon protocol: [`DESIGN_DHS.md`](DESIGN_DHS.md) Part II (v1alpha).
@@ -74,8 +74,8 @@ Tick the boxes in commits on this branch, or note the landing PR / SHA.
 
 | # | Item | Status |
 |---|---|---|
-| D1 | Sync to public `alexhegit/h3-hip.c` (it is at 0.17; this tree carries 0.18, the PR #2 daemon fixes and the ComfyUI comparison) | [ ] |
-| D2 | Tag the release that first ships the node and tutorial | [ ] |
+| D1 | Sync to public `alexhegit/h3-hip.c` (it is at 0.17; this tree carries 0.18, the PR #2 daemon fixes and the ComfyUI comparison) | [x] public `main` via a release PR |
+| D2 | Tag the release that first ships the node and tutorial | [x] v0.19.0; the tutorial is also on the GitHub wiki |
 
 ## Sequence
 
@@ -96,7 +96,7 @@ Tick the boxes in commits on this branch, or note the landing PR / SHA.
       `release_vram`. The reverse (h3 after native MiniMax-H3) needs a ComfyUI
       restart on a 59 GiB box, because ComfyUI keeps ~35 GiB of those weights in
       RAM; documented in the tutorial.
-- [ ] The node and tutorial are on public `h3-hip.c` in a tagged release.
+- [x] The node and tutorial are on public `h3-hip.c` in a tagged release (v0.19.0).
 
 ## Found along the way (fixed on this branch)
 
@@ -105,6 +105,9 @@ Tick the boxes in commits on this branch, or note the landing PR / SHA.
   minutes. Fixed in `c4b104b` for the CPU and GPU Euler samplers.
 - SIGTERM waited for the running job and kept the port bound meanwhile.
   The daemon now cancels the job and closes the socket first (`c4b104b`).
+- A `--sol-attn` job left `H3_SOL_ATTN=1` set for every later job, and the
+  LoRA adapter stayed the first one opened (a VSA job after FastH3 got the
+  dense adapter). Both reset per job now (`6732618`).
 
 ## Known limits
 

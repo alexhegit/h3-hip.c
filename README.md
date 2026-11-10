@@ -13,7 +13,20 @@ MI250 / MI250X also use `gfx90a` but were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.18.0** adds the Radeon AI PRO R9700 (`gfx1201`, 32 GiB).
+Tagged **v0.19.0** is the first public release with the Radeon AI PRO R9700
+work below, and adds a ComfyUI node: `integrations/comfyui/` renders through
+a local `h3 --serve` ([setup](docs/wiki/ComfyUI.md)). The daemon can now
+give its cache back to other GPU programs (`POST /v1/cache/release`,
+`options.release_after`, `H3D_IDLE_RELEASE_SEC`), takes `options.fasth3`,
+stops a cancelled job before its next denoise step, and is gated against
+the CLI fox-s2 md5 by `make serve-regression`. On one R9700, h3-hip is
+1.34× faster end to end than ComfyUI's native MiniMax-H3 at 864×480 ·
+20 steps ([comparison](docs/perf-runs/R9700_COMFYUI_COMPARE_2026-11-09.md)),
+and 1344×768 · 5 s dense is **1985.1 s** (2204.7 s at v0.18.0, same MP4).
+Only gfx1201 was run for this tag.
+
+v0.18.0 (tagged in the R9700 tree, not released separately) added the
+Radeon AI PRO R9700 (`gfx1201`, 32 GiB).
 1344×768 needs `H3_INT8_HOST=1`, which keeps the INT8 DiT linears in host
 RAM. On one R9700, 1344×768 · 15 s, 20 steps, dense is **2787.6 s**
 (MI300X 947.0 s); 832×480 · 5 s, 50 steps, dense is **470.9 s**. The same
@@ -240,8 +253,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.18.0**. `h3 --info` prints `h3-hip 0.18.0`.
-v0.17.0 remains opt-in Pika H3 Flex. v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
+Current tagged line is **v0.19.0**. `h3 --info` prints `h3-hip 0.19.0`.
+v0.19.0 adds the ComfyUI node and the daemon changes behind it; v0.18.0
+added the R9700. v0.17.0 remains opt-in Pika H3 Flex. v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
 conv. v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
 `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
 and Sol-Attn past 64k tokens. v0.12.0 was the TR schedule, fused AdaLN, and
@@ -366,9 +380,9 @@ Pick the ISA that matches `rocminfo` / `hipGetDeviceProperties` on **this**
 machine. The Makefile does not probe the GPU.
 
 ```bash
-git clone git@github.com:alexhegit/minimax-h3-hip.c.git
-cd minimax-h3-hip.c
-git checkout v0.18.0
+git clone https://github.com/alexhegit/h3-hip.c.git
+cd h3-hip.c
+git checkout v0.19.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

@@ -53,7 +53,7 @@ tiles (`sdot4`) and fused MLP kernels instead of Apple hardware ops.
 
 ## KI-005: Daemon ↔ CLI fox-s2 md5 gate
 
-**Status:** gate implemented on `serve-clients`; passes on gfx1201 only so far.
+**Status:** gate in v0.19.0; passes on gfx1201 only so far.
 
 [`docs/DESIGN_DHS.md`](DESIGN_DHS.md) §18.2 requires the `--serve` path to
 reproduce the CLI fox-s2 md5. `make HIP_ARCH=… serve-regression` renders
@@ -107,7 +107,7 @@ Candidate fixes, none implemented:
 
 ## KI-007: `--serve` cache overflows 32 GiB cards without `H3_INT8_HOST=1`
 
-**Status:** fixed on `r9700` (PR #2): `--serve` now sets `H3_INT8_HOST=1` itself
+**Status:** fixed in v0.19.0: `--serve` now sets `H3_INT8_HOST=1` itself
 on a discrete card below 48 GiB unless `H3_INT8_HOST` is already set or the
 DiT is not INT8 (`H3_INT8_MLP=0`, `H3_FP8_MLP`). With no environment set the
 same three jobs (same prompt, new seed, new prompt), with the VAE BF16

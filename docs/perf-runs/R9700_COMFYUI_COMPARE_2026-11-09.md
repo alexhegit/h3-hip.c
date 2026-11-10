@@ -211,4 +211,5 @@ against it.
 
 The ComfyUI node prototype (`H3HipGenerate` → `SaveVideo`) produced the
 same streams as the CLI for fox-s2; the daemon bugs it exposed are fixed
-on `h3d-fixes`.
+in v0.19.0, which also ships the node as `integrations/comfyui/`
+([guide](../wiki/ComfyUI.md)).

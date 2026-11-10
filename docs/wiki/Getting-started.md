@@ -13,7 +13,9 @@ Timed scoreboard SKUs are Strix Halo, MI210, MI300X, and the Radeon AI PRO
 R9700 (`gfx1201`, build with `make HIP_ARCH=gfx1201`). MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.18.0** adds the R9700. 1344×768 on its 32 GiB needs
+Tagged **v0.19.0** adds a ComfyUI node that renders through `h3 --serve`
+([ComfyUI](ComfyUI.md)) and the daemon changes behind it, and is the first
+public release with the R9700 work. v0.18.0 added the R9700. 1344×768 on its 32 GiB needs
 `H3_INT8_HOST=1`; 1344×768 · 15 s dense is **2787.6 s**. Every case is in
 [`docs/PERFORMANCE.md`](../PERFORMANCE.md). v0.17.0 adds opt-in Pika H3 Flex. It stays off unless
 `--pika-lora` or `--pika-ref-lora` is set. On one MI300X, 832×480 · 5 s
@@ -40,9 +42,9 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ## Build
 
 ```bash
-git clone git@github.com:alexhegit/minimax-h3-hip.c.git
-cd minimax-h3-hip.c
-git checkout v0.18.0
+git clone https://github.com/alexhegit/h3-hip.c.git
+cd h3-hip.c
+git checkout v0.19.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

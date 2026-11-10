@@ -14,7 +14,16 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Current release — v0.18.0 (2026-11-08)
+## Current release — v0.19.0 (2026-11-10)
+
+`h3 --info` prints `h3-hip 0.19.0`. First public release with the R9700
+work; adds the ComfyUI node (`integrations/comfyui/`) and the `--serve`
+changes behind it. The R9700 speedups since v0.18.0 below kept the
+checked MP4s identical. The daemon no longer carries Sol-Attn or a LoRA
+path from one job into the next. The R9700 rows below and the ComfyUI
+comparison are the numbers for this tag; only gfx1201 was run.
+
+## v0.18.0 (2026-11-08)
 
 `h3 --info` prints `h3-hip 0.18.0`. Adds the Radeon AI PRO R9700
 (`make HIP_ARCH=gfx1201`). On its 32 GiB, DiT and VAE tensors now stay in
@@ -64,7 +73,7 @@ a silent fallback above 65535 rows, so those outputs differ.
 ⁵ VSA tile buffers need 11.63 GiB on top of the 24 GiB DiT working set;
 see [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) KI-006.
 
-After v0.18.0, on branch `r9700`: overlapped `H3_INT8_HOST` copies, a leaner
+In v0.19.0: overlapped `H3_INT8_HOST` copies, a leaner
 gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
 **1985.1 s** (from 2204.7 s) with the same MP4, and the video VAE peak from
 9.5 to 5.3 GiB. BF16 VAE activations then cut the 832×480 · 5 s video VAE
