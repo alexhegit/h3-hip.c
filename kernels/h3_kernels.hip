@@ -2569,6 +2569,249 @@ static const void *h3_sdpa_wmma_d128_pick(uint32_t pf) {
         h3_sdpa_bf16_wmma_d128_kernel<WAVES, BK>);
 }
 
+/* gfx12 transposed form of the PF kernel above: S^T = K Q^T and
+ * O^T = V^T P^T. On gfx12 accumulator element e of lane l is row
+ * e + 8*(l>>4), column l&15, which is exactly the matrix_b col_major element
+ * e of the same lane. So the S^T accumulator converts element for element
+ * into the P^T operand of the PV product: P never goes through LDS and
+ * needs no shuffles. Each lane owns one query (column l&15); its 16-key
+ * row max and sum reduce in-lane plus one exchange with lane l^16, and the
+ * online-softmax alpha is a per-lane scalar for the O^T accumulator.
+ *
+ * Every arithmetic step matches the PF kernel, including the pairing of
+ * the row-sum tree, so the output is bit-identical to it. gfx12 only: on
+ * gfx11 the accumulator rows interleave (2e + (l>>4)) and do not line up
+ * with the operand layout. */
+template <uint32_t WAVES, uint32_t BK>
+__global__ void __launch_bounds__(WAVES * 32u)
+h3_sdpa_bf16_wmma_d128_t_kernel(const uint16_t *query, const uint16_t *key,
+                                const uint16_t *value, uint16_t *output,
+                                h3_sdpa_args args) {
+    constexpr uint32_t D = 128u;
+    constexpr uint32_t LD = H3_SDPA_WMMA_LD;
+    constexpr uint32_t QROWS = H3_SDPA_WMMA_QROWS;
+    constexpr uint32_t THREADS = WAVES * 32u;
+    constexpr uint32_t NT = BK / 16u;
+    constexpr uint32_t VEC = 4u;
+    constexpr uint32_t CHUNKS = BK * D / VEC;
+    constexpr uint32_t RPT = (CHUNKS + THREADS - 1u) / THREADS;
+    constexpr uint32_t LDT = BK + 8u;
+    constexpr uint32_t NPAIR = BK / 2u;
+    constexpr uint32_t PCHUNKS = NPAIR * (D / VEC);
+    constexpr uint32_t VPT = (PCHUNKS + THREADS - 1u) / THREADS;
+    typedef rocwmma::bfloat16_t bf16;
+
+    __shared__ __align__(16) uint16_t sk[BK * LD];
+    __shared__ __align__(16) uint16_t sv[D * LDT];
+
+    const uint32_t tid = threadIdx.x;
+    const uint32_t wave = tid >> 5;
+    const uint32_t lane = tid & 31u;
+    const uint32_t col = lane & 15u;
+    const uint32_t rowg = lane >> 4;
+    const uint32_t head = blockIdx.y;
+    const uint32_t sequence = args.sequence;
+
+    /* Same tail clamp and disjoint stores as the PF kernel. */
+    uint32_t q_row0 = blockIdx.x * (WAVES * QROWS) + wave * QROWS;
+    uint32_t qbase = q_row0 + QROWS <= sequence ? q_row0 : sequence - QROWS;
+
+    /* Q^T as the B operand: element (dim, query) sits at query*ld + dim,
+     * which is col_major with the row stride of Q. */
+    rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16, rocwmma::col_major>
+        fq[8];
+    const uint16_t *qp = query + (size_t)(qbase * args.heads + head) * D;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+        rocwmma::load_matrix_sync(
+            fq[i], reinterpret_cast<const bf16 *>(qp + (uint32_t)i * 16u),
+            args.heads * D);
+    }
+
+    rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fo[8];
+#pragma unroll
+    for (int j = 0; j < 8; j++) rocwmma::fill_fragment(fo[j], 0.0f);
+    float row_max = -1e30f, row_sum = 0.0f;
+
+    const uint32_t kv_stride = args.kv_head_major ? D : args.heads * D;
+    const size_t kv_base = args.kv_head_major
+                               ? (size_t)head * sequence * D
+                               : (size_t)head * D;
+    const uint16_t *kp = key + kv_base;
+    const uint16_t *vp = value + kv_base;
+
+    uint2 kreg[RPT], vreg[2u * VPT];
+    auto load_glob = [&](uint32_t k0) {
+#pragma unroll
+        for (uint32_t u = 0; u < RPT; u++) {
+            uint32_t c = tid + u * THREADS;
+            uint32_t g = k0 + ((c * VEC) >> 7);
+            kreg[u] = uint2{0u, 0u};
+            if (c < CHUNKS && g < sequence) {
+                size_t off = (size_t)g * kv_stride + ((c * VEC) & 127u);
+                kreg[u] = *reinterpret_cast<const uint2 *>(kp + off);
+            }
+        }
+#pragma unroll
+        for (uint32_t u = 0; u < VPT; u++) {
+            uint32_t pc = tid + u * THREADS;
+            uint32_t g = k0 + 2u * (pc % NPAIR);
+            size_t d = (size_t)(pc / NPAIR) * VEC;
+            vreg[2u * u] = uint2{0u, 0u};
+            vreg[2u * u + 1u] = uint2{0u, 0u};
+            if (pc >= PCHUNKS) continue;
+            if (g < sequence)
+                vreg[2u * u] = *reinterpret_cast<const uint2 *>(
+                    vp + (size_t)g * kv_stride + d);
+            if (g + 1u < sequence)
+                vreg[2u * u + 1u] = *reinterpret_cast<const uint2 *>(
+                    vp + (size_t)(g + 1u) * kv_stride + d);
+        }
+    };
+    auto store_lds = [&](void) {
+#pragma unroll
+        for (uint32_t u = 0; u < RPT; u++) {
+            uint32_t c = tid + u * THREADS;
+            if (c >= CHUNKS) continue;
+            uint32_t r = (c * VEC) >> 7;
+            uint32_t d = (c * VEC) & 127u;
+            *reinterpret_cast<uint2 *>(sk + r * LD + d) = kreg[u];
+        }
+#pragma unroll
+        for (uint32_t u = 0; u < VPT; u++) {
+            uint32_t pc = tid + u * THREADS;
+            if (pc >= PCHUNKS) continue;
+            uint32_t r = 2u * (pc % NPAIR);
+            uint32_t d = (pc / NPAIR) * VEC;
+            uint2 lo = vreg[2u * u], hi = vreg[2u * u + 1u];
+            uint32_t *dst = reinterpret_cast<uint32_t *>(sv + d * LDT + r);
+            dst[0] = (lo.x & 0xffffu) | (hi.x << 16);
+            dst[LDT / 2u] = (lo.x >> 16) | (hi.x & 0xffff0000u);
+            dst[LDT] = (lo.y & 0xffffu) | (hi.y << 16);
+            dst[3u * LDT / 2u] = (lo.y >> 16) | (hi.y & 0xffff0000u);
+        }
+    };
+    load_glob(0u);
+    store_lds();
+    __syncthreads();
+
+    for (uint32_t k0 = 0; k0 < sequence; k0 += BK) {
+        const bool has_next = k0 + BK < sequence;
+        if (has_next) load_glob(k0 + BK);
+
+        /* S^T = K Q^T: K row-major [key][dim] in LDS is the A operand. */
+        rocwmma::fragment<rocwmma::accumulator, 16, 16, 16, float> fs[NT];
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) rocwmma::fill_fragment(fs[t], 0.0f);
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+#pragma unroll
+            for (uint32_t t = 0; t < NT; t++) {
+                rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                                  rocwmma::row_major> fk;
+                rocwmma::load_matrix_sync(
+                    fk, reinterpret_cast<const bf16 *>(
+                            sk + t * 16u * LD + (uint32_t)i * 16u),
+                    LD);
+                rocwmma::mma_sync(fs[t], fk, fq[i], fs[t]);
+            }
+        }
+
+        /* Lane holds keys k0 + 16t + 8*rowg + e of query col. */
+        const bool full_tile = k0 + BK <= sequence;
+        float s[NT][8];
+        float m = -1e30f;
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                uint32_t kpos = k0 + t * 16u + 8u * rowg + (uint32_t)e;
+                s[t][e] = full_tile || kpos < sequence
+                              ? fs[t].x[e] * args.scale
+                              : -1e30f;
+                m = fmaxf(m, s[t][e]);
+            }
+        }
+        m = fmaxf(m, h3_shfl_xor32(m, 16));
+        float new_max = fmaxf(row_max, m);
+        float alpha = h3_fast_exp(row_max - new_max);
+
+        /* v[e] is the PF kernel's per-lane partial for key column 8*rowg+e
+         * (summed over t in order); the tree below pairs columns exactly
+         * like its xor-1/2/4/8 butterfly. */
+        rocwmma::fragment<rocwmma::matrix_b, 16, 16, 16, bf16,
+                          rocwmma::col_major> fp[NT];
+        float v[8];
+#pragma unroll
+        for (int e = 0; e < 8; e++) v[e] = 0.0f;
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+#pragma unroll
+            for (int e = 0; e < 8; e++) {
+                float p = h3_fast_exp(s[t][e] - new_max);
+                v[e] += p;
+                uint16_t bits = h3_f32_to_bf16_finite(p);
+                fp[t][e] = *reinterpret_cast<const bf16 *>(&bits);
+            }
+        }
+        float s01 = v[0] + v[1], s23 = v[2] + v[3];
+        float s45 = v[4] + v[5], s67 = v[6] + v[7];
+        float s0123 = s01 + s23, s4567 = s45 + s67;
+        float ps = s0123 + s4567;
+        ps += h3_shfl_xor32(ps, 16);
+        row_sum = fmaf(row_sum, alpha, ps);
+        row_max = new_max;
+
+        /* alpha is exactly 1 when no row max moved; skipping x * 1.0f
+         * changes no bit. */
+        if (__any(alpha != 1.0f)) {
+#pragma unroll
+            for (int j = 0; j < 8; j++)
+#pragma unroll
+                for (int e = 0; e < 8; e++) fo[j].x[e] *= alpha;
+        }
+
+        /* O^T += V^T P^T. V is transposed in LDS ([dim][key]), which is
+         * the row-major A operand. */
+#pragma unroll
+        for (uint32_t t = 0; t < NT; t++) {
+#pragma unroll
+            for (int j = 0; j < 8; j++) {
+                rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
+                                  rocwmma::row_major> fv;
+                rocwmma::load_matrix_sync(
+                    fv, reinterpret_cast<const bf16 *>(
+                            sv + (uint32_t)j * 16u * LDT + t * 16u),
+                    LDT);
+                rocwmma::mma_sync(fo[j], fv, fp[t], fo[j]);
+            }
+        }
+
+        if (has_next) {
+            __syncthreads();
+            store_lds();
+            __syncthreads();
+        }
+    }
+
+    /* Lane holds dims 16j + 8*rowg + e of query col: one 16-byte store per
+     * fragment. */
+    float inv = row_sum > 0.0f ? 1.0f / row_sum : 0.0f;
+    uint32_t q_pos = qbase + col;
+    if (q_pos < q_row0) return;
+#pragma unroll
+    for (int j = 0; j < 8; j++) {
+        uint32_t d = (uint32_t)j * 16u + 8u * rowg;
+        uint4 packed;
+        packed.x = h3_pack_bf16x2(fo[j].x[0] * inv, fo[j].x[1] * inv);
+        packed.y = h3_pack_bf16x2(fo[j].x[2] * inv, fo[j].x[3] * inv);
+        packed.z = h3_pack_bf16x2(fo[j].x[4] * inv, fo[j].x[5] * inv);
+        packed.w = h3_pack_bf16x2(fo[j].x[6] * inv, fo[j].x[7] * inv);
+        *reinterpret_cast<uint4 *>(
+            output + h3_sdpa_output_index(args, q_pos, head, d)) = packed;
+    }
+}
+
 /* gfx90a/CDNA2 counterpart of the wave32 WMMA kernel above. rocWMMA maps a
  * 16x16 f32 accumulator over a wave64 as:
  *   lane l -> columns l&15, rows 4*(l>>4) + fragment element [0..3].
@@ -4665,6 +4908,14 @@ static uint32_t h3_env_u32(const char *name, uint32_t fallback) {
     return parsed ? (uint32_t)parsed : fallback;
 }
 
+/* On/off switch: unset keeps the default, "0" turns it off. h3_env_u32
+ * cannot express that because it maps 0 to the fallback. */
+static uint32_t h3_env_flag(const char *name, uint32_t fallback) {
+    const char *value = getenv(name);
+    if (!value || !*value) return fallback;
+    return strcmp(value, "0") != 0 ? 1u : 0u;
+}
+
 static int h3_hip_gfx90a(void) {
     static int cached = -1;
     if (cached >= 0) return cached;
@@ -4803,7 +5054,7 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
             host_args.sequence >= H3_SDPA_WMMA_QROWS) {
             /* Tile shape knobs for A/B: H3_SDPA_WMMA_WAVES (query block =
              * waves*16) and H3_SDPA_WMMA_BK (key tile). */
-            static uint32_t waves = 0u, bk = 0u, pf = 0u;
+            static uint32_t waves = 0u, bk = 0u, pf = 0u, tr = 0u;
             if (!waves) {
                 /* 8 waves (128-row query block) x 32-key tile measured best
                  * on gfx1151 at the DiT shape; see docs/perf-day9. On gfx12
@@ -4812,12 +5063,18 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                 int gfx12 = h3_hip_is_gfx12();
                 waves = h3_env_u32("H3_SDPA_WMMA_WAVES", gfx12 ? 16u : 8u);
                 bk = h3_env_u32("H3_SDPA_WMMA_BK", 32u);
-                pf = h3_env_u32("H3_SDPA_WMMA_PF", gfx12 ? 1u : 0u) ? 1u : 0u;
+                pf = h3_env_flag("H3_SDPA_WMMA_PF", gfx12 ? 1u : 0u);
+                /* S^T/O^T form of the PF kernel: same bits, 79 -> 65 ms at
+                 * 14852 tokens on the R9700. gfx12 only; H3_SDPA_WMMA_T=0
+                 * restores the PF kernel. */
+                tr = gfx12 && pf ? h3_env_flag("H3_SDPA_WMMA_T", 1u) : 0u;
             }
             const void *kernel = NULL;
 #define H3_SDPA_WMMA_PICK(w, b)                                              \
     if (waves == (w) && bk == (b))                                           \
-        kernel = h3_sdpa_wmma_d128_pick<w, b>(pf);
+        kernel = tr ? reinterpret_cast<const void *>(                        \
+                          h3_sdpa_bf16_wmma_d128_t_kernel<w, b>)             \
+                    : h3_sdpa_wmma_d128_pick<w, b>(pf);
             H3_SDPA_WMMA_PICK(2u, 32u)
             H3_SDPA_WMMA_PICK(4u, 16u)
             H3_SDPA_WMMA_PICK(4u, 32u)

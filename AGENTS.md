@@ -73,6 +73,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
   replace `--reuse`. Do not combine with `--token-reduction`, core reuse
   above 1, or `--ssd-streaming`. Strongest on 50-step reuse-1 clips;
   small on 15 s `--reuse 2`. See `docs/PERFORMANCE.md`.
+- On gfx12 the dense SDPA is an S^T/O^T WMMA kernel (P never touches LDS; bit-identical, about -20% SDPA). `H3_SDPA_WMMA_T=0` restores the previous kernel. `H3_SDPA_DUMP` + `make h3_sdpa_bench` time SDPA variants offline on captured inputs; see `docs/perf-runs/R9700_ANALYSIS_2026-11-07.md`.
 - `--sol-attn` / `H3_SOL_ATTN=1` is **lossy** long SDPA (off by default).
   Measured on gfx1151, gfx90a, and gfx942. gfx1151 uses a separate wave32
   rocWMMA sparse kernel. Do not stack with `--token-reduction` by default.
