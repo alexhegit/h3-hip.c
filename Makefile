@@ -95,6 +95,9 @@ h3_hip_bf16_tests: tests/test_hip_bf16.o $(LIB_GPU)
 h3_hip_smoke: tests/test_hip_smoke.o $(LIB_GPU)
 	$(HIPCC) -o $@ $^ $(LDLIBS)
 
+h3_bench_vae_linear: tests/bench_vae_linear.o $(LIB_GPU)
+	$(HIPCC) -o $@ $^ $(LDLIBS)
+
 h3_hip_real_dit_smoke: tests/test_hip_real_dit.o $(LIB_OBJ)
 	$(LINK) -o $@ $^ $(LDLIBS)
 
@@ -350,6 +353,9 @@ kernels/h3_kernels_taeh3.o: kernels/h3_kernels_taeh3.hip kernels/h3_kernels.h
 
 kernels/h3_kernels_vsa.o: kernels/h3_kernels_vsa.hip kernels/h3_kernels.h
 	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
+
+tests/bench_vae_linear.o: tests/bench_vae_linear.hip kernels/h3_kernels.h
+	$(HIPCC) $(HIPCFLAGS) -c $< -o $@
 else
 %.o: %.m
 	$(CC) $(OBJCFLAGS) -I. -c $< -o $@
@@ -373,6 +379,6 @@ clean:
 		h3_hip_encoder_roundtrip h3_hip_audio_smoke h3_hip_vision_smoke \
 		h3_hip_text_smoke h3_hip_multimodal_smoke h3_hip_ref2va_smoke \
 		h3_hip_vae_zero \
-		h3_dit_bench h3_dit_bench_864 \
+		h3_dit_bench h3_dit_bench_864 h3_bench_vae_linear \
 		libh3.a *.o *.d tests/*.o tests/*.d \
 		backends/*.o backends/*.d kernels/*.o kernels/*.d

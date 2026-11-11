@@ -772,8 +772,8 @@ h3_linear_f32_r128_kernel(const float *input, const float *weight,
  * reaches 58% of it, whereas bf16 WMMA peaks at 57, so this is the only way
  * left to make the video-VAE decoder GEMMs meaningfully faster.
  *
- * Tile: 256x128 output, BK=32, one 64x64 quadrant per wave, K tiles prefetched
- * into registers so the global loads overlap the mma chain. Opt out with
+ * Tile: 256x128 output, BK=32 (BK=64 on gfx12), K tiles prefetched into
+ * registers so the global loads overlap the mma chain. Opt out with
  * H3_F32_WMMA=0. */
 
 /* WT = uint16_t takes weights already rounded to BF16 with h3_f32_to_bf16,
@@ -782,7 +782,7 @@ h3_linear_f32_r128_kernel(const float *input, const float *weight,
  * AT = uint16_t does the same for activations written by a BF16-output
  * producer. */
 template <int BM, int BN, int BK, int WM, int WN, int PAD,
-          typename WT = float, typename AT = float>
+          typename WT = float, typename AT = float, bool DB = false>
 __global__ void __launch_bounds__((BM / WM) * (BN / WN) * 32)
 h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
                           const float *bias, float *output,
@@ -799,8 +799,9 @@ h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
     constexpr int BI = BN * KQ / THREADS;
     constexpr int ROW_STEP = THREADS / KQ;
 
-    __shared__ uint16_t As[BM * LD];
-    __shared__ uint16_t Bs[BN * LD];
+    constexpr int BUFFERS = DB ? 2 : 1;
+    __shared__ uint16_t As[BUFFERS * BM * LD];
+    __shared__ uint16_t Bs[BUFFERS * BN * LD];
 
     uint32_t tid = threadIdx.x;
     uint32_t wave = tid >> 5;
@@ -816,8 +817,6 @@ h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
         for (int j = 0; j < FN; j++) rocwmma::fill_fragment(acc[i][j], 0.0f);
 
     const int row0 = (int)tid / KQ, kq0 = ((int)tid % KQ) * 4;
-    const bf16 *pA = reinterpret_cast<const bf16 *>(As);
-    const bf16 *pB = reinterpret_cast<const bf16 *>(Bs);
 
     float4 a_next[AB16 ? 1 : AI], b_next[WB16 ? 1 : BI];
     uint2 a16_next[AB16 ? AI : 1], b16_next[WB16 ? BI : 1];
@@ -849,11 +848,13 @@ h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
             }
         }
     };
-    auto stash = [&]() {
+    auto stash = [&](int buffer) {
+        uint16_t *a_tile = As + buffer * BM * LD;
+        uint16_t *b_tile = Bs + buffer * BN * LD;
 #pragma unroll
         for (int it = 0; it < AI; it++) {
             uint32_t *d = reinterpret_cast<uint32_t *>(
-                As + (row0 + it * ROW_STEP) * LD + kq0);
+                a_tile + (row0 + it * ROW_STEP) * LD + kq0);
             if constexpr (AB16) {
                 d[0] = a16_next[it].x;
                 d[1] = a16_next[it].y;
@@ -865,7 +866,7 @@ h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
 #pragma unroll
         for (int it = 0; it < BI; it++) {
             uint32_t *d = reinterpret_cast<uint32_t *>(
-                Bs + (row0 + it * ROW_STEP) * LD + kq0);
+                b_tile + (row0 + it * ROW_STEP) * LD + kq0);
             if constexpr (WB16) {
                 d[0] = b16_next[it].x;
                 d[1] = b16_next[it].y;
@@ -875,7 +876,9 @@ h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
             }
         }
     };
-    auto compute = [&]() {
+    auto compute = [&](int buffer) {
+        const bf16 *pA = reinterpret_cast<const bf16 *>(As + buffer * BM * LD);
+        const bf16 *pB = reinterpret_cast<const bf16 *>(Bs + buffer * BN * LD);
 #pragma unroll
         for (int ks = 0; ks < BK / 16; ks++) {
             rocwmma::fragment<rocwmma::matrix_a, 16, 16, 16, bf16,
@@ -900,16 +903,31 @@ h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
 
     uint32_t ktiles = K / (uint32_t)BK;
     fetch(0u);
-    stash();
-    for (uint32_t kt = 1; kt < ktiles; kt++) {
-        fetch(kt * (uint32_t)BK);
+    stash(0);
+    if constexpr (DB) {
+        /* The buffer stashed here was last read before the previous
+         * barrier, so one barrier per K tile is enough. */
+        int current = 0;
         __syncthreads();
-        compute();
+        for (uint32_t kt = 1; kt < ktiles; kt++) {
+            fetch(kt * (uint32_t)BK);
+            compute(current);
+            stash(current ^ 1);
+            __syncthreads();
+            current ^= 1;
+        }
+        compute(current);
+    } else {
+        for (uint32_t kt = 1; kt < ktiles; kt++) {
+            fetch(kt * (uint32_t)BK);
+            __syncthreads();
+            compute(0);
+            __syncthreads();
+            stash(0);
+        }
         __syncthreads();
-        stash();
+        compute(0);
     }
-    __syncthreads();
-    compute();
 
     /* Accumulator element i belongs to row H3_WMMA_ACC_ROW(i, lane>>4).
      * lane&15 picks the column. */
@@ -937,26 +955,75 @@ h3_linear_f32_wmma_kernel(const AT *input, const WT *weight,
 /* Tile shapes differ mostly in register pressure: a 64x64 per-wave tile needs
  * 16 accumulator fragments (128 VGPRs) and spills, while 32x64 needs 8. Pick
  * with H3_F32_WMMA_CFG; see docs/perf-day9/STATUS.md for the sweep. */
+template <int BM, int BN, int BK, int WM, int WN, bool DB>
+static const void *h3_f32_wmma_typed(bool bf16_weight, bool bf16_input) {
+    if (bf16_input)
+        return reinterpret_cast<const void *>(
+            h3_linear_f32_wmma_kernel<BM, BN, BK, WM, WN, 8, uint16_t,
+                                      uint16_t, DB>);
+    return bf16_weight
+        ? reinterpret_cast<const void *>(
+              h3_linear_f32_wmma_kernel<BM, BN, BK, WM, WN, 8, uint16_t,
+                                        float, DB>)
+        : reinterpret_cast<const void *>(
+              h3_linear_f32_wmma_kernel<BM, BN, BK, WM, WN, 8, float, float,
+                                        DB>);
+}
+
+/* Every pipeline keeps each output's K order (ascending 16-wide WMMA steps),
+ * so all of them produce the same bits; they differ in barriers per FLOP.
+ * pipe 1 double-buffers the LDS tile, pipe 2 uses BK=64 when K allows and
+ * the tiles fit in 64 KiB of LDS. */
+template <int BM, int BN, int WM, int WN>
+static const void *h3_f32_wmma_select(unsigned pipe, uint32_t input_dim,
+                                      bool bf16_weight, bool bf16_input) {
+    constexpr bool BK64_FITS = (BM + BN) * (64 + 8) * 2 <= 65536;
+    constexpr bool DB_FITS = (BM + BN) * (32 + 8) * 2 * 2 <= 65536;
+    if constexpr (BK64_FITS)
+        if (pipe == 2u && input_dim % 64u == 0)
+            return h3_f32_wmma_typed<BM, BN, 64, WM, WN, false>(bf16_weight,
+                                                                bf16_input);
+    if constexpr (DB_FITS)
+        if (pipe == 1u)
+            return h3_f32_wmma_typed<BM, BN, 32, WM, WN, true>(bf16_weight,
+                                                               bf16_input);
+    return h3_f32_wmma_typed<BM, BN, 32, WM, WN, false>(bf16_weight,
+                                                        bf16_input);
+}
+
+/* R9700 video VAE shapes (M=2028, K 2048/8192): cfg 6 at BK=64 is 29% faster
+ * per layer than cfg 3 at BK=32, same bits. gfx1151 was swept at BK=32 only,
+ * so it keeps cfg 3 / pipe 0. */
+static bool h3_f32_wmma_gfx12(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        int device = 0;
+        hipDeviceProp_t props;
+        cached = hipGetDevice(&device) == hipSuccess &&
+                 hipGetDeviceProperties(&props, device) == hipSuccess &&
+                 strncmp(props.gcnArchName, "gfx120", 6) == 0;
+    }
+    return cached == 1;
+}
+
 static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
                                       uint32_t *threads,
                                       bool bf16_weight = false,
-                                      bool bf16_input = false) {
+                                      bool bf16_input = false,
+                                      uint32_t input_dim = 0) {
+    bool gfx12 = h3_f32_wmma_gfx12();
     const char *cfg = getenv("H3_F32_WMMA_CFG");
-    unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10) : 3u;
+    unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10) : gfx12 ? 6u : 3u;
+    const char *pipe_env = getenv("H3_F32_WMMA_PIPE");
+    unsigned pipe = pipe_env ? (unsigned)strtoul(pipe_env, NULL, 10)
+                             : gfx12 ? 2u : 0u;
 #define H3_WMMA_CASE(BM, BN, WM, WN)                                           \
     do {                                                                       \
         *bm = BM;                                                              \
         *bn = BN;                                                              \
         *threads = (BM / WM) * (BN / WN) * 32u;                                 \
-        if (bf16_input)                                                        \
-            return reinterpret_cast<const void *>(                             \
-                h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8, uint16_t,     \
-                                          uint16_t>);                          \
-        return bf16_weight                                                     \
-            ? reinterpret_cast<const void *>(                                  \
-                  h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8, uint16_t>)  \
-            : reinterpret_cast<const void *>(                                  \
-                  h3_linear_f32_wmma_kernel<BM, BN, 32, WM, WN, 8>);           \
+        return h3_f32_wmma_select<BM, BN, WM, WN>(pipe, input_dim,            \
+                                                  bf16_weight, bf16_input);    \
     } while (0)
     switch (choice) {
     case 1: H3_WMMA_CASE(256, 128, 64, 64);
@@ -1498,7 +1565,8 @@ extern "C" int h3_launch_linear_f32_wbf16(const float *input,
     if (host_args.input_dim % 32u) return 0;
     void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
     uint32_t bm = 0, bn = 0, threads = 0;
-    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true);
+    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true, false,
+                                            host_args.input_dim);
     dim3 grid((host_args.output_dim + bn - 1u) / bn,
               (host_args.rows + bm - 1u) / bm, 1);
     h3_f32_stats_add("wmma-bf16w", &host_args);
@@ -1517,7 +1585,8 @@ extern "C" int h3_launch_linear_bf16a_wbf16(const uint16_t *input,
     if (host_args.input_dim % 32u) return 0;
     void *kernel_args[] = {&input, &weight, &bias, &output, &host_args};
     uint32_t bm = 0, bn = 0, threads = 0;
-    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true, true);
+    const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads, true, true,
+                                            host_args.input_dim);
     dim3 grid((host_args.output_dim + bn - 1u) / bn,
               (host_args.rows + bm - 1u) / bm, 1);
     h3_f32_stats_add("wmma-bf16aw", &host_args);
@@ -1552,7 +1621,8 @@ extern "C" int h3_launch_linear_f32(const float *input, const float *weight,
         }
         if (use_r128 && wmma_worth_it && h3_f32_wmma_on()) {
             uint32_t bm = 0, bn = 0, threads = 0;
-            const void *kernel = h3_f32_wmma_kernel(&bm, &bn, &threads);
+            const void *kernel = h3_f32_wmma_kernel(
+                &bm, &bn, &threads, false, false, host_args.input_dim);
             dim3 grid((host_args.output_dim + bn - 1u) / bn,
                       (host_args.rows + bm - 1u) / bm, 1);
             h3_f32_stats_add("wmma", &host_args);
