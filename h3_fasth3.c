@@ -25,6 +25,11 @@ int h3_fasth3_apply(h3_gpu *gpu, h3_gpu_tensor *weight, const char *name,
     return 0;
 }
 
+int h3_fasth3_skip(const char *name, char *error, size_t error_size) {
+    (void)name;
+    return h3_fasth3_finish(error, error_size);
+}
+
 int h3_fasth3_finish(char *error, size_t error_size) {
     const char *path = getenv("H3_FASTH3_LORA");
     if (!path || !path[0] || !strcmp(path, "0")) return 1;
@@ -669,6 +674,46 @@ int h3_fasth3_apply(h3_gpu *gpu, h3_gpu_tensor *weight, const char *name,
         return apply_fc1(gpu, weight, stem, rows, cols, error, error_size);
     return apply_plain(gpu, weight, stem, is_bias, rows, cols, weight_f32,
                        error, error_size);
+}
+
+int h3_fasth3_skip(const char *name, char *error, size_t error_size) {
+    char stem[256];
+    char key[320];
+    int kind = FASTH3_PLAIN;
+    int is_bias = 0;
+    char local[256];
+    if (!fasth3_enabled()) return 1;
+    if (!error || !error_size) {
+        error = local;
+        error_size = sizeof(local);
+    }
+    if (!name || !open_adapter(error, error_size)) return 0;
+    if (!map_checkpoint(name, stem, sizeof(stem), &kind, &is_bias)) {
+        fasth3_fail(error, error_size, "cannot map FastH3 checkpoint name");
+        return 0;
+    }
+    if (kind == FASTH3_QKV) {
+        static const char *which_name[3] = {"to_q", "to_k", "to_v"};
+        for (unsigned which = 0; which < 3u; which++) {
+            snprintf(key, sizeof(key), "%s.%s.lora_A.weight", stem,
+                     which_name[which]);
+            find_key(key);
+            snprintf(key, sizeof(key), "%s.%s.lora_B.weight", stem,
+                     which_name[which]);
+            find_key(key);
+        }
+        return 1;
+    }
+    if (!is_bias) {
+        snprintf(key, sizeof(key), "%s.lora_A.weight", stem);
+        find_key(key);
+        snprintf(key, sizeof(key), "%s.lora_B.weight", stem);
+        find_key(key);
+        if (kind == FASTH3_FC1) return 1;
+    }
+    snprintf(key, sizeof(key), "%s%s", stem, is_bias ? ".diff_b" : ".diff");
+    find_key(key);
+    return 1;
 }
 
 int h3_fasth3_finish(char *error, size_t error_size) {
