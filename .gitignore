@@ -18,6 +18,7 @@ h3_*test
 h3_*tests
 h3_*bench
 h3_dit_bench_864
+h3_bench_vae_linear
 h3_tests
 h3_metal_tests
 h3_bf16_tests

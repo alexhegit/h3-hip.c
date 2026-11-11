@@ -1,12 +1,15 @@
 #include "h3_dit_schedule.h"
+#include "h3_disk_cache.h"
 #include "h3_fasth3.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 enum {
     TIME_INPUT = 256,
@@ -328,6 +331,130 @@ static void adaln_slot_discard(adaln_slot *slot) {
     slot->busy = 0;
 }
 
+static void key_add_tensor(h3_disk_key *key, const h3_weight_store *weights,
+                           const char *name) {
+    const h3_st_header *header = NULL;
+    const h3_st_tensor *tensor = h3_weight_find(weights, name, &header);
+    if (!tensor || !header) {
+        key->failed = 1;
+        return;
+    }
+    h3_disk_key_add(key, "tensor=%s@%" PRIu64 ":%d", name,
+                    tensor->file_offset, (int)tensor->dtype);
+    h3_disk_key_add_file(key, header->path);
+}
+
+static void key_add_adapter(h3_disk_key *key) {
+    const char *path = getenv("H3_FASTH3_LORA");
+    if (!path || !path[0] || !strcmp(path, "0")) return;
+    struct stat info;
+    char file[4096];
+    if (stat(path, &info) != 0) {
+        key->failed = 1;
+        return;
+    }
+    if (S_ISDIR(info.st_mode))
+        snprintf(file, sizeof(file), "%s/adapter_model.safetensors", path);
+    else
+        snprintf(file, sizeof(file), "%s", path);
+    h3_disk_key_add_file(key, file);
+}
+
+static const char *const time_tensors[] = {
+    "time_embedder.proj_in.weight", "time_embedder.proj_in.bias",
+    "time_embedder.proj_out.weight", "time_embedder.proj_out.bias",
+    "final_layer.adaln_proj.linear.weight",
+    "final_layer.adaln_proj.linear.bias",
+};
+
+static void schedule_key(h3_disk_key *key, const h3_weight_store *weights,
+                         const h3_sigma_schedule *sigmas,
+                         int visual_condition, int audio_condition,
+                         uint32_t time_rows) {
+    h3_disk_key_init(key, "adaln");
+    h3_disk_key_add(key, "steps=%d visual=%d audio=%d rows=%u",
+                    sigmas->steps, visual_condition, audio_condition,
+                    time_rows);
+    h3_disk_key_add_bytes(key, "video-sigmas", sigmas->video,
+                          (size_t)sigmas->steps * sizeof(*sigmas->video));
+    h3_disk_key_add_bytes(key, "audio-sigmas", sigmas->audio,
+                          (size_t)sigmas->steps * sizeof(*sigmas->audio));
+    for (size_t index = 0;
+         index < sizeof(time_tensors) / sizeof(*time_tensors); index++)
+        key_add_tensor(key, weights, time_tensors[index]);
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
+        char name[128];
+        snprintf(name, sizeof(name), "blocks.%u.adaln_proj.linear.weight",
+                 block);
+        key_add_tensor(key, weights, name);
+        snprintf(name, sizeof(name), "blocks.%u.adaln_proj.linear.bias",
+                 block);
+        key_add_tensor(key, weights, name);
+    }
+    key_add_adapter(key);
+}
+
+/* The payload is every block's [rows, BLOCK_OUTPUT] table, then the final
+ * [rows, FINAL_OUTPUT] table, all BF16 exactly as the GPU produced them. */
+static int schedule_restore(h3_dit_schedule *schedule, const uint16_t *values,
+                            size_t elements, char *error, size_t error_size) {
+    size_t block_elements = (size_t)schedule->time_rows * BLOCK_OUTPUT;
+    size_t final_elements = (size_t)schedule->time_rows * FINAL_OUTPUT;
+    if (elements != block_elements * H3_DIT_BLOCKS + final_elements)
+        return 0;
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
+        schedule->blocks[block] = h3_gpu_tensor_new_bf16_device(
+            schedule->gpu, block_elements);
+        if (!schedule->blocks[block] ||
+            !h3_gpu_tensor_write_bf16(schedule->blocks[block],
+                                      values + block * block_elements,
+                                      block_elements)) return 0;
+    }
+    schedule->final = h3_gpu_tensor_new_bf16_device(schedule->gpu,
+                                                    final_elements);
+    if (!schedule->final ||
+        !h3_gpu_tensor_write_bf16(schedule->final,
+                                  values + H3_DIT_BLOCKS * block_elements,
+                                  final_elements)) return 0;
+    for (size_t index = 0;
+         index < sizeof(time_tensors) / sizeof(*time_tensors); index++)
+        if (!h3_fasth3_skip(time_tensors[index], error, error_size)) return 0;
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++) {
+        char name[128];
+        snprintf(name, sizeof(name), "blocks.%u.adaln_proj.linear.weight",
+                 block);
+        if (!h3_fasth3_skip(name, error, error_size)) return 0;
+        snprintf(name, sizeof(name), "blocks.%u.adaln_proj.linear.bias",
+                 block);
+        if (!h3_fasth3_skip(name, error, error_size)) return 0;
+    }
+    return 1;
+}
+
+static void schedule_store(const h3_dit_schedule *schedule,
+                           const h3_disk_key *key) {
+    if (key->failed) return;
+    size_t block_elements = (size_t)schedule->time_rows * BLOCK_OUTPUT;
+    size_t final_elements = (size_t)schedule->time_rows * FINAL_OUTPUT;
+    size_t elements = block_elements * H3_DIT_BLOCKS + final_elements;
+    uint16_t *values = malloc(elements * sizeof(*values));
+    int ok = values != NULL;
+    for (unsigned block = 0; ok && block < H3_DIT_BLOCKS; block++)
+        ok = h3_gpu_tensor_read_bf16(schedule->blocks[block],
+                                     values + block * block_elements,
+                                     block_elements);
+    if (ok)
+        ok = h3_gpu_tensor_read_bf16(schedule->final,
+                                     values + H3_DIT_BLOCKS * block_elements,
+                                     final_elements);
+    if (ok) {
+        const void *parts[] = {values};
+        size_t sizes[] = {elements * sizeof(*values)};
+        h3_disk_cache_store(key, parts, sizes, 1);
+    }
+    free(values);
+}
+
 h3_dit_schedule *h3_dit_schedule_precompute(
     const h3_weight_store *weights, h3_gpu *gpu,
     const h3_sigma_schedule *sigmas, int visual_condition,
@@ -347,8 +474,38 @@ h3_dit_schedule *h3_dit_schedule_precompute(
     }
     schedule->gpu = gpu;
     float *features = NULL;
+    h3_disk_key key = {0};
     if (!prepare_rows(schedule, sigmas, visual_condition, audio_condition,
                       &features, error, error_size)) goto failed;
+    schedule_key(&key, weights, sigmas, visual_condition, audio_condition,
+                 schedule->time_rows);
+    {
+        void *payload = NULL;
+        size_t payload_size = 0;
+        if (h3_disk_cache_load(&key, &payload, &payload_size)) {
+            int restored = payload_size % sizeof(uint16_t) == 0 &&
+                schedule_restore(schedule, payload,
+                                 payload_size / sizeof(uint16_t),
+                                 error, error_size);
+            free(payload);
+            if (restored) {
+                h3_disk_key_free(&key);
+                free(features);
+                fprintf(stderr, "h3: disk cache hit: AdaLN schedule "
+                        "(%.1f MiB)\n", (double)payload_size / 1048576.0);
+                if (progress) progress((int)H3_DIT_BLOCKS, (int)H3_DIT_BLOCKS,
+                                       progress_opaque);
+                return schedule;
+            }
+            if (error && error_size && *error) {
+                h3_disk_key_free(&key);
+                goto failed;
+            }
+            for (unsigned block = 0; block < H3_DIT_BLOCKS; block++)
+                free_tensor(&schedule->blocks[block]);
+            free_tensor(&schedule->final);
+        }
+    }
     h3_gpu_tensor *time = time_embeddings(weights, gpu, schedule->time_rows,
                                            features, error, error_size);
     free(features);
@@ -487,9 +644,12 @@ block_failed:
     free_tensor(&final_w);
     free_tensor(&final_b);
     h3_gpu_tensor_free(time);
+    schedule_store(schedule, &key);
+    h3_disk_key_free(&key);
     return schedule;
 
 failed:
+    h3_disk_key_free(&key);
     free(features);
     h3_dit_schedule_free(schedule);
     return NULL;
