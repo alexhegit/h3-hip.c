@@ -32,6 +32,9 @@ H3_INT8_VAE=1 H3_TOKEN_REDUCTION=1 H3_GPU_SAMPLER=1 ./h3 ...
 | `H3_FBC_HEAD` / `H3_FBC_TAIL` | `2` / `2` | Leading and trailing steps that always run the full DiT |
 | `H3_GPU_SAMPLER` | `0` | GPU Euler sampler (reduces latency) |
 | `H3_VAE_TILE_PIXELS` | `480` | VAE tile size (256–512) |
+| `H3_DISK_CACHE` | `1` | Exact disk cache of prompt embeddings and the AdaLN schedule; `0` disables |
+| `H3_CACHE_DIR` | `~/.cache/h3-hip` | Disk cache directory (`$XDG_CACHE_HOME/h3-hip` when set) |
+| `H3_CACHE_MAX_GIB` | `8` | Disk cache cap; least recently used entries are removed first |
 
 ## Quality Scale
 
@@ -71,6 +74,12 @@ fox-s2 with the flags above (not the fox-fast scoreboard):
 |---------|----:|----:|-----:|-----:|
 | INT8 default | 3.1 s | ~8 s | ~15 GiB | 29.5 dB |
 | BF16 (`H3_INT8_MLP=0`) | 6.5 s | ~16 s | ~26 GiB | 33.5 dB (gold) |
+
+Repeated short clips skip most of the load through the disk cache (on by
+default, bit-identical). On the R9700 (gfx1201) a second fox-s2 run takes
+11.2 s instead of 40.3 s. A new prompt at the same steps and conditioning
+still reuses the AdaLN schedule: 30.7 s. Details:
+[`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md).
 
 ### 2. Long Video — Balanced (15 s cinematic)
 

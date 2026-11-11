@@ -3,7 +3,9 @@
 #include "backends/h3_device.h"
 #include "h3_safetensors.h"
 #include "h3_terminal.h"
+#include "h3_disk_cache.h"
 
+#include <dirent.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -452,7 +454,113 @@ static void test_terminal_zoom(void) {
     CHECK(!h3_terminal_display_dimensions(INT32_MAX, 1, &width, &height));
 }
 
+static void disk_key(h3_disk_key *key, const char *value) {
+    h3_disk_key_init(key, "test");
+    h3_disk_key_add(key, "value=%s", value);
+}
+
+static int disk_load_text(const char *value, const char *expected) {
+    h3_disk_key key;
+    void *payload = NULL;
+    size_t size = 0;
+    disk_key(&key, value);
+    int hit = h3_disk_cache_load(&key, &payload, &size);
+    h3_disk_key_free(&key);
+    int same = hit && size == strlen(expected) &&
+               !memcmp(payload, expected, size);
+    free(payload);
+    return hit ? (same ? 1 : -1) : 0;
+}
+
+static void disk_store_bytes(const char *value, const void *data, size_t size) {
+    h3_disk_key key;
+    disk_key(&key, value);
+    const void *parts[] = {data};
+    size_t sizes[] = {size};
+    h3_disk_cache_store(&key, parts, sizes, 1);
+    h3_disk_key_free(&key);
+}
+
+static void disk_only_entry(const char *directory, char *path, size_t size) {
+    DIR *stream = opendir(directory);
+    CHECK(stream != NULL);
+    struct dirent *entry;
+    int found = 0;
+    while ((entry = readdir(stream)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        snprintf(path, size, "%s/%s", directory, entry->d_name);
+        found++;
+    }
+    closedir(stream);
+    CHECK(found == 1);
+}
+
+static void test_disk_cache(void) {
+    char directory[] = "/tmp/h3_disk_cache_XXXXXX";
+    CHECK(mkdtemp(directory) != NULL);
+    setenv("H3_CACHE_DIR", directory, 1);
+    unsetenv("H3_DISK_CACHE");
+    unsetenv("H3_CACHE_MAX_GIB");
+
+    h3_disk_key key;
+    disk_key(&key, "a");
+    const void *parts[] = {"hello", " ", "world"};
+    size_t sizes[] = {5, 1, 5};
+    h3_disk_cache_store(&key, parts, sizes, 3);
+    h3_disk_key_free(&key);
+    CHECK(disk_load_text("a", "hello world") == 1);
+    CHECK(disk_load_text("b", "hello world") == 0);
+
+    /* Reporting switches share entries; any other H3_* switch does not. */
+    setenv("H3_PROFILE", "1", 1);
+    CHECK(disk_load_text("a", "hello world") == 1);
+    unsetenv("H3_PROFILE");
+    setenv("H3_TEST_DISK_CACHE_SWITCH", "1", 1);
+    CHECK(disk_load_text("a", "hello world") == 0);
+    unsetenv("H3_TEST_DISK_CACHE_SWITCH");
+    setenv("H3_DISK_CACHE", "0", 1);
+    CHECK(disk_load_text("a", "hello world") == 0);
+    unsetenv("H3_DISK_CACHE");
+
+    char path[512];
+    disk_only_entry(directory, path, sizeof(path));
+    FILE *file = fopen(path, "r+b");
+    CHECK(file != NULL);
+    CHECK(fseek(file, -1, SEEK_END) == 0);
+    CHECK(fputc('W', file) != EOF);
+    CHECK(fclose(file) == 0);
+    CHECK(disk_load_text("a", "hello world") == 0);
+    CHECK(truncate(path, 40) == 0);
+    CHECK(disk_load_text("a", "hello world") == 0);
+    CHECK(unlink(path) == 0);
+
+    /* 1 MiB cap: the second 600 KiB entry evicts the first. */
+    setenv("H3_CACHE_MAX_GIB", "0.0009765625", 1);
+    size_t big = 600 * 1024;
+    char *bytes = calloc(big, 1);
+    CHECK(bytes != NULL);
+    disk_store_bytes("first", bytes, big);
+    disk_store_bytes("second", bytes, big);
+    disk_only_entry(directory, path, sizeof(path));
+    h3_disk_key_init(&key, "test");
+    h3_disk_key_add(&key, "value=%s", "second");
+    void *payload = NULL;
+    size_t size = 0;
+    CHECK(h3_disk_cache_load(&key, &payload, &size) && size == big);
+    free(payload);
+    h3_disk_key_free(&key);
+    /* An entry larger than the cap is never written. */
+    disk_store_bytes("too-big", bytes, 2 * big);
+    disk_only_entry(directory, path, sizeof(path));
+    free(bytes);
+    CHECK(unlink(path) == 0);
+    unsetenv("H3_CACHE_MAX_GIB");
+    unsetenv("H3_CACHE_DIR");
+    CHECK(rmdir(directory) == 0);
+}
+
 int main(void) {
+    test_disk_cache();
     test_temporal_and_canvas();
     test_schedule();
     test_dit_reuse_schedule();
