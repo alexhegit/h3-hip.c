@@ -3406,9 +3406,63 @@ static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
     return 0;
 }
 
+/* Debug capture for offline SDPA benches: H3_SDPA_DUMP=DIR writes the
+ * inputs of the long-sequence calls listed in H3_SDPA_DUMP_CALLS (indices
+ * counted over calls with sequence >= 4096) as DIR/sdpa_<index>.bin:
+ * u32 sequence, heads, head_dim, kv_head_major, f32 scale, then Q, K, V as
+ * BF16 in the layout the kernel reads. */
+static void h3_hip_sdpa_dump(struct h3_gpu *ctx, const uint16_t *query,
+                             const uint16_t *key, const uint16_t *value,
+                             h3_sdpa_args args) {
+    static long calls = -1;
+    const char *dir = getenv("H3_SDPA_DUMP");
+    if (!dir || !*dir || args.sequence < 4096u) return;
+    calls++;
+    const char *list = getenv("H3_SDPA_DUMP_CALLS");
+    if (!list) return;
+    int wanted = 0;
+    for (const char *p = list; *p;) {
+        char *end = NULL;
+        long index = strtol(p, &end, 10);
+        if (end == p) break;
+        if (index == calls) wanted = 1;
+        p = *end == ',' ? end + 1 : end;
+    }
+    if (!wanted) return;
+    size_t count = (size_t)args.sequence * args.heads * args.head_dim;
+    uint16_t *host = malloc(count * sizeof(*host));
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/sdpa_%ld.bin", dir, calls);
+    FILE *file = host ? fopen(path, "wb") : NULL;
+    if (!file || hipStreamSynchronize(ctx->stream) != hipSuccess) {
+        fprintf(stderr, "h3: SDPA dump %s failed\n", path);
+        if (file) fclose(file);
+        free(host);
+        return;
+    }
+    uint32_t header[4] = {args.sequence, args.heads, args.head_dim,
+                          args.kv_head_major};
+    fwrite(header, sizeof(header), 1, file);
+    fwrite(&args.scale, sizeof(args.scale), 1, file);
+    const uint16_t *sources[3] = {query, key, value};
+    for (int i = 0; i < 3; i++) {
+        if (hipMemcpy(host, sources[i], count * sizeof(*host),
+                      hipMemcpyDeviceToHost) != hipSuccess ||
+            fwrite(host, sizeof(*host), count, file) != count) {
+            fprintf(stderr, "h3: SDPA dump %s write failed\n", path);
+            break;
+        }
+    }
+    fclose(file);
+    free(host);
+    fprintf(stderr, "h3: SDPA dump call %ld seq=%u -> %s\n", calls,
+            args.sequence, path);
+}
+
 static int h3_hip_sdpa_bf16_run(struct h3_gpu *ctx, uint16_t *output,
                                 const uint16_t *query, const uint16_t *key,
                                 const uint16_t *value, h3_sdpa_args args) {
+    h3_hip_sdpa_dump(ctx, query, key, value, args);
     if (h3_hip_sol_attn_wanted(ctx, args.sequence, args.head_dim)) {
         uint32_t n_blocks = (args.sequence + 63u) / 64u;
         if (n_blocks > H3_SOL_MAX_KV_BLOCKS_EXT) {
