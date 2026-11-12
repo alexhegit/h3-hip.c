@@ -80,6 +80,18 @@ gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
 from 21.7 to 16.9 s, again with the same MP4
 ([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
 
+After v0.19.0, on `main`: the gfx12 S^T/O^T SDPA kernel, the BK=64 VAE
+linear tile and the prompt/AdaLN disk cache keep every checked MP4
+identical. The table above is still v0.19.0; `main` measures:
+
+| R9700, `main` (2026-11-12) | v0.19.0 / ledger | `main` | Δ |
+|---|---:|---:|---:|
+| fox-s2, disk-cache hit | 35.9 s | 11.2 s | −69% |
+| 1344×768 · 5 s, dense 50 step | 1985.1 s | 1718.2 s | −13.4% |
+| 1344×768 · 15 s, dense | 2787.6 s | 2228.0 s | −20.1% |
+| 1344×768 · 15 s, FastH3 / `--fbc` / TR / Pika | 1254.1 / 1643.2 / 1745.7 / 1768.4 s | 1010.6 / 1326.5 / 1402.1 / 1442.2 s | −18% to −20% |
+| 1344×768 · 15 s, `--sol-attn` | 1913.9 s | 1698.5 s | −11.3% |
+
 Against ComfyUI's native MiniMax-H3 on the same card (same model, steps and
 layers, INT8 main linears, fresh processes; h3-hip after VAE BF16
 activations), h3-hip denoises 1.39× faster at 864×480 · 20 steps and
