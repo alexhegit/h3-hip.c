@@ -13,9 +13,17 @@ MI250 / MI250X also use `gfx90a` but were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
-Tagged **v0.19.0** is the first public release with the Radeon AI PRO R9700
-work below, and adds a ComfyUI node: `integrations/comfyui/` renders through
-a local `h3 --serve` ([setup](docs/wiki/ComfyUI.md)). The daemon can now
+Tagged **v0.20.0** makes the R9700 faster with the same output bytes: a
+gfx12 S^T/O^T SDPA kernel, a BK=64 video VAE linear tile on gfx12, and a
+disk cache for prompt embeddings and the AdaLN schedule (a repeated fox-s2
+prompt: 35.9 → 12.9 s). The full R9700 matrix was rerun and every MP4 keeps
+its md5; dense SDPA paths are 11–27% faster end to end, and 1344×768 · 15 s
+dense is **2228.0 s** (2787.6 s at v0.18.0). Only gfx1201 was run for this
+tag ([`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)).
+
+v0.19.0 was the first public release with the Radeon AI PRO R9700
+work below, and added a ComfyUI node: `integrations/comfyui/` renders through
+a local `h3 --serve` ([setup](docs/wiki/ComfyUI.md)). The daemon can
 give its cache back to other GPU programs (`POST /v1/cache/release`,
 `options.release_after`, `H3D_IDLE_RELEASE_SEC`), takes `options.fasth3`,
 stops a cancelled job before its next denoise step, and is gated against
@@ -253,8 +261,9 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.19.0**. `h3 --info` prints `h3-hip 0.19.0`.
-v0.19.0 adds the ComfyUI node and the daemon changes behind it; v0.18.0
+Current tagged line is **v0.20.0**. `h3 --info` prints `h3-hip 0.20.0`.
+v0.20.0 speeds up gfx12 SDPA and the video VAE and adds the prompt / AdaLN
+disk cache, with the same output bytes. v0.19.0 added the ComfyUI node and the daemon changes behind it; v0.18.0
 added the R9700. v0.17.0 remains opt-in Pika H3 Flex. v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
 conv. v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
 `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA
@@ -382,7 +391,7 @@ machine. The Makefile does not probe the GPU.
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.19.0
+git checkout v0.20.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3
