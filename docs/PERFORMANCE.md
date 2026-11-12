@@ -14,14 +14,55 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
+## Unreleased — `main` (2026-11-12)
+
+v0.19.0 plus the prompt / AdaLN disk cache (#4), the BK=64 video VAE
+linear (#5) and the gfx12 S^T/O^T SDPA kernel (#6). All three keep the
+output bytes: the full R9700 matrix below reproduces every md5 of the
+2026-11-06 ledger. Each cell is `main` process E2E in seconds, with the
+2026-11-06 ledger (the v0.18.0 scoreboard) in parentheses; same commands,
+`H3_DISK_CACHE=0` except the cache-hit row. Splits, decode, peaks and
+the MI300X ratios:
+[`perf-runs/R9700_2026-11-12.md`](perf-runs/R9700_2026-11-12.md).
+
+| path | 512×512 · 22 frames | 832×480 · 5 s | 864×480 · 15 s | 1344×768 · 5 s ¹ | 1344×768 · 15 s ¹ |
+|---|---:|---:|---:|---:|---:|
+| `bench/fox-s2.sh` (warm) | 33.6 (35.9) | — | — | — | — |
+| fox-s2, disk-cache hit | 12.9 | — | — | — | — |
+| `bench/fox-fast.sh` | 46.8 (46.1) | — | — | — | — |
+| dense | — | **417.6** (470.9) | **500.7** (600.9) | **1718.2** (2204.7) | **2228.0** (2787.6) |
+| `--token-reduction` | — | 297.2 (357.7) | 351.5 (433.1) | 1138.7 (1556.3) | 1402.1 (1745.7) |
+| TR, `--reuse 3` (`fox-15s-fast.sh`) | — | — | 273.8 (342.3) | — | — |
+| TR schedule (`fox-15s-sched.sh`) | — | — | 272.5 (337.7) | — | — |
+| `--fbc` | — | 127.8 (148.6) | 321.2 (399.6) | 394.0 (491.3) | 1326.5 (1643.2) |
+| `--sol-attn` | — | 367.6 (423.2) | 413.8 (478.2) | 1386.4 (1743.2) | 1698.5 (1913.9) |
+| FastH3 4-step | — | 87.9 (101.5) | 362.5 (419.3) | 232.4 (278.7) | 1010.6 (1254.1) |
+| FastH3 + TAEH3 | — | 73.2 (78.9) | 327.7 (368.0) | — | — |
+| VSA | — | 88.0 (104.8) | 251.9 (282.1) ³ | — | — |
+| VSA + TAEH3 | — | 74.2 (76.8) | 217.7 (225.6) ³ | 172.6 (188.0) | does not fit ² |
+| Pika 6-step | — | 101.8 (115.7) | 496.0 (577.1) | 301.9 (371.7) | 1442.2 (1768.4) |
+| Pika + TAEH3 | — | 86.1 (97.2) | 457.3 (525.3) | 258.5 (316.9) | — |
+
+¹ `H3_INT8_HOST=1`.
+² VSA tile buffers need 11.63 GiB on top of the DiT working set
+([`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) KI-006).
+³ Needs `H3_INT8_HOST=1` on this canvas too.
+
+Dense SDPA paths are 11–27% faster, more on longer sequences; the video VAE
+is about a third faster on every canvas. VSA + TAEH3 gains least (3–8%):
+neither its sparse attention nor TAEH3 uses the changed kernels. Only
+gfx1201 was run.
+
 ## Current release — v0.19.0 (2026-11-10)
 
 `h3 --info` prints `h3-hip 0.19.0`. First public release with the R9700
 work; adds the ComfyUI node (`integrations/comfyui/`) and the `--serve`
 changes behind it. The R9700 speedups since v0.18.0 below kept the
 checked MP4s identical. The daemon no longer carries Sol-Attn or a LoRA
-path from one job into the next. The R9700 rows below and the ComfyUI
-comparison are the numbers for this tag; only gfx1201 was run.
+path from one job into the next. Only gfx1201 was run, and the full R9700
+matrix was not retimed for this tag: the 2026-11-06 table under v0.18.0
+still stands, plus 1344×768 · 5 s dense at 1985.1 s and the ComfyUI
+comparison below.
 
 ## v0.18.0 (2026-11-08)
 
@@ -79,6 +120,8 @@ gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
 9.5 to 5.3 GiB. BF16 VAE activations then cut the 832×480 · 5 s video VAE
 from 21.7 to 16.9 s, again with the same MP4
 ([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
+
+The numbers after v0.19.0 are in the `main` section at the top.
 
 Against ComfyUI's native MiniMax-H3 on the same card (same model, steps and
 layers, INT8 main linears, fresh processes; h3-hip after VAE BF16
