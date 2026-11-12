@@ -14,15 +14,15 @@ Engineering logs (phase tables, rejected experiments) live under
 [`perf/`](perf/README.md) and [`perf-mi210/`](perf-mi210/SUMMARY.md) and are
 **not** part of the GitHub release body.
 
-## Unreleased — `main` (2026-11-12)
+## Current release — v0.20.0 (2026-11-13)
 
-v0.19.0 plus the prompt / AdaLN disk cache (#4), the BK=64 video VAE
-linear (#5) and the gfx12 S^T/O^T SDPA kernel (#6). All three keep the
-output bytes: the full R9700 matrix below reproduces every md5 of the
-2026-11-06 ledger. Each cell is `main` process E2E in seconds, with the
-2026-11-06 ledger (the v0.18.0 scoreboard) in parentheses; same commands,
-`H3_DISK_CACHE=0` except the cache-hit row. Splits, decode, peaks and
-the MI300X ratios:
+`h3 --info` prints `h3-hip 0.20.0`. v0.19.0 plus a prompt / AdaLN disk
+cache, a BK=64 video VAE linear tile on gfx12 and the gfx12 S^T/O^T SDPA
+kernel. All three keep the output bytes: the full R9700 matrix below
+reproduces every md5 of the 2026-11-06 ledger. Each cell is process E2E in
+seconds on `1f92811` (the code of this tag), with the 2026-11-06 ledger (the
+v0.18.0 scoreboard) in parentheses; same commands, `H3_DISK_CACHE=0` except
+the cache-hit row. Splits, decode, peaks and the MI300X ratios:
 [`perf-runs/R9700_2026-11-12.md`](perf-runs/R9700_2026-11-12.md).
 
 | path | 512×512 · 22 frames | 832×480 · 5 s | 864×480 · 15 s | 1344×768 · 5 s ¹ | 1344×768 · 15 s ¹ |
@@ -53,7 +53,7 @@ is about a third faster on every canvas. VSA + TAEH3 gains least (3–8%):
 neither its sparse attention nor TAEH3 uses the changed kernels. Only
 gfx1201 was run.
 
-## Current release — v0.19.0 (2026-11-10)
+## v0.19.0 (2026-11-10)
 
 `h3 --info` prints `h3-hip 0.19.0`. First public release with the R9700
 work; adds the ComfyUI node (`integrations/comfyui/`) and the `--serve`
@@ -121,7 +121,7 @@ gfx12 SDPA softmax and BF16-stored VAE weights take 1344×768 · 5 s dense to
 from 21.7 to 16.9 s, again with the same MP4
 ([`perf-runs/R9700_ANALYSIS_2026-11-07.md`](perf-runs/R9700_ANALYSIS_2026-11-07.md)).
 
-The numbers after v0.19.0 are in the `main` section at the top.
+The v0.20.0 numbers are in the section at the top.
 
 Against ComfyUI's native MiniMax-H3 on the same card (same model, steps and
 layers, INT8 main linears, fresh processes; h3-hip after VAE BF16
