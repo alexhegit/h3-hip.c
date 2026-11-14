@@ -5059,11 +5059,13 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                 /* 8 waves (128-row query block) x 32-key tile measured best
                  * on gfx1151 at the DiT shape; see docs/perf-day9. On gfx12
                  * the prefetch / transposed-V kernel with 16 waves is 1.6x
-                 * the gfx1151 default at 32k tokens (same output bits). */
+                 * the gfx1151 default at 32k tokens (same output bits). On
+                 * gfx1100 the same kernel at 8 waves is 44.1 -> 53.8 TFLOPS
+                 * at 109k tokens, also bit-identical. */
                 int gfx12 = h3_hip_is_gfx12();
                 waves = h3_env_u32("H3_SDPA_WMMA_WAVES", gfx12 ? 16u : 8u);
                 bk = h3_env_u32("H3_SDPA_WMMA_BK", 32u);
-                pf = h3_env_flag("H3_SDPA_WMMA_PF", gfx12 ? 1u : 0u);
+                pf = h3_env_flag("H3_SDPA_WMMA_PF", 1u);
                 /* S^T/O^T form of the PF kernel: same bits, 79 -> 65 ms at
                  * 14852 tokens on the R9700. gfx12 only; H3_SDPA_WMMA_T=0
                  * restores the PF kernel. */

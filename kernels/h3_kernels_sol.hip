@@ -14,13 +14,12 @@ static int h3_hip_gfx1151_sol(void) {
     return cached;
 }
 
-/* gfx12 defaults to the transposed-V wave32 Sol kernel (same output bits).
- * H3_SDPA_WMMA_PF=0 keeps the original layout. */
+/* Like the dense dispatch, the wave32 Sol kernel defaults to the
+ * transposed-V layout (same output bits). H3_SDPA_WMMA_PF=0 keeps the
+ * original layout. */
 static int h3_sol_wmma_vt(void) {
     static int cached = -1;
-    if (cached < 0)
-        cached = h3_env_u32("H3_SDPA_WMMA_PF", h3_hip_is_gfx12() ? 1u : 0u)
-                     ? 1 : 0;
+    if (cached < 0) cached = h3_env_flag("H3_SDPA_WMMA_PF", 1u) ? 1 : 0;
     return cached;
 }
 
