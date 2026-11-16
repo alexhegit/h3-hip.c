@@ -2824,8 +2824,9 @@ h3_sdpa_bf16_wmma_d128_t_kernel(const uint16_t *query, const uint16_t *key,
  * three levels run in-lane, so the softmax matches it step for step.
  * Unlike gfx12, gfx11 WMMA does not give the same bits when its A and B
  * operands swap roles (29 of 256 outputs differ in a 16x16 tile), so S^T
- * and O^T round differently from the PF kernel's S and O:
- * H3_SDPA_WMMA_T=1 opts in. */
+ * and O^T round differently from the PF kernel's S and O. Default on
+ * gfx110x, opt-in (H3_SDPA_WMMA_T=1) on gfx115x; H3_SDPA_WMMA_T=0 restores
+ * the PF kernel. */
 template <uint32_t WAVES, uint32_t BK>
 __global__ void __launch_bounds__(WAVES * 32u)
 h3_sdpa_bf16_wmma_d128_t11_kernel(const uint16_t *query, const uint16_t *key,
@@ -5194,6 +5195,17 @@ extern "C" int h3_hip_is_gfx12(void) {
     return cached;
 }
 
+extern "C" int h3_hip_is_gfx110(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    int device = 0;
+    hipDeviceProp_t props;
+    cached = hipGetDevice(&device) == hipSuccess &&
+             hipGetDeviceProperties(&props, device) == hipSuccess &&
+             strncmp(props.gcnArchName, "gfx110", 6) == 0;
+    return cached;
+}
+
 extern "C" int h3_hip_rdna_wmma_default(void) {
     static int cached = -1;
     if (cached >= 0) return cached;
@@ -5323,10 +5335,14 @@ extern "C" int h3_launch_sdpa_bf16(const uint16_t *query, const uint16_t *key,
                 /* S^T/O^T form of the PF kernel: same bits, 79 -> 65 ms at
                  * 14852 tokens on the R9700. gfx12 only; H3_SDPA_WMMA_T=0
                  * restores the PF kernel. */
-                tr = pf ? h3_env_flag("H3_SDPA_WMMA_T", gfx12 ? 1u : 0u) : 0u;
-                /* gfx11 form: opt-in. Swapping the WMMA operands changes
-                 * the gfx11 accumulation order, so it is not bit-identical
-                 * to the PF kernel there (max |d| ~1e-5 per call). */
+                /* gfx11 form: default on gfx110x, opt-in on gfx115x.
+                 * Swapping the WMMA operands changes the gfx11 accumulation
+                 * order, so it is not bit-identical to the PF kernel there
+                 * (max |d| ~1e-5 per call); gfx1100 denoise is 11% faster
+                 * at 768p 15 s. */
+                tr = pf ? h3_env_flag("H3_SDPA_WMMA_T",
+                                      gfx12 || h3_hip_is_gfx110() ? 1u : 0u)
+                        : 0u;
                 if (tr && !gfx12) {
                     tr = 2u;
                     /* 16 waves: 61.1 vs 56.9 TFLOPS at 8 on gfx1100, 109k. */
