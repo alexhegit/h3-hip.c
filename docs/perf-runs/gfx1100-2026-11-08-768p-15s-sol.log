@@ -1,0 +1,39 @@
+===== sol start 2026-11-08T20:53:10+08:00 =====
+h3: --sol-attn is on: faster long SDPA, visible quality loss (off by default). Supported on gfx90a, gfx942, gfx1100, and gfx1151. See docs/SOL_ATTN.md.
+tokenizer                    1/1
+text encoder                50/50
+h3 profile: Qwen text encoder        total          wall= 448.156s encode=  0.032s wait=   4.333s root-gpu=  4.333s peak=  4.587GiB alloc= 46.906GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  4.354s linear=  4.154s sdpa=  0.055s conv=  0.000s other=  0.145s
+h3 profile: Qwen text encoder        weight-load    pin=  6.473s (46.906GiB,   7.25GiB/s) read=5472.272s (46.860GiB,   0.01GiB/s) upload=  2.517s (46.860GiB,  18.62GiB/s) recycled= 91.4% pinned= 0.000GiB device=46.906GiB
+refine text                  1/1
+h3 profile: H3 DiT load stage refine text         10.550s
+precompute AdaLN            50/50
+h3 profile: H3 DiT load stage AdaLN precompute   221.726s
+h3: gate-ranked DiT skips 4(0.1186) 14(0.1217) 16(0.1234) 17(0.125) 13(0.1262)
+h3 profile: H3 DiT load stage rope and maps        0.134s
+load transformer core       50/50
+h3 profile: H3 DiT core split   block-io=281.821s quantize=  0.098s
+h3 profile: H3 DiT load stage transformer core   282.070s
+h3 profile: H3 DiT load stage activations          0.021s
+h3 profile: H3 DiT                   load           wall= 514.501s encode=377.354s wait=   0.493s root-gpu=  0.493s peak= 39.966GiB alloc= 98.234GiB submissions=30 direct=266 linear=62 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  0.815s linear=  0.660s sdpa=  0.003s conv=  0.000s other=  0.152s
+h3: selected reuse schedule has 11 evaluations
+denoise                      0/20  h3: Sol-Attn sequence 109334 uses dynamic-shared routing (1709 KV tiles > 1024)
+denoise                     20/20
+h3 profile: H3 DiT                   Euler denoise  wall=2743.357s encode=  2.343s wait=2739.996s root-gpu=2739.996s peak= 39.966GiB alloc=  0.000GiB submissions=11 direct=5115 linear=0 conv=0 attention=495
+h3 profile: H3 DiT                   op-classes     gpu-op=2742.297s linear=578.872s sdpa=2098.762s conv=  0.000s other= 64.663s
+h3 profile: H3 DiT                   total          wall=3257.878s encode=379.696s wait=2740.489s root-gpu=2740.489s peak= 39.966GiB alloc= 98.234GiB submissions=41 direct=5381 linear=62 conv=0 attention=497
+h3 profile: H3 DiT                   weight-load    pin=  2.659s (98.234GiB,  36.95GiB/s) read=1880.438s (58.139GiB,   0.03GiB/s) upload=  2.590s (58.139GiB,  22.45GiB/s) recycled= 95.6% pinned= 0.118GiB device=98.116GiB
+audio VAE                    7/7
+h3 profile: audio VAE decoder        total          wall=   1.746s encode=  0.001s wait=   1.639s root-gpu=  1.639s peak=  0.286GiB alloc=  1.450GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  1.632s linear=  0.000s sdpa=  0.000s conv=  1.412s other=  0.220s
+h3 profile: audio VAE decoder        weight-load    pin=  0.046s ( 1.450GiB,  31.65GiB/s) read=  0.016s ( 0.242GiB,  15.33GiB/s) upload=  0.034s ( 0.242GiB,   7.05GiB/s) recycled= 99.5% pinned= 0.000GiB device= 1.450GiB
+h3: video VAE tiles 5x3 at 320 pixels
+video VAE load              36/36
+h3 profile: video VAE decoder        total          wall= 192.346s encode=  1.149s wait= 177.184s root-gpu=177.184s peak=  9.554GiB alloc=  9.635GiB submissions=315 direct=115605 linear=45675 conv=0 attention=11340
+h3 profile: video VAE decoder        op-classes     gpu-op=177.338s linear=125.717s sdpa= 28.755s conv=  0.000s other= 22.865s
+h3 profile: video VAE decoder        weight-load    pin=  0.429s ( 9.635GiB,  22.48GiB/s) read=  2.007s ( 9.028GiB,   4.50GiB/s) upload=  0.544s ( 9.028GiB,  16.60GiB/s) recycled= 98.6% pinned= 0.082GiB device= 9.553GiB
+FFmpeg                     362/362
+h3: wrote outputs/w7900-768p-15s-sol.mp4
+ELAPSED_SEC 3906.75
+===== sol done 2026-11-08T21:58:16+08:00 =====
