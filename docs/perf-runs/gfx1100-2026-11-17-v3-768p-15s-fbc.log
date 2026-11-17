@@ -1,0 +1,49 @@
+===== fbc start 2026-11-17T05:09:46+08:00 =====
+h3: --fbc is on: skip later DiT blocks when the first block residual is stable (lossy, off by default). H3_FBC_REL default 0.15, H3_FBC_HEAD/TAIL default 2.
+tokenizer                    1/1
+text encoder                 50/50
+h3 profile: Qwen text encoder        total          wall= 364.273s encode=  0.035s wait=   4.350s root-gpu=  4.350s peak=  4.587GiB alloc= 46.906GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  4.376s linear=  4.167s sdpa=  0.059s conv=  0.000s other=  0.149s
+h3 profile: Qwen text encoder        weight-load    pin=  2.873s (46.906GiB,  16.32GiB/s) read=3685.526s (46.860GiB,   0.01GiB/s) upload=  2.765s (46.860GiB,  16.95GiB/s) recycled= 92.0% pinned= 0.000GiB device=46.906GiB
+refine text                  1/1
+h3 profile: H3 DiT load stage refine text          8.071s live=  0.003GiB
+precompute AdaLN             50/50
+h3 profile: H3 DiT load stage AdaLN precompute   173.817s live=  0.355GiB
+h3: gate-ranked DiT skips 4(0.1186) 14(0.1217) 16(0.1234) 17(0.125) 13(0.1262)
+h3 profile: H3 DiT load stage rope and maps        0.137s live=  0.356GiB
+load transformer core        50/50
+h3 profile: H3 DiT core split   block-io=302.907s quantize= 14.668s cached-blocks=0
+h3 profile: H3 DiT load stage transformer core   317.906s live= 16.521GiB
+h3 profile: H3 DiT load stage activations          1.180s live= 42.885GiB
+h3 profile: H3 DiT                   load           wall= 501.111s encode=430.365s wait=   0.412s root-gpu=  0.412s peak= 42.885GiB alloc=101.153GiB submissions=30 direct=266 linear=62 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  0.816s linear=  0.672s sdpa=  0.000s conv=  0.000s other=  0.144s
+h3: selected reuse schedule has 11 evaluations
+h3: fbc step 1/20 rel 0.0000 accum 0.0000 full forced
+h3: fbc step 3/20 rel 0.1032 accum 0.1032 skip
+h3: fbc step 5/20 rel 0.0937 accum 0.1969 full
+h3: fbc step 7/20 rel 0.0730 accum 0.0730 skip
+h3: fbc step 9/20 rel 0.0719 accum 0.1448 skip
+h3: fbc step 11/20 rel 0.0659 accum 0.2107 full
+h3: fbc step 13/20 rel 0.0757 accum 0.0757 skip
+h3: fbc step 15/20 rel 0.0937 accum 0.1695 full
+h3: fbc step 17/20 rel 0.1260 accum 0.1260 skip
+h3: fbc step 19/20 rel 0.2088 accum 0.3348 full forced
+h3: fbc step 20/20 rel 0.1897 accum 0.1897 full forced
+h3: fbc full 6 skip 5 rel<0.150 head 2 tail 2
+denoise                      20/20
+h3 profile: H3 DiT                   Euler denoise  wall=2005.866s encode=  9.286s wait=1995.549s root-gpu=1995.549s peak= 42.885GiB alloc=  0.000GiB submissions=21 direct=2957 linear=0 conv=0 attention=275
+h3 profile: H3 DiT                   op-classes     gpu-op=2004.803s linear=319.798s sdpa=1628.669s conv=  0.000s other= 56.335s
+h3 profile: H3 DiT                   total          wall=2507.155s encode=439.651s wait=1995.961s root-gpu=1995.961s peak= 42.885GiB alloc=101.153GiB submissions=51 direct=3223 linear=62 conv=0 attention=277
+h3 profile: H3 DiT                   weight-load    pin=  3.795s (101.153GiB,  26.65GiB/s) read=1465.895s (58.139GiB,   0.04GiB/s) upload=  2.546s (58.139GiB,  22.84GiB/s) recycled= 91.4% pinned= 3.402GiB device=97.751GiB
+audio VAE                    7/7
+h3 profile: audio VAE decoder        total          wall=   1.748s encode=  0.001s wait=   1.636s root-gpu=  1.636s peak=  0.286GiB alloc=  1.450GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  1.630s linear=  0.000s sdpa=  0.000s conv=  1.409s other=  0.221s
+h3 profile: audio VAE decoder        weight-load    pin=  0.045s ( 1.450GiB,  32.01GiB/s) read=  0.021s ( 0.242GiB,  11.29GiB/s) upload=  0.034s ( 0.242GiB,   7.16GiB/s) recycled= 99.5% pinned= 0.000GiB device= 1.450GiB
+h3: video VAE tiles 5x3 at 320 pixels
+video VAE load               36/36
+h3 profile: video VAE decoder        total          wall= 144.211s encode=  1.263s wait= 128.950s root-gpu=128.950s peak=  5.224GiB alloc= 14.188GiB submissions=315 direct=115605 linear=45675 conv=0 attention=11340
+h3 profile: video VAE decoder        op-classes     gpu-op=128.911s linear= 76.959s sdpa= 29.744s conv=  0.000s other= 22.209s
+h3 profile: video VAE decoder        weight-load    pin=  0.570s (14.188GiB,  24.89GiB/s) read=  1.632s ( 9.028GiB,   5.53GiB/s) upload=  0.513s ( 9.028GiB,  17.59GiB/s) recycled= 98.6% pinned= 0.082GiB device=14.106GiB
+FFmpeg                       362/362
+h3: wrote outputs/w7900-v3/768p-15s-fbc.mp4
+ELAPSED_SEC 3023.40
