@@ -23,6 +23,7 @@ static const char *const ignored_environment[] = {
     "H3_PROFILE", "H3_DISK_CACHE", "H3_CACHE_DIR", "H3_CACHE_MAX_GIB",
     "H3_HIP_MEMLOG", "H3_INT8_HOST", "H3_INT8_HOST_OVERLAP", "H3_TERMINAL",
     "H3_HIP_DEVICE", "H3_PIKA_SEED", "H3_MODEL", "H3_ADALN_PREFETCH",
+    "H3_DISK_CACHE_DIT_INT8", "H3_PREAD_SERIAL", "H3_PREAD_THREADS",
 };
 
 typedef struct {

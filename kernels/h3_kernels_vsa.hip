@@ -776,7 +776,7 @@ extern "C" int h3_launch_vsa_bf16(
                 hipGetDeviceProperties(&props, device) == hipSuccess) {
                 mfma = strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
                        strncmp(props.gcnArchName, "gfx942", 6) == 0;
-                wmma = strncmp(props.gcnArchName, "gfx1151", 7) == 0 ||
+                wmma = strncmp(props.gcnArchName, "gfx11", 5) == 0 ||
                        strncmp(props.gcnArchName, "gfx120", 6) == 0;
             }
         }

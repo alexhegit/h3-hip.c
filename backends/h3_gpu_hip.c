@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -165,13 +166,52 @@ static int h3_hip_pread_threads(void) {
     return cached;
 }
 
+/* The striped reads above are an NVMe tuning. On a spinning disk they turn
+ * into seeks: a 7200 rpm drive reads 150 MB/s with one stream, 114 MB/s with
+ * 32, and the W7900 box loaded its text encoder at ~105 MB/s with the loaders'
+ * 128 outstanding reads. Serial pread cut that load from 446 s to 304 s. */
+static int h3_hip_fd_rotational(int fd) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static dev_t cached_dev;
+    static int cached = -1;
+    struct stat status;
+    if (fstat(fd, &status) != 0) return 0;
+    pthread_mutex_lock(&lock);
+    if (cached >= 0 && cached_dev == status.st_dev) {
+        int value = cached;
+        pthread_mutex_unlock(&lock);
+        return value;
+    }
+    pthread_mutex_unlock(&lock);
+    unsigned dev_major = major(status.st_dev), dev_minor = minor(status.st_dev);
+    const char *formats[] = {"/sys/dev/block/%u:%u/queue/rotational",
+                             "/sys/dev/block/%u:%u/../queue/rotational"};
+    int rotational = 0;
+    for (size_t index = 0; index < sizeof(formats) / sizeof(*formats); index++) {
+        char path[128];
+        snprintf(path, sizeof(path), formats[index], dev_major, dev_minor);
+        FILE *file = fopen(path, "r");
+        if (!file) continue;
+        int value = 0;
+        if (fscanf(file, "%d", &value) == 1) rotational = value == 1;
+        fclose(file);
+        break;
+    }
+    pthread_mutex_lock(&lock);
+    cached_dev = status.st_dev;
+    cached = rotational;
+    pthread_mutex_unlock(&lock);
+    return rotational;
+}
+
 static int h3_hip_pread_all(int fd, void *data, size_t bytes, off_t offset) {
     enum { H3_PREAD_THREADS = 32, H3_PREAD_MIN = 16u << 20 };
 #if defined(POSIX_FADV_WILLNEED)
     if (bytes >= H3_PREAD_MIN)
         posix_fadvise(fd, offset, (off_t)bytes, POSIX_FADV_WILLNEED);
 #endif
-    if (bytes < H3_PREAD_MIN || getenv("H3_PREAD_SERIAL"))
+    if (bytes < H3_PREAD_MIN || getenv("H3_PREAD_SERIAL") ||
+        (!getenv("H3_PREAD_THREADS") && h3_hip_fd_rotational(fd)))
         return h3_hip_pread_serial(fd, data, bytes, offset);
 
     int want = h3_hip_pread_threads();
@@ -3378,7 +3418,7 @@ static int h3_hip_sol_supported(void) {
              hipGetDeviceProperties(&props, device) == hipSuccess &&
              (strncmp(props.gcnArchName, "gfx90a", 6) == 0 ||
               strncmp(props.gcnArchName, "gfx942", 6) == 0 ||
-              strncmp(props.gcnArchName, "gfx1151", 7) == 0 ||
+              strncmp(props.gcnArchName, "gfx11", 5) == 0 ||
               strncmp(props.gcnArchName, "gfx120", 6) == 0);
     return cached;
 }
@@ -3401,7 +3441,7 @@ static int h3_hip_sol_attn_wanted(struct h3_gpu *gpu, uint32_t sequence,
         warned = 1;
         fprintf(stderr,
                 "h3: --sol-attn: unsupported GPU; using dense SDPA "
-                "(supported: gfx90a, gfx942, gfx1151, gfx1201)\n");
+                "(supported: gfx90a, gfx942, gfx1100, gfx1151, gfx1201)\n");
     }
     return 0;
 }

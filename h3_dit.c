@@ -1,9 +1,11 @@
 #include "h3_dit.h"
 
 #include "h3_dit_schedule.h"
+#include "h3_disk_cache.h"
 #include "h3_fasth3.h"
 #include "h3_weights.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -1056,6 +1058,131 @@ static void free_block_quant_sources(h3_dit *dit, h3_dit_block *block) {
 
 /* Flush a deferred INT8 quantize batch: sync stream, then drop BF16 sources.
  * Batching lets CPU shard I/O overlap GPU quantize for prior blocks. */
+/* H3_DISK_CACHE_DIT_INT8=1 adds the quantized core weights to the disk
+ * cache: 385 MB per block instead of 770 MB of BF16 reads plus quantize,
+ * with the same bits. 45 blocks are ~17 GiB, so raise H3_CACHE_MAX_GIB
+ * (default 8) to ~24 or the LRU evicts them. Only the all-INT8 path with
+ * no LoRA and no VSA qualifies. */
+static int core_cache_enabled(const h3_dit *dit) {
+    static int wanted = -1;
+    if (wanted < 0) {
+        const char *value = getenv("H3_DISK_CACHE_DIT_INT8");
+        wanted = value && !strcmp(value, "1");
+    }
+    const char *lora = getenv("H3_FASTH3_LORA");
+    return wanted && h3_disk_cache_enabled() && dit->int8_mlp &&
+           dit->int8_qkv && dit->int8_attention_out && !dit->fp8_mlp &&
+           !dit->fp8_qkv && !dit->fp8_attention_out && !dit->keep_bf16_mlp &&
+           !dit->keep_bf16_qkv && !dit->keep_bf16_attention_out &&
+           !dit->vsa && !dit->ssd_streaming &&
+           !(lora && lora[0] && strcmp(lora, "0"));
+}
+
+static void core_cache_key(const h3_dit *dit, unsigned index,
+                           h3_disk_key *key) {
+    static const char *const sources[] = {
+        "attn.qkv_proj.weight", "attn.out_proj.weight", "mlp.fc1.weight",
+        "mlp.fc2.weight"};
+    h3_disk_key_init(key, "dit-int8");
+    h3_disk_key_add(key, "block=%u", index);
+    for (size_t source = 0; source < sizeof(sources) / sizeof(*sources);
+         source++) {
+        char name[160];
+        const h3_st_header *header = NULL;
+        snprintf(name, sizeof(name), "blocks.%u.%s", index, sources[source]);
+        const h3_st_tensor *tensor = h3_weight_find(dit->weights, name, &header);
+        if (!tensor || !header) {
+            key->failed = 1;
+            return;
+        }
+        h3_disk_key_add(key, "tensor=%s@%" PRIu64 ":%d", name,
+                        tensor->file_offset, (int)tensor->dtype);
+        h3_disk_key_add_file(key, header->path);
+    }
+}
+
+typedef struct {
+    h3_gpu_tensor **tensor;
+    size_t elements;
+    int is_i8;
+} core_cache_part;
+
+static size_t core_cache_parts(h3_dit_block *block, core_cache_part *parts) {
+    parts[0] = (core_cache_part){&block->qkv_int8, (size_t)INNER * 3 * HIDDEN, 1};
+    parts[1] = (core_cache_part){&block->qkv_scales, INNER * 3, 0};
+    parts[2] = (core_cache_part){&block->out_int8, (size_t)HIDDEN * INNER, 1};
+    parts[3] = (core_cache_part){&block->out_scales, HIDDEN, 0};
+    parts[4] = (core_cache_part){&block->fc1_int8, (size_t)FFN * 2 * HIDDEN, 1};
+    parts[5] = (core_cache_part){&block->fc1_scales, FFN * 2, 0};
+    parts[6] = (core_cache_part){&block->fc2_int8, (size_t)HIDDEN * FFN, 1};
+    parts[7] = (core_cache_part){&block->fc2_scales, HIDDEN, 0};
+    return 8;
+}
+
+static size_t core_part_bytes(const core_cache_part *part) {
+    return part->elements * (part->is_i8 ? 1u : sizeof(float));
+}
+
+static int core_cache_load(h3_dit *dit, h3_dit_block *block, unsigned index) {
+    h3_disk_key key = {0};
+    core_cache_key(dit, index, &key);
+    void *payload = NULL;
+    size_t size = 0;
+    int ok = h3_disk_cache_load(&key, &payload, &size);
+    h3_disk_key_free(&key);
+    if (!ok) return 0;
+    core_cache_part parts[8];
+    size_t count = core_cache_parts(block, parts), expected = 0;
+    for (size_t part = 0; part < count; part++)
+        expected += core_part_bytes(&parts[part]);
+    ok = size == expected;
+    const unsigned char *cursor = payload;
+    for (size_t part = 0; ok && part < count; part++) {
+        core_cache_part *p = &parts[part];
+        *p->tensor = p->is_i8
+            ? h3_gpu_tensor_new_i8_device(dit->gpu, p->elements)
+            : h3_gpu_tensor_new_f32_device(dit->gpu, p->elements);
+        ok = *p->tensor &&
+             (p->is_i8 ? h3_gpu_tensor_write_i8(*p->tensor,
+                                                (const int8_t *)cursor,
+                                                p->elements)
+                       : h3_gpu_tensor_write_f32(*p->tensor,
+                                                 (const float *)cursor,
+                                                 p->elements));
+        cursor += core_part_bytes(p);
+    }
+    free(payload);
+    if (!ok)
+        for (size_t part = 0; part < count; part++)
+            free_tensor(parts[part].tensor);
+    return ok;
+}
+
+static void core_cache_store(h3_dit *dit, unsigned index) {
+    h3_disk_key key = {0};
+    core_cache_key(dit, index, &key);
+    core_cache_part parts[8];
+    size_t count = core_cache_parts(&dit->blocks[index], parts);
+    void *buffers[8] = {0};
+    const void *views[8];
+    size_t sizes[8];
+    int ok = !key.failed;
+    for (size_t part = 0; ok && part < count; part++) {
+        core_cache_part *p = &parts[part];
+        sizes[part] = core_part_bytes(p);
+        buffers[part] = malloc(sizes[part]);
+        views[part] = buffers[part];
+        ok = buffers[part] &&
+             (p->is_i8 ? h3_gpu_tensor_read_i8(*p->tensor, buffers[part],
+                                               p->elements)
+                       : h3_gpu_tensor_read_f32(*p->tensor, buffers[part],
+                                                p->elements));
+    }
+    if (ok) h3_disk_cache_store(&key, views, sizes, count);
+    for (size_t part = 0; part < count; part++) free(buffers[part]);
+    h3_disk_key_free(&key);
+}
+
 static int flush_dit_quant_batch(h3_dit *dit, unsigned *pending,
                                  unsigned *n_pending, int *quant_open,
                                  char *error, size_t error_size) {
@@ -1066,8 +1193,10 @@ static int flush_dit_quant_batch(h3_dit *dit, unsigned *pending,
         return 0;
     }
     *quant_open = 0;
-    for (unsigned i = 0; i < *n_pending; i++)
+    for (unsigned i = 0; i < *n_pending; i++) {
+        if (core_cache_enabled(dit)) core_cache_store(dit, pending[i]);
         free_block_quant_sources(dit, &dit->blocks[pending[i]]);
+    }
     *n_pending = 0;
     return 1;
 }
@@ -1849,6 +1978,8 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
     int quant_open = 0;
     int stage_timing = getenv("H3_PROFILE") != NULL;
     double wait_io = 0.0, wait_quant = 0.0;
+    unsigned cache_hits = 0;
+    int use_cache = core_cache_enabled(dit);
     for (unsigned index = 0; index < H3_DIT_BLOCKS; index++) {
         if (!dit->block_active[index]) {
             report(progress, opaque, "load transformer core", (int)index + 1,
@@ -1857,6 +1988,20 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
         }
         char prefix[64];
         snprintf(prefix, sizeof(prefix), "blocks.%u.", index);
+        if (use_cache) {
+            double io_start = stage_timing ? stream_now() : 0.0;
+            int hit = core_cache_load(dit, &dit->blocks[index], index);
+            if (hit && !load_block_norms(dit, &dit->blocks[index], prefix,
+                                         error, error_size))
+                goto core_failed;
+            if (stage_timing) wait_io += stream_now() - io_start;
+            if (hit) {
+                cache_hits++;
+                report(progress, opaque, "load transformer core",
+                       (int)index + 1, H3_DIT_BLOCKS);
+                continue;
+            }
+        }
         if (dit->ssd_streaming) {
             if (!load_block_norms(dit, &dit->blocks[index], prefix,
                                   error, error_size) ||
@@ -1936,7 +2081,8 @@ static int load_core(h3_dit *dit, h3_dit_progress progress, void *opaque,
         goto core_failed;
     if (stage_timing)
         fprintf(stderr, "h3 profile: H3 DiT core split   block-io=%7.3fs "
-                        "quantize=%7.3fs\n", wait_io, wait_quant);
+                        "quantize=%7.3fs cached-blocks=%u\n", wait_io,
+                wait_quant, cache_hits);
     if (dit->int8_host && !park_int8_weights(dit, error, error_size))
         goto core_failed;
     if (dit->ssd_streaming) {

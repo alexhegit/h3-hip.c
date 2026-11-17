@@ -1,0 +1,38 @@
+===== sol start 2026-11-17T06:00:10+08:00 =====
+h3: --sol-attn is on: faster long SDPA, visible quality loss (off by default). Supported on gfx90a, gfx942, gfx1100, gfx1151, and gfx1201. See docs/SOL_ATTN.md.
+tokenizer                    1/1
+text encoder                 50/50
+h3 profile: Qwen text encoder        total          wall= 363.243s encode=  0.036s wait=   4.341s root-gpu=  4.341s peak=  4.587GiB alloc= 46.906GiB submissions=51 direct=801 linear=350 conv=0 attention=50
+h3 profile: Qwen text encoder        op-classes     gpu-op=  4.366s linear=  4.158s sdpa=  0.058s conv=  0.000s other=  0.150s
+h3 profile: Qwen text encoder        weight-load    pin=  2.822s (46.906GiB,  16.62GiB/s) read=3706.710s (46.860GiB,   0.01GiB/s) upload=  2.658s (46.860GiB,  17.63GiB/s) recycled= 91.7% pinned= 0.000GiB device=46.906GiB
+refine text                  1/1
+h3 profile: H3 DiT load stage refine text          8.017s live=  0.003GiB
+precompute AdaLN             50/50
+h3 profile: H3 DiT load stage AdaLN precompute   173.957s live=  0.355GiB
+h3: gate-ranked DiT skips 4(0.1186) 14(0.1217) 16(0.1234) 17(0.125) 13(0.1262)
+h3 profile: H3 DiT load stage rope and maps        0.131s live=  0.356GiB
+load transformer core        50/50
+h3 profile: H3 DiT core split   block-io=313.895s quantize= 14.440s cached-blocks=0
+h3 profile: H3 DiT load stage transformer core   328.665s live= 16.521GiB
+h3 profile: H3 DiT load stage activations          0.019s live= 38.506GiB
+h3 profile: H3 DiT                   load           wall= 510.790s encode=447.239s wait=   0.403s root-gpu=  0.403s peak= 38.506GiB alloc= 96.774GiB submissions=30 direct=266 linear=62 conv=0 attention=2
+h3 profile: H3 DiT                   op-classes     gpu-op=  0.819s linear=  0.672s sdpa=  0.000s conv=  0.000s other=  0.147s
+h3: selected reuse schedule has 11 evaluations
+h3: Sol-Attn sequence 109334 uses dynamic-shared routing (1709 KV tiles > 1024)
+denoise                      20/20
+h3 profile: H3 DiT                   Euler denoise  wall=2589.339s encode=  6.983s wait=2581.361s root-gpu=2581.361s peak= 38.506GiB alloc=  0.000GiB submissions=11 direct=5115 linear=0 conv=0 attention=495
+h3 profile: H3 DiT                   op-classes     gpu-op=2588.304s linear=579.248s sdpa=1944.682s conv=  0.000s other= 64.373s
+h3 profile: H3 DiT                   total          wall=3100.148s encode=454.222s wait=2581.764s root-gpu=2581.764s peak= 38.506GiB alloc= 96.774GiB submissions=41 direct=5381 linear=62 conv=0 attention=497
+h3 profile: H3 DiT                   weight-load    pin=  2.588s (96.774GiB,  37.39GiB/s) read=1502.907s (58.139GiB,   0.04GiB/s) upload=  2.535s (58.139GiB,  22.93GiB/s) recycled= 95.7% pinned= 0.118GiB device=96.656GiB
+audio VAE                    7/7
+h3 profile: audio VAE decoder        total          wall=   2.006s encode=  0.001s wait=   1.858s root-gpu=  1.858s peak=  0.286GiB alloc=  1.450GiB submissions=16 direct=497 linear=0 conv=136 attention=0
+h3 profile: audio VAE decoder        op-classes     gpu-op=  1.852s linear=  0.000s sdpa=  0.000s conv=  1.586s other=  0.266s
+h3 profile: audio VAE decoder        weight-load    pin=  0.052s ( 1.450GiB,  27.77GiB/s) read=  0.028s ( 0.242GiB,   8.79GiB/s) upload=  0.056s ( 0.242GiB,   4.32GiB/s) recycled= 99.5% pinned= 0.000GiB device= 1.450GiB
+h3: video VAE tiles 5x3 at 320 pixels
+video VAE load               36/36
+h3 profile: video VAE decoder        total          wall= 142.756s encode=  1.274s wait= 127.610s root-gpu=127.610s peak=  5.224GiB alloc= 14.188GiB submissions=315 direct=115605 linear=45675 conv=0 attention=11340
+h3 profile: video VAE decoder        op-classes     gpu-op=127.581s linear= 75.374s sdpa= 29.755s conv=  0.000s other= 22.452s
+h3 profile: video VAE decoder        weight-load    pin=  0.535s (14.188GiB,  26.54GiB/s) read=  1.648s ( 9.028GiB,   5.48GiB/s) upload=  0.523s ( 9.028GiB,  17.27GiB/s) recycled= 98.6% pinned= 0.082GiB device=14.106GiB
+FFmpeg                       362/362
+h3: wrote outputs/w7900-v3/768p-15s-sol.mp4
+ELAPSED_SEC 3613.71

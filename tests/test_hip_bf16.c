@@ -27,6 +27,16 @@ static float bf16_to_f32(uint16_t value) {
     return out;
 }
 
+int h3_hip_is_gfx110(void);
+
+/* gfx110x dense SDPA defaults to the S^T/O^T kernel, whose swapped WMMA
+ * operands round differently from the Sol kernel's PF form, so Sol-Attn
+ * keep-all matches dense bitwise only with H3_SDPA_WMMA_T=0 there. */
+static int sol_keep_all_bitwise(void) {
+    const char *t = getenv("H3_SDPA_WMMA_T");
+    return !h3_hip_is_gfx110() || (t && strcmp(t, "0") == 0);
+}
+
 static int require_gpu(h3_gpu *gpu, int ok, const char *op) {
     if (ok) return 0;
     fprintf(stderr, "FAIL %s: %s\n", op, h3_gpu_error(gpu));
@@ -2200,7 +2210,7 @@ static int test_sol_attn_keep_all(h3_gpu *gpu) {
     }
     printf("sol-attn keep-all bitwise diffs %zu / %zu worst %g\n", ndiff, count,
            worst);
-    CHECK(ndiff == 0);
+    CHECK(sol_keep_all_bitwise() ? ndiff == 0 : worst <= 1e-4);
     setenv("H3_SOL_ATTN_TAU", "0.5", 1);
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin sol-attn sparse"));
     CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,
@@ -2271,12 +2281,15 @@ static int test_sol_attn_overflow_route(h3_gpu *gpu) {
     CHECK(!require_gpu(gpu, h3_gpu_submit(gpu), "submit overflow keep-all"));
     CHECK(h3_gpu_tensor_read_bf16(output, sparse, count));
     size_t ndiff = 0;
+    double worst = 0.0;
     for (size_t i = 0; i < count; i++) {
         if (dense[i] != sparse[i]) ndiff++;
+        double delta = fabs(bf16_to_f32(dense[i]) - bf16_to_f32(sparse[i]));
+        if (delta > worst) worst = delta;
     }
-    printf("sol-attn overflow keep-all bitwise diffs %zu / %zu\n", ndiff,
-           count);
-    CHECK(ndiff == 0);
+    printf("sol-attn overflow keep-all bitwise diffs %zu / %zu worst %g\n",
+           ndiff, count, worst);
+    CHECK(sol_keep_all_bitwise() ? ndiff == 0 : worst <= 1e-4);
     setenv("H3_SOL_ATTN_TAU", "0.5", 1);
     CHECK(!require_gpu(gpu, h3_gpu_begin(gpu), "begin overflow sparse"));
     CHECK(!require_gpu(gpu, h3_gpu_sdpa_bf16(gpu, output, gpu_q, gpu_k, gpu_v,

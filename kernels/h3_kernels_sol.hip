@@ -9,18 +9,17 @@ static int h3_hip_gfx1151_sol(void) {
     hipDeviceProp_t props;
     cached = hipGetDevice(&device) == hipSuccess &&
              hipGetDeviceProperties(&props, device) == hipSuccess &&
-             (strncmp(props.gcnArchName, "gfx1151", 7) == 0 ||
+             (strncmp(props.gcnArchName, "gfx11", 5) == 0 ||
               strncmp(props.gcnArchName, "gfx120", 6) == 0);
     return cached;
 }
 
-/* gfx12 defaults to the transposed-V wave32 Sol kernel (same output bits).
- * H3_SDPA_WMMA_PF=0 keeps the original layout. */
+/* Like the dense dispatch, the wave32 Sol kernel defaults to the
+ * transposed-V layout (same output bits). H3_SDPA_WMMA_PF=0 keeps the
+ * original layout. */
 static int h3_sol_wmma_vt(void) {
     static int cached = -1;
-    if (cached < 0)
-        cached = h3_env_u32("H3_SDPA_WMMA_PF", h3_hip_is_gfx12() ? 1u : 0u)
-                     ? 1 : 0;
+    if (cached < 0) cached = h3_env_flag("H3_SDPA_WMMA_PF", 1u) ? 1 : 0;
     return cached;
 }
 

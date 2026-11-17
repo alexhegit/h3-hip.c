@@ -1,12 +1,13 @@
 # AGENTS.md — h3-hip.c
 
-HIP port of antirez/h3.c for AMD GPUs. One tree, four ISAs.
+HIP port of antirez/h3.c for AMD GPUs. One tree, five ISAs.
 
 ## Build
 
 `HIP_ARCH` is **required** on every build (except `make clean`). The Makefile will error without it.
 
 ```bash
+make HIP_ARCH=gfx1100 -j$(nproc) h3   # Radeon Pro W7900 (RDNA3, wave32)
 make HIP_ARCH=gfx1151 -j$(nproc) h3   # Strix Halo (RDNA3.5, wave32)
 make HIP_ARCH=gfx1201 -j$(nproc) h3   # Radeon AI PRO R9700 (RDNA4, wave32)
 make HIP_ARCH=gfx90a  -j$(nproc) h3   # MI210 / MI250X (CDNA2)
@@ -22,6 +23,7 @@ After changing arch, always `make clean` before rebuilding.
 
 ```bash
 # Full unit + smoke suite (requires model weights for some sub-tests)
+make HIP_ARCH=gfx1100 -j$(nproc) test    # W7900
 make HIP_ARCH=gfx1151 -j$(nproc) test    # Strix Halo
 make HIP_ARCH=gfx90a  -j$(nproc) test    # MI210
 make HIP_ARCH=gfx942  -j$(nproc) test    # MI300X
@@ -49,11 +51,12 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - **Major pipelines:** DiT (`h3_dit.c`, `h3_dit_schedule.c`), Video VAE (`h3_video_vae.c`), Audio VAE (`h3_audio_vae.c`), Text encoder (`h3_text_encoder.c`), Vision encoder (`h3_vision_encoder.c`), FFmpeg mux (`h3_ffmpeg.c`)
 - **HTTP daemon (experimental):** `./h3 -d MODEL --serve` → `h3d.c` (loopback JSON+SSE, protocol **v1alpha**). Bind `127.0.0.1:8571` unless `H3D_BIND`/`H3D_PORT` are set. Do not expose the daemon on a public interface. Contract: [`docs/DESIGN_DHS.md`](docs/DESIGN_DHS.md). Agent plugin lives in a separate repo (`dsh-plugin-h3-hip`).
 - **ComfyUI node (experimental):** `integrations/comfyui/` (V3 node API, symlink into `custom_nodes/`), a thin client of `--serve`; `run_workflow.py` queues the API-format graphs in `workflows/` headless. User guide: [`docs/wiki/ComfyUI.md`](docs/wiki/ComfyUI.md).
-- **Wave mode:** gfx1151 and gfx1201 use wave32 (rocWMMA; gfx12 accumulator rows differ, see `H3_WMMA_ACC_ROW`); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
+- **Wave mode:** gfx1100, gfx1151 and gfx1201 use wave32 (rocWMMA; gfx12 accumulator rows differ, see `H3_WMMA_ACC_ROW`); gfx90a/gfx942 use wave64 (MFMA). Kernel selection is compile-time via `HIP_ARCH`.
 
 ## Key gotchas
 
 - `H3_HIP_DEVICE=N` or `HIP_VISIBLE_DEVICES=N` selects GPU on multi-GPU boxes. Do not run two weight-streaming T2VA jobs simultaneously.
+- W7900 (gfx1100, 45 GiB usable): 1344×768 · 15 s dense is 3780 s with a warm disk cache and `H3_DISK_CACHE_DIT_INT8=1`, peak 38.5 GiB, md5 `63d83276…`. The test box needs `HIP_VISIBLE_DEVICES=0` (iGPU present), `H3_FFMPEG=/usr/bin/ffmpeg`, and the `../rocWMMA` / `../rocm-7.14-dev` header trees (no ROCm dev packages). Weight pread goes serial on rotational disks (`H3_PREAD_THREADS` overrides). gfx110x defaults to a gfx11 S^T/O^T SDPA (SDPA −13.5% at 109k tokens). It is not bit-identical to the PF kernel, because gfx11 WMMA rounds differently with swapped operands. `H3_SDPA_WMMA_T=0` restores PF (4217 s, md5 `48ab9821…`), and gfx1151 keeps PF. Lossy on the W7900: `--fbc` ~2220 s at 19.1 dB, `--sol-attn` ~2800 s at 18.0 dB, `--fasth3-lora` ~1850 s at 14.5 dB, all warm estimates. See `docs/perf-runs/W7900_MAIN_PORT_2026-11-15.md`.
 - Multi-task parallelism is **not supported** on a single GPU (shared kernel state). Use `HIP_VISIBLE_DEVICES` for multi-process isolation. See `docs/DESIGN_MULTI_TASK.md`.
 - `H3_INT8_MLP=1` enables INT8 DiT on all ISAs (default is INT8 on all platforms). Set `H3_INT8_MLP=0` to use BF16.
 - `H3_INT8_HOST=1` keeps those INT8 linears in host RAM and copies one block to the GPU at a time. Same numbers as resident INT8. This is how 1344×768 fits in 32 GiB. It does not combine with `--ssd-streaming`. The parked weights sit in one pinned arena and two device slots alternate, so block N+1 copies on a second stream while block N runs (+1 slot, ~0.37 GiB). `H3_INT8_HOST_OVERLAP=0`, or a failed pinned allocation, falls back to one slot refilled after each block.
@@ -88,7 +91,7 @@ Set `H3_MODEL=/path/to/MiniMax-H3` if weights are not at the Makefile default (`
 - `--show` live preview requires Kitty/Ghostty/WezTerm/Konsole; override with `H3_TERMINAL=kitty`.
 - `--pika-lora` / `--pika-ref-lora` merge a Pika H3 Flex rank-128 LoRA and force the 6-step renoise schedule (1000, 750, 500, 250, 100, 40), 50 layers, and `--reuse 1`. `--pika-lora` is FL2VA; references need `--pika-ref-lora`. Do not combine with `--fasth3-lora`, token reduction, sol-attn, fbc, VSA, SSD streaming, or core reuse above 1. `--pika-lora` sets `H3_GPU_SAMPLER=1` unless that variable or `H3_CPU_SAMPLER` is already set. Download: `./tools/download_pika_lora.sh`. See `docs/PIKA.md`.
 - `--serve` is experimental. Clients must send `X-H3-Protocol: v1alpha`. `-d` / `H3D_MODEL_PATH` select weights; `H3D_MODEL_PATH_FL2VA` and `H3D_MODEL_PATH_REF2VA` override per mode. Outputs go to `H3D_OUTPUT_ROOT` (default `~/.h3d/outputs`). `--serve` has no Pika flag. On a discrete card below 48 GiB `--serve` sets `H3_INT8_HOST=1` itself so the cached DiT leaves room for the video VAE (`docs/KNOWN_ISSUES.md` KI-007); an explicit `H3_INT8_HOST` wins. The daemon keeps its generation cache (9.5 GiB VRAM + 19 GiB RAM after an 864×480 FastH3 job on the R9700) until `POST /v1/cache/release`, a job with `options.release_after`, or `H3D_IDLE_RELEASE_SEC` frees it; output is unchanged (`DESIGN_DHS.md` §13.7). `options.fasth3: true` uses the daemon's own dense FastH3 adapter (`H3D_FASTH3_LORA`, default the `download_fasth3_lora.sh` location; `/v1/info` `adapters.fasth3`). `./tools/h3d_smoke.py` checks a running daemon (validation, concurrency, cancel, SSE, cache release); `--generate --fox-md5 MD5` adds fox-s2 on a cache miss and a cache hit. `make serve-regression` runs it against the same build's CLI (KI-005).
-- A disk cache (`h3_disk_cache.c`, on by default) stores two exact results: the text-only T2VA prompt embedding (per token ids) and the AdaLN schedule (per sigma schedule and conditioning). A hit skips the 47 GiB text encoder and the 26 GiB AdaLN weight read. fox-s2 on the R9700 goes from 40.3 s to 11.2 s with the same md5. Keys hold the executable, the HIP/hipBLAS libraries, the weight shards, the FastH3/Pika adapter file, and every `H3_*` variable except reporting ones, so a rebuild or a new switch is a miss, never a stale hit. `H3_DISK_CACHE=0` disables it, `H3_CACHE_DIR` moves it (default `~/.cache/h3-hip`), `H3_CACHE_MAX_GIB` caps it (default 8, LRU).
+- A disk cache (`h3_disk_cache.c`, on by default) stores two exact results: the text-only T2VA prompt embedding (per token ids) and the AdaLN schedule (per sigma schedule and conditioning). A hit skips the 47 GiB text encoder and the 26 GiB AdaLN weight read. fox-s2 on the R9700 goes from 40.3 s to 11.2 s with the same md5. Keys hold the executable, the HIP/hipBLAS libraries, the weight shards, the FastH3/Pika adapter file, and every `H3_*` variable except reporting ones, so a rebuild or a new switch is a miss, never a stale hit. `H3_DISK_CACHE=0` disables it, `H3_CACHE_DIR` moves it (default `~/.cache/h3-hip`), `H3_CACHE_MAX_GIB` caps it (default 8, LRU). `H3_DISK_CACHE_DIT_INT8=1` also stores the quantized INT8 DiT core (~385 MB per block, ~17 GiB for 45 layers; raise `H3_CACHE_MAX_GIB`), skipping the BF16 core read and quantize with the same bits.
 - Weight loading is ~107 GiB on the T2VA path. First run is slow; page-cache miss is expected on low-RAM boxes.
 - `linenoise.o` is vendored and compiled with relaxed warnings (`-Wno-conversion`).
 

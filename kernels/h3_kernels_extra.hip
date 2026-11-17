@@ -1006,17 +1006,34 @@ static bool h3_f32_wmma_gfx12(void) {
     return cached == 1;
 }
 
+/* W7900 (gfx1100) VAE shapes: cfg 4 with pipe 2 is the fastest on every
+ * shape (qkv 0.82 -> 0.69 ms, fc1 2.45 -> 2.15, fc2 1.53 -> 1.00), same
+ * bits per h3_bench_vae_linear. */
+static bool h3_f32_wmma_gfx110(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        int device = 0;
+        hipDeviceProp_t props;
+        cached = hipGetDevice(&device) == hipSuccess &&
+                 hipGetDeviceProperties(&props, device) == hipSuccess &&
+                 strncmp(props.gcnArchName, "gfx110", 6) == 0;
+    }
+    return cached == 1;
+}
+
 static const void *h3_f32_wmma_kernel(uint32_t *bm, uint32_t *bn,
                                       uint32_t *threads,
                                       bool bf16_weight = false,
                                       bool bf16_input = false,
                                       uint32_t input_dim = 0) {
     bool gfx12 = h3_f32_wmma_gfx12();
+    bool gfx110 = h3_f32_wmma_gfx110();
     const char *cfg = getenv("H3_F32_WMMA_CFG");
-    unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10) : gfx12 ? 6u : 3u;
+    unsigned choice = cfg ? (unsigned)strtoul(cfg, NULL, 10)
+                          : gfx12 ? 6u : gfx110 ? 4u : 3u;
     const char *pipe_env = getenv("H3_F32_WMMA_PIPE");
     unsigned pipe = pipe_env ? (unsigned)strtoul(pipe_env, NULL, 10)
-                             : gfx12 ? 2u : 0u;
+                             : (gfx12 || gfx110) ? 2u : 0u;
 #define H3_WMMA_CASE(BM, BN, WM, WN)                                           \
     do {                                                                       \
         *bm = BM;                                                              \
