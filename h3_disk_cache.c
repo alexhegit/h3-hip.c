@@ -26,6 +26,14 @@ static const char *const ignored_environment[] = {
     "H3_DISK_CACHE_DIT_INT8", "H3_PREAD_SERIAL", "H3_PREAD_THREADS",
 };
 
+/* Families read only by the DiT forward pass and its step schedule. No cached
+ * result (prompt embedding, AdaLN schedule, quantized DiT core) is computed
+ * there, so H3_FBC, H3_SOL_ATTN, H3_TOKEN_REDUCTION and their _SUFFIX
+ * variants stay out of every key. */
+static const char *const dit_forward_environment[] = {
+    "H3_FBC", "H3_SOL_ATTN", "H3_TOKEN_REDUCTION",
+};
+
 typedef struct {
     uint64_t first;
     uint64_t second;
@@ -247,6 +255,13 @@ static int environment_ignored(const char *entry) {
         size_t length = strlen(ignored_environment[index]);
         if (!strncmp(entry, ignored_environment[index], length) &&
             entry[length] == '=') return 1;
+    }
+    for (size_t index = 0; index < sizeof(dit_forward_environment) /
+                                       sizeof(*dit_forward_environment);
+         index++) {
+        size_t length = strlen(dit_forward_environment[index]);
+        if (!strncmp(entry, dit_forward_environment[index], length) &&
+            (entry[length] == '=' || entry[length] == '_')) return 1;
     }
     return 0;
 }
