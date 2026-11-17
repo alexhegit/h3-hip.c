@@ -20,7 +20,7 @@ Radeon AI PRO R9700 h3-hip was also 1.34× faster end to end at 864×480 ·
 The pictures differ from native ComfyUI (sampler, INT8 scheme, RNG); this
 page makes no quality claim.
 
-Tested with ComfyUI 0.44.0 (`fca60fe`) on gfx1201. The node uses ComfyUI's
+Tested with ComfyUI 0.44.0 (`fca60fe`) on gfx1201 and gfx1100. The node uses ComfyUI's
 V3 node API (`comfy_api.latest`), so older ComfyUI builds will not load it.
 
 ## 1. Weights (the big download)
@@ -171,3 +171,11 @@ same video and audio stream hashes as the CLI; Interrupt during an
 864×480 dense denoise frees the daemon within 12 s. The daemon itself is
 gated against the CLI by `make serve-regression`
 ([KI-005](../KNOWN_ISSUES.md)).
+
+On gfx1100 (Radeon Pro W7900) through ComfyUI 0.44.0 with PyTorch
+2.10.0+rocm7.0, the same fox-s2 and FL2VA + FastH3 checks match the CLI.
+Interrupt during denoise stops the job within one step (~17 s), and a
+1344×768 · 5 s job renders through the node in 745 s
+([record](../perf-runs/W7900_COMFYUI_2026-11-18.md)). An Interrupt during
+the DiT load waits for the load to finish, which is minutes on a spinning
+disk.
