@@ -13,7 +13,9 @@ Timed scoreboard SKUs are Strix Halo, MI210, MI300X, and the Radeon AI PRO
 R9700 (`gfx1201`, build with `make HIP_ARCH=gfx1201`). MI250 / MI250X share
 `gfx90a` with MI210 but were not timed.
 
-Tagged **v0.20.0** speeds up the R9700 with the same output bytes (gfx12
+Tagged **v0.21.0** completes the ComfyUI node: first and last frame inputs,
+a whole-job progress bar, and Interrupt during the video VAE decode. Output
+bytes are unchanged. v0.20.0 speeds up the R9700 with the same output bytes (gfx12
 S^T/O^T SDPA, BK=64 video VAE tile, prompt / AdaLN disk cache);
 1344×768 · 15 s dense is **2228.0 s** (2787.6 s at v0.18.0). v0.19.0 added a
 ComfyUI node that renders through `h3 --serve` ([ComfyUI](ComfyUI.md)) and
@@ -46,7 +48,7 @@ gate. From v0.12.0 the default 512 px VAE tile changes fox-s2 to
 ```bash
 git clone https://github.com/alexhegit/h3-hip.c.git
 cd h3-hip.c
-git checkout v0.20.0
+git checkout v0.21.0
 
 # Strix Halo
 make HIP_ARCH=gfx1151 -j$(nproc) h3

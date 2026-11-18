@@ -33,8 +33,18 @@ static uint64_t getenv_u64(const char *name, uint64_t fallback) {
     return (uint64_t)parsed;
 }
 
+/* The default roots sit under ~/.h3d, which does not exist on a machine that
+ * never ran the daemon, so create every missing parent. */
 static void ensure_dir(const char *path) {
-    mkdir(path, 0755);
+    char partial[1024];
+    snprintf(partial, sizeof(partial), "%s", path);
+    for (char *slash = strchr(partial + 1, '/'); slash;
+         slash = strchr(slash + 1, '/')) {
+        *slash = '\0';
+        mkdir(partial, 0755);
+        *slash = '/';
+    }
+    mkdir(partial, 0755);
 }
 
 /* Expand ~ in path to $HOME */

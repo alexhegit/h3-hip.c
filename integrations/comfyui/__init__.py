@@ -24,6 +24,30 @@ PROTOCOL = "v1alpha"
 DEFAULT_URL = os.environ.get("H3_HIP_URL", "http://127.0.0.1:8571")
 TERMINAL = ("done", "failed", "cancelled", "timeout")
 
+# The bar runs 0..PROGRESS_TOTAL over the whole job. Each daemon phase owns a
+# span of it, sized by its share of the wall time on the W7900 at 768p
+# (denoise and the video VAE decode dominate). A phase's own step/total moves
+# the bar across its span; phases not listed here hold the bar where it is.
+PROGRESS_TOTAL = 1000
+PHASE_SPANS = {
+    "loading_weights": (0, 20),
+    "tokenizer": (20, 20),
+    "text encoder": (20, 120),
+    "refine text": (120, 140),
+    "precompute AdaLN": (140, 180),
+    "load transformer core": (180, 280),
+    "denoise enqueue": (280, 700),
+    "denoise": (280, 700),
+    "audio VAE": (700, 720),
+    "video VAE load": (720, 760),
+    "preview VAE load": (720, 760),
+    "video VAE decode": (760, 960),
+    "video TAEH3": (760, 960),
+    # The last 10% is held back until the job is done, so the bar reaches 100%
+    # only when the MP4 is written.
+    "FFmpeg": (960, 990),
+}
+
 
 class DaemonError(RuntimeError):
     pass
@@ -106,11 +130,14 @@ class H3HipGenerate(io.ComfyNode):
                 io.Int.Input("steps", default=20, min=2, max=100,
                              tooltip="Ignored with fasth3, which always runs 4 steps."),
                 io.Boolean.Input("fasth3", default=False,
-                                 tooltip="4-step FastH3 LoRA configured on the daemon."),
+                                 tooltip="4-step FastH3 LoRA configured on the daemon. "
+                                         "Requires layers = 50 and reuse = 1."),
                 io.Int.Input("layers", default=50, min=35, max=50, advanced=True,
-                             tooltip="DiT layers; below 50 is faster and lossy."),
+                             tooltip="DiT layers (35-50). Below 50 is faster and lossy. "
+                                     "Must be 50 when fasth3 is on."),
                 io.Int.Input("reuse", default=1, min=1, max=3, advanced=True,
-                             tooltip="Denoise reuse; above 1 is faster and lossy."),
+                             tooltip="Denoise reuse; above 1 is faster and lossy. "
+                                     "Must be 1 when fasth3 is on."),
                 io.Boolean.Input("free_comfy_vram", default=True, advanced=True,
                                  tooltip="Unload ComfyUI's own models before the job so "
                                          "the daemon has the GPU."),
@@ -129,6 +156,15 @@ class H3HipGenerate(io.ComfyNode):
     def execute(cls, prompt, width, height, length, seed, steps, fasth3, layers,
                 reuse, free_comfy_vram, release_vram, daemon_url,
                 first_frame=None, last_frame=None) -> io.NodeOutput:
+        # The daemon enforces the same rule, but only after it loads weights.
+        if fasth3 and layers != 50:
+            raise DaemonError(
+                f"fasth3 needs layers = 50 (layers is {layers}). Set layers to 50, "
+                "or turn fasth3 off to use fewer layers.")
+        if fasth3 and reuse != 1:
+            raise DaemonError(
+                f"fasth3 needs reuse = 1 (reuse is {reuse}). Set reuse to 1, "
+                "or turn fasth3 off.")
         url = daemon_url.rstrip("/")
         status, info = _request(url, "GET", "/v1/info")
         if status != 200 or not info.get("ready"):
@@ -174,8 +210,9 @@ class H3HipGenerate(io.ComfyNode):
 
     @classmethod
     def _wait(cls, url, job_id):
-        bar = comfy.utils.ProgressBar(1)
+        bar = comfy.utils.ProgressBar(PROGRESS_TOTAL)
         phase = None
+        value = 0
         try:
             while True:
                 comfy.model_management.throw_exception_if_processing_interrupted()
@@ -184,9 +221,15 @@ class H3HipGenerate(io.ComfyNode):
                 if job.get("phase") and job["phase"] != phase:
                     phase = job["phase"]
                     logging.info("h3-hip %s: %s", job_id, phase)
-                if progress.get("total_steps"):
-                    bar.update_absolute(progress.get("step", 0), progress["total_steps"])
+                if phase in PHASE_SPANS:
+                    low, high = PHASE_SPANS[phase]
+                    total = progress.get("total_steps") or 0
+                    share = min(1.0, progress.get("step", 0) / total) if total else 0.0
+                    # Never move backwards if a phase reports out of order.
+                    value = max(value, round(low + (high - low) * share))
+                    bar.update_absolute(value, PROGRESS_TOTAL)
                 if job["status"] == "done":
+                    bar.update_absolute(PROGRESS_TOTAL, PROGRESS_TOTAL)
                     return job["result"]["mp4_path"]
                 if job["status"] in TERMINAL:
                     raise DaemonError(f"h3 job {job['status']}: {_error_text(job)}")

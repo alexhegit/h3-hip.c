@@ -13,6 +13,13 @@ MI250 / MI250X also use `gfx90a` but were not timed.
 | **MI210** (CDNA2) | `gfx90a` | INT8 (default) | wave64 MFMA flash |
 | **MI300X** (CDNA3) | `gfx942` | INT8 (default) | wave64 MFMA flash |
 
+Tagged **v0.21.0** finishes the ComfyUI node: first and last frame inputs,
+a progress bar that covers the whole job and reaches 100% only when the MP4
+is written, Interrupt during the video VAE decode, and a walkthrough with
+screenshots in [`docs/wiki/ComfyUI.md`](docs/wiki/ComfyUI.md). The daemon's
+video VAE reports one progress step per temporal chunk. Output bytes are
+unchanged. See the [release notes](https://github.com/alexhegit/h3-hip.c/releases/tag/v0.21.0).
+
 Tagged **v0.20.0** makes the R9700 faster with the same output bytes: a
 gfx12 S^T/O^T SDPA kernel, a BK=64 video VAE linear tile on gfx12, and a
 disk cache for prompt embeddings and the AdaLN schedule (a repeated fox-s2
@@ -261,9 +268,10 @@ No readable text, no logos, no subtitles. Premium technology documentary aesthet
 
 ## Status
 
-Current tagged line is **v0.20.0**. `h3 --info` prints `h3-hip 0.20.0`.
-v0.20.0 speeds up gfx12 SDPA and the video VAE and adds the prompt / AdaLN
-disk cache, with the same output bytes. v0.19.0 added the ComfyUI node and the daemon changes behind it; v0.18.0
+Current tagged line is **v0.21.0**. `h3 --info` prints `h3-hip 0.21.0`.
+v0.21.0 completes the ComfyUI node (first and last frame, progress, Interrupt
+during decode). v0.20.0 speeds up gfx12 SDPA and the video VAE and adds the
+prompt / AdaLN disk cache, with the same output bytes. v0.19.0 added the ComfyUI node and the daemon changes behind it; v0.18.0
 added the R9700. v0.17.0 remains opt-in Pika H3 Flex. v0.16.0 remains the Strix Halo rocWMMA VSA kernel and the tiled TAEH3
 conv. v0.15.0 remains the MI300X FastH3 / TAEH3 / VSA paths. v0.14.0 remains
 `--fbc`. v0.13.0 remains the quality-path CDNA flash SDPA

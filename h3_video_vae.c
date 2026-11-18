@@ -1324,8 +1324,10 @@ int h3_video_vae_decoder_preview(h3_video_vae_decoder *decoder,
     return ok;
 }
 
-int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
+int h3_video_vae_decoder_decode_chunks(h3_video_vae_decoder *decoder,
                         const float *normalized_latent, int latent_time,
+                        h3_video_vae_chunk_progress chunk_progress,
+                        void *chunk_opaque,
                         h3_video_frames *output,
                         char *error, size_t error_size) {
     if (output) memset(output, 0, sizeof(*output));
@@ -1369,6 +1371,11 @@ int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
         memcpy(temporal_overlap, decoded.rgb + 17 * frame_elements,
                5 * frame_elements * sizeof(*temporal_overlap));
         h3_video_frames_free(&decoded);
+        if (chunk_progress &&
+            chunk_progress(chunk + 1, chunks, chunk_opaque)) {
+            fail(error, error_size, "video VAE decode cancelled");
+            ok = 0;
+        }
     }
     if (ok) {
         memcpy(final_rgb + (size_t)chunks * 17 * frame_elements,
@@ -1384,6 +1391,15 @@ int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
     free(temporal_overlap);
     if (!ok) h3_video_frames_free(output);
     return ok;
+}
+
+int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
+                        const float *normalized_latent, int latent_time,
+                        h3_video_frames *output,
+                        char *error, size_t error_size) {
+    return h3_video_vae_decoder_decode_chunks(decoder, normalized_latent,
+                                              latent_time, NULL, NULL, output,
+                                              error, error_size);
 }
 
 void h3_video_vae_decoder_free(h3_video_vae_decoder *decoder) {
@@ -1406,6 +1422,8 @@ static int decode_chunked(const char *weight_directory,
                           const float *latent_mean, const float *latent_std,
                           int tile_pixels,
                           h3_video_vae_progress progress, void *progress_opaque,
+                          h3_video_vae_chunk_progress chunk_progress,
+                          void *chunk_opaque,
                           h3_video_frames *output, char *error,
                           size_t error_size) {
     tile_axis y_axis, x_axis;
@@ -1515,6 +1533,11 @@ static int decode_chunked(const char *weight_directory,
         memcpy(temporal_overlap, decoded.rgb + 17 * frame_elements,
                5 * frame_elements * sizeof(*temporal_overlap));
         h3_video_frames_free(&decoded);
+        if (chunk_progress &&
+            chunk_progress(chunk + 1, chunks, chunk_opaque)) {
+            fail(error, error_size, "video VAE decode cancelled");
+            ok = 0;
+        }
     }
     if (ok) {
         memcpy(final_rgb + (size_t)chunks * 17 * frame_elements,
@@ -1540,11 +1563,13 @@ void h3_video_frames_free(h3_video_frames *frames) {
     memset(frames, 0, sizeof(*frames));
 }
 
-int h3_video_vae_decode(const char *weight_directory,
+int h3_video_vae_decode_chunks(const char *weight_directory,
                         const char *shader_source_path,
                         const float *normalized_latent, int latent_time,
                         int latent_height, int latent_width,
                         h3_video_vae_progress progress, void *progress_opaque,
+                        h3_video_vae_chunk_progress chunk_progress,
+                        void *chunk_opaque,
                         h3_video_frames *output,
                         char *error, size_t error_size) {
     if (output) memset(output, 0, sizeof(*output));
@@ -1589,7 +1614,8 @@ int h3_video_vae_decode(const char *weight_directory,
                                 normalized_latent, latent_time, latent_height,
                                 latent_width, latent_mean, latent_std,
                                 tile_pixels, progress,
-                                progress_opaque, output, error, error_size);
+                                progress_opaque, chunk_progress, chunk_opaque,
+                                output, error, error_size);
         if (!ok) h3_video_frames_free(output);
         return ok;
     }
@@ -1609,4 +1635,18 @@ int h3_video_vae_decode(const char *weight_directory,
     if (!ok) h3_video_frames_free(output);
     cleanup(&vae);
     return ok;
+}
+
+int h3_video_vae_decode(const char *weight_directory,
+                        const char *shader_source_path,
+                        const float *normalized_latent, int latent_time,
+                        int latent_height, int latent_width,
+                        h3_video_vae_progress progress, void *progress_opaque,
+                        h3_video_frames *output,
+                        char *error, size_t error_size) {
+    return h3_video_vae_decode_chunks(weight_directory, shader_source_path,
+                                      normalized_latent, latent_time,
+                                      latent_height, latent_width, progress,
+                                      progress_opaque, NULL, NULL, output,
+                                      error, error_size);
 }
