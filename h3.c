@@ -838,6 +838,15 @@ static void h3_vae_progress_bridge(int completed, int total, void *opaque) {
     h3_progress_emit(opaque, "video VAE load", completed, total);
 }
 
+/* One report per temporal chunk of the video VAE decode. Returning the
+ * cancel state stops the decode before its next chunk. */
+static int h3_vae_decode_progress_bridge(int completed, int total,
+                                         void *opaque) {
+    h3_generation_progress *state = opaque;
+    h3_progress_emit(state, "video VAE decode", completed, total);
+    return state->cancelled;
+}
+
 static void h3_preview_vae_progress_bridge(int completed, int total,
                                            void *opaque) {
     h3_progress_emit(opaque, "preview VAE load", completed, total);
@@ -1977,13 +1986,15 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         if (video_ok) h3_progress_emit(&progress, "video TAEH3", 1, 1);
     } else {
         video_ok = preview_decoder ?
-            h3_video_vae_decoder_decode(
-                preview_decoder, video, temporal.video_t, &frames,
+            h3_video_vae_decoder_decode_chunks(
+                preview_decoder, video, temporal.video_t,
+                h3_vae_decode_progress_bridge, &progress, &frames,
                 detail, sizeof(detail)) :
-            h3_video_vae_decode(
+            h3_video_vae_decode_chunks(
                 vae_path, "h3_shaders.metal", video,
                 temporal.video_t, latent_h, latent_w,
-                h3_vae_progress_bridge, &progress, &frames,
+                h3_vae_progress_bridge, &progress,
+                h3_vae_decode_progress_bridge, &progress, &frames,
                 detail, sizeof(detail));
     }
     if (!video_ok) {

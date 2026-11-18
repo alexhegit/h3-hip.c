@@ -36,6 +36,16 @@ int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
                         const float *normalized_latent, int latent_time,
                         h3_video_frames *output,
                         char *error, size_t error_size);
+/* Called after each temporal chunk of a decode with (completed, total).
+ * Returning nonzero cancels the decode. */
+typedef int (*h3_video_vae_chunk_progress)(int completed_chunks,
+                                           int total_chunks, void *opaque);
+int h3_video_vae_decoder_decode_chunks(h3_video_vae_decoder *decoder,
+                        const float *normalized_latent, int latent_time,
+                        h3_video_vae_chunk_progress chunk_progress,
+                        void *chunk_opaque,
+                        h3_video_frames *output,
+                        char *error, size_t error_size);
 void h3_video_vae_decoder_free(h3_video_vae_decoder *decoder);
 
 /* Decode aligned H3 temporal chunks, using the released overlap/blend rules in
@@ -46,6 +56,17 @@ int h3_video_vae_decode(const char *weight_directory,
                         const float *normalized_latent, int latent_time,
                         int latent_height, int latent_width,
                         h3_video_vae_progress progress, void *progress_opaque,
+                        h3_video_frames *output,
+                        char *error, size_t error_size);
+/* As h3_video_vae_decode, plus per-chunk progress (see chunk_progress above).
+ * `progress` still reports weight loading. */
+int h3_video_vae_decode_chunks(const char *weight_directory,
+                        const char *shader_source_path,
+                        const float *normalized_latent, int latent_time,
+                        int latent_height, int latent_width,
+                        h3_video_vae_progress progress, void *progress_opaque,
+                        h3_video_vae_chunk_progress chunk_progress,
+                        void *chunk_opaque,
                         h3_video_frames *output,
                         char *error, size_t error_size);
 void h3_video_frames_free(h3_video_frames *frames);

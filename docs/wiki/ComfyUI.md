@@ -99,9 +99,12 @@ Inputs:
 | `daemon_url` | `http://127.0.0.1:8571` | advanced; also `H3_HIP_URL` in ComfyUI's environment |
 | `first_frame`, `last_frame` | | optional IMAGE inputs; either one switches to first/last-frame mode |
 
-The progress bar follows the daemon's phases (text encoder, DiT load,
-denoise, VAE). **Interrupt** cancels the daemon job; it stops before its
-next denoise step.
+The progress bar covers the whole job on one scale: text encoder, DiT load,
+denoise, video VAE decode, then the MP4 write. It reaches 100% only when the
+file is written, not when denoising ends. **Interrupt** cancels the daemon
+job at its next progress report: the next denoise step or the next temporal
+chunk of the VAE decode. A cancel during the DiT load still waits for the load
+to finish ([W7900 record](../perf-runs/W7900_COMFYUI_2026-11-18.md)).
 
 Headless, from the repository root:
 

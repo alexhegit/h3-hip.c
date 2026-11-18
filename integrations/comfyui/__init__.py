@@ -24,6 +24,30 @@ PROTOCOL = "v1alpha"
 DEFAULT_URL = os.environ.get("H3_HIP_URL", "http://127.0.0.1:8571")
 TERMINAL = ("done", "failed", "cancelled", "timeout")
 
+# The bar runs 0..PROGRESS_TOTAL over the whole job. Each daemon phase owns a
+# span of it, sized by its share of the wall time on the W7900 at 768p
+# (denoise and the video VAE decode dominate). A phase's own step/total moves
+# the bar across its span; phases not listed here hold the bar where it is.
+PROGRESS_TOTAL = 1000
+PHASE_SPANS = {
+    "loading_weights": (0, 20),
+    "tokenizer": (20, 20),
+    "text encoder": (20, 120),
+    "refine text": (120, 140),
+    "precompute AdaLN": (140, 180),
+    "load transformer core": (180, 280),
+    "denoise enqueue": (280, 700),
+    "denoise": (280, 700),
+    "audio VAE": (700, 720),
+    "video VAE load": (720, 760),
+    "preview VAE load": (720, 760),
+    "video VAE decode": (760, 960),
+    "video TAEH3": (760, 960),
+    # The last 10% is held back until the job is done, so the bar reaches 100%
+    # only when the MP4 is written.
+    "FFmpeg": (960, 990),
+}
+
 
 class DaemonError(RuntimeError):
     pass
@@ -174,8 +198,9 @@ class H3HipGenerate(io.ComfyNode):
 
     @classmethod
     def _wait(cls, url, job_id):
-        bar = comfy.utils.ProgressBar(1)
+        bar = comfy.utils.ProgressBar(PROGRESS_TOTAL)
         phase = None
+        value = 0
         try:
             while True:
                 comfy.model_management.throw_exception_if_processing_interrupted()
@@ -184,9 +209,15 @@ class H3HipGenerate(io.ComfyNode):
                 if job.get("phase") and job["phase"] != phase:
                     phase = job["phase"]
                     logging.info("h3-hip %s: %s", job_id, phase)
-                if progress.get("total_steps"):
-                    bar.update_absolute(progress.get("step", 0), progress["total_steps"])
+                if phase in PHASE_SPANS:
+                    low, high = PHASE_SPANS[phase]
+                    total = progress.get("total_steps") or 0
+                    share = min(1.0, progress.get("step", 0) / total) if total else 0.0
+                    # Never move backwards if a phase reports out of order.
+                    value = max(value, round(low + (high - low) * share))
+                    bar.update_absolute(value, PROGRESS_TOTAL)
                 if job["status"] == "done":
+                    bar.update_absolute(PROGRESS_TOTAL, PROGRESS_TOTAL)
                     return job["result"]["mp4_path"]
                 if job["status"] in TERMINAL:
                     raise DaemonError(f"h3 job {job['status']}: {_error_text(job)}")
