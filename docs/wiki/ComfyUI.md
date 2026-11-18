@@ -106,9 +106,10 @@ drop the file on the canvas, or use the workflow menu's *Load*.
    The daemon keeps its own copy under `~/.h3d/outputs`.
 
 **Interrupt** stops the daemon job at its next progress report: the next
-denoise step, or the next temporal chunk of the VAE decode. A cancel during
-the DiT load still waits for that load to finish
-([W7900 record](../perf-runs/W7900_COMFYUI_2026-11-18.md)).
+denoise step, or the next temporal chunk of the VAE decode. Interrupts
+during the text encoder or the DiT load wait for that stage to finish; on
+the W7900 a cancel during the text encoder took about 3 minutes to take
+effect ([W7900 record](../perf-runs/W7900_COMFYUI_2026-11-18.md)).
 
 Queueing the same prompt again is much faster: the daemon keeps the
 generation cache. Turn on `release_vram` when the next node in the graph
@@ -125,6 +126,24 @@ needs the GPU; see [Sharing the GPU](#sharing-the-gpu-with-other-comfyui-nodes).
    runs 4 steps and the `steps` widget is ignored. The daemon needs the
    FastH3 adapter (`adapters.fasth3` from [step 2](#2-build-h3-and-start-the-daemon)).
 3. Queue. **SaveVideo** writes `ComfyUI/output/h3hip/fl2va_00001_.mp4`.
+
+### First and last frame (FL2VA)
+
+1. Start from the first-frame steps above.
+2. Add a second **LoadImage** and connect it to the node's `last_frame`.
+   Leave `first_frame` connected as well.
+3. In the prompt, refer to the first picture as `<Picture 1>` and the last
+   as `<Picture 2>`, for example:
+
+   > The scene starts as <Picture 1> and ends as <Picture 2>. The camera
+   > slowly pulls back as the light changes. Quiet ambient sound.
+
+4. Queue. The mode is still FL2VA, so `fasth3`, `layers` and `reuse` follow
+   the same rules as the first-frame graph.
+
+The daemon accepts both keyframes, and the code sends them through the same
+FL2VA encoder as the first frame alone. Both-keyframe output has not yet been
+run end to end through this node, so treat the first run as a test.
 
 To build the graph yourself instead of loading a file: add
 **MiniMax-H3 (h3-hip, AMD)** from the node menu (category `video/h3-hip`),
@@ -159,7 +178,7 @@ From the repository root, with ComfyUI already running:
 | `free_comfy_vram` | on | advanced; unload ComfyUI's own models before the job |
 | `release_vram` | off | advanced; daemon frees its cache after the job (see below) |
 | `daemon_url` | `http://127.0.0.1:8571` | advanced; also `H3_HIP_URL` in ComfyUI's environment |
-| `first_frame`, `last_frame` | | optional IMAGE inputs; either one switches to first/last-frame mode |
+| `first_frame`, `last_frame` | | optional IMAGE inputs. Either one switches to FL2VA. Give both to pin the start and the end: `first_frame` is frame 0 and `last_frame` is the final frame. The prompt refers to them as `<Picture 1>` and `<Picture 2>` |
 
 ## Sharing the GPU with other ComfyUI nodes
 
@@ -233,5 +252,12 @@ On gfx1100 (Radeon Pro W7900) through ComfyUI 0.44.0 with PyTorch
 Interrupt during denoise stops the job within one step (~17 s), and a
 1344×768 · 5 s job renders through the node in 745 s
 ([record](../perf-runs/W7900_COMFYUI_2026-11-18.md)). An Interrupt during
-the DiT load waits for the load to finish, which is minutes on a spinning
-disk.
+the text encoder or the DiT load waits for that stage to finish, which is
+minutes on a spinning disk.
+
+Added after commit `107be4b` (progress bar and VAE-decode interrupt): the
+decode interrupt went through ComfyUI's Interrupt, the node's cancel, and the
+daemon, and stopped after chunk 2 of 7. The bar's phase weights were checked
+by replaying real job events, not by watching the bar in a browser. Not yet
+checked through the node: first and last frame together (FL2VA with both
+keyframes).
