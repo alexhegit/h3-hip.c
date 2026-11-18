@@ -153,8 +153,9 @@ From the repository root, with ComfyUI already running:
 | `length` | 124 | frames at 24 fps (5 + 17·k; 124 is 5 s, 362 is 15 s) |
 | `seed` | 42 | |
 | `steps` | 20 | ignored when `fasth3` is on (always 4) |
-| `fasth3` | off | 4-step FastH3 LoRA; needs `adapters.fasth3` on the daemon |
-| `layers`, `reuse` | 50, 1 | advanced; lower layers / higher reuse are faster and lossy |
+| `fasth3` | off | 4-step FastH3 LoRA; needs `adapters.fasth3` on the daemon, and **`layers` = 50 and `reuse` = 1** |
+| `layers` | 50 | advanced; 35–50. Below 50 is faster and lossy, but only with `fasth3` off. With `fasth3` on it must be 50 |
+| `reuse` | 1 | advanced; 1–3. Above 1 is faster and lossy. With `fasth3` on it must be 1 |
 | `free_comfy_vram` | on | advanced; unload ComfyUI's own models before the job |
 | `release_vram` | off | advanced; daemon frees its cache after the job (see below) |
 | `daemon_url` | `http://127.0.0.1:8571` | advanced; also `H3_HIP_URL` in ComfyUI's environment |
@@ -196,6 +197,11 @@ MiniMax-H3 job right after it ran normally.
   about 20 GiB more for a job, so on a 59 GiB machine the next h3 job got
   ComfyUI OOM-killed in our test. Restart ComfyUI before switching to the
   h3 node; the node prints a warning when available RAM is below 24 GiB.
+- **`fasth3` and `layers` don't mix.** The FastH3 LoRA is trained on all 50
+  DiT layers, so with `fasth3` on the node rejects `layers` below 50 (and
+  `reuse` above 1) before it sends the job. The error reads
+  `fasth3 needs layers = 50`. Set `layers` back to 50, or turn `fasth3` off
+  to use 35–49 layers. Without `fasth3`, any `layers` from 35 to 50 runs.
 - **One daemon per GPU, one job at a time.** Jobs from several ComfyUI
   queues line up in the daemon. On a multi-GPU box pin the daemon with
   `HIP_VISIBLE_DEVICES=N`.

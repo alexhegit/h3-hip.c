@@ -130,11 +130,14 @@ class H3HipGenerate(io.ComfyNode):
                 io.Int.Input("steps", default=20, min=2, max=100,
                              tooltip="Ignored with fasth3, which always runs 4 steps."),
                 io.Boolean.Input("fasth3", default=False,
-                                 tooltip="4-step FastH3 LoRA configured on the daemon."),
+                                 tooltip="4-step FastH3 LoRA configured on the daemon. "
+                                         "Requires layers = 50 and reuse = 1."),
                 io.Int.Input("layers", default=50, min=35, max=50, advanced=True,
-                             tooltip="DiT layers; below 50 is faster and lossy."),
+                             tooltip="DiT layers (35-50). Below 50 is faster and lossy. "
+                                     "Must be 50 when fasth3 is on."),
                 io.Int.Input("reuse", default=1, min=1, max=3, advanced=True,
-                             tooltip="Denoise reuse; above 1 is faster and lossy."),
+                             tooltip="Denoise reuse; above 1 is faster and lossy. "
+                                     "Must be 1 when fasth3 is on."),
                 io.Boolean.Input("free_comfy_vram", default=True, advanced=True,
                                  tooltip="Unload ComfyUI's own models before the job so "
                                          "the daemon has the GPU."),
@@ -153,6 +156,15 @@ class H3HipGenerate(io.ComfyNode):
     def execute(cls, prompt, width, height, length, seed, steps, fasth3, layers,
                 reuse, free_comfy_vram, release_vram, daemon_url,
                 first_frame=None, last_frame=None) -> io.NodeOutput:
+        # The daemon enforces the same rule, but only after it loads weights.
+        if fasth3 and layers != 50:
+            raise DaemonError(
+                f"fasth3 needs layers = 50 (layers is {layers}). Set layers to 50, "
+                "or turn fasth3 off to use fewer layers.")
+        if fasth3 and reuse != 1:
+            raise DaemonError(
+                f"fasth3 needs reuse = 1 (reuse is {reuse}). Set reuse to 1, "
+                "or turn fasth3 off.")
         url = daemon_url.rstrip("/")
         status, info = _request(url, "GET", "/v1/info")
         if status != 200 or not info.get("ready"):
