@@ -12,8 +12,6 @@ extern "C" {
 int h3_hip_rdna_wmma_default(void);
 /* 1 on gfx1200 / gfx1201 (RDNA4). */
 int h3_hip_is_gfx12(void);
-/* 1 on gfx1100 - gfx1103 (RDNA3 discrete / Phoenix), not gfx115x. */
-int h3_hip_is_gfx110(void);
 
 /* Free the shared kernel scratch buffers; they are re-created on demand. */
 void h3_kernels_release_scratch(void);

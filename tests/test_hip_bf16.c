@@ -27,14 +27,16 @@ static float bf16_to_f32(uint16_t value) {
     return out;
 }
 
-int h3_hip_is_gfx110(void);
+int h3_hip_is_gfx12(void);
+int h3_hip_rdna_wmma_default(void);
 
-/* gfx110x dense SDPA defaults to the S^T/O^T kernel, whose swapped WMMA
+/* gfx11 dense SDPA defaults to the S^T/O^T kernel, whose swapped WMMA
  * operands round differently from the Sol kernel's PF form, so Sol-Attn
  * keep-all matches dense bitwise only with H3_SDPA_WMMA_T=0 there. */
 static int sol_keep_all_bitwise(void) {
     const char *t = getenv("H3_SDPA_WMMA_T");
-    return !h3_hip_is_gfx110() || (t && strcmp(t, "0") == 0);
+    int gfx11 = h3_hip_rdna_wmma_default() && !h3_hip_is_gfx12();
+    return !gfx11 || (t && strcmp(t, "0") == 0);
 }
 
 static int require_gpu(h3_gpu *gpu, int ok, const char *op) {
