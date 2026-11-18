@@ -105,6 +105,11 @@ drop the file on the canvas, or use the workflow menu's *Load*.
    `ComfyUI/output/h3hip/t2va_00001_.mp4` (the number goes up on each run).
    The daemon keeps its own copy under `~/.h3d/outputs`.
 
+![Text-to-video graph on the W7900: fox prompt, 20 steps, 35 layers, SaveVideo playing the clip](../assets/showcase/comfyui-t2va-w7900.png)
+
+Text to video on the W7900. FastH3 is off, `layers` is 35, `steps` is 20.
+SaveVideo plays the finished clip.
+
 **Interrupt** stops the daemon job at its next progress report: the next
 denoise step, or the next temporal chunk of the VAE decode. Interrupts
 during the text encoder or the DiT load wait for that stage to finish; on
@@ -126,6 +131,11 @@ needs the GPU; see [Sharing the GPU](#sharing-the-gpu-with-other-comfyui-nodes).
    runs 4 steps and the `steps` widget is ignored. The daemon needs the
    FastH3 adapter (`adapters.fasth3` from [step 2](#2-build-h3-and-start-the-daemon)).
 3. Queue. **SaveVideo** writes `ComfyUI/output/h3hip/fl2va_00001_.mp4`.
+
+![First-frame graph on the W7900: LoadImage into first_frame, FastH3 on, 50 layers](../assets/showcase/comfyui-fl2va-w7900.png)
+
+First frame on the same machine. `example.png` feeds `first_frame`, FastH3
+is on, `layers` is 50, and the canvas is 864×480 · 124 frames.
 
 ### First and last frame (FL2VA)
 
