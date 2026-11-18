@@ -518,6 +518,24 @@ static void test_disk_cache(void) {
     setenv("H3_TEST_DISK_CACHE_SWITCH", "1", 1);
     CHECK(disk_load_text("a", "hello world") == 0);
     unsetenv("H3_TEST_DISK_CACHE_SWITCH");
+    /* DiT-forward switches share entries too; the family match stops at the
+     * name, so H3_FBCX is still a switch. */
+    setenv("H3_FBC", "1", 1);
+    setenv("H3_FBC_REL", "0.2", 1);
+    setenv("H3_SOL_ATTN", "1", 1);
+    setenv("H3_SOL_ATTN_TAU", "0.5", 1);
+    setenv("H3_TOKEN_REDUCTION", "1", 1);
+    setenv("H3_TOKEN_REDUCTION_SCHEDULE", "0:4:40", 1);
+    CHECK(disk_load_text("a", "hello world") == 1);
+    setenv("H3_FBCX", "1", 1);
+    CHECK(disk_load_text("a", "hello world") == 0);
+    unsetenv("H3_FBCX");
+    unsetenv("H3_FBC");
+    unsetenv("H3_FBC_REL");
+    unsetenv("H3_SOL_ATTN");
+    unsetenv("H3_SOL_ATTN_TAU");
+    unsetenv("H3_TOKEN_REDUCTION");
+    unsetenv("H3_TOKEN_REDUCTION_SCHEDULE");
     setenv("H3_DISK_CACHE", "0", 1);
     CHECK(disk_load_text("a", "hello world") == 0);
     unsetenv("H3_DISK_CACHE");
