@@ -71,19 +71,80 @@ ComfyUI's console then lists `custom_nodes/h3-hip` under "Import times for
 custom nodes". The node needs only what ComfyUI already ships (NumPy,
 Pillow).
 
-## 4. Render
+## 4. Use the workflow
 
-Add **MiniMax-H3 (h3-hip, AMD)** (category `video/h3-hip`) and connect its
-output to **SaveVideo**. Or load a ready-made graph from
-`integrations/comfyui/workflows/` (API format; drop the file on the canvas
-or use *Load*):
+ComfyUI opens on its own template. That canvas is not the h3-hip graph.
+Load one of the two files in `integrations/comfyui/workflows/` (API format):
+drop the file on the canvas, or use the workflow menu's *Load*.
 
-| file | what it does |
-|---|---|
-| `h3hip_t2va_api.json` | text to video, 864×480 · 5 s, 20 dense steps |
-| `h3hip_fl2va_api.json` | `LoadImage` as first frame, FastH3 4 steps |
+| file | graph | what you get |
+|---|---|---|
+| `h3hip_t2va_api.json` | MiniMax-H3 → SaveVideo | text to video, 864×480 · 5 s, 20 dense steps |
+| `h3hip_fl2va_api.json` | LoadImage → MiniMax-H3 → SaveVideo | that image as the first frame, FastH3, 4 steps |
 
-Inputs:
+### Text to video
+
+1. Leave the daemon from [step 2](#2-build-h3-and-start-the-daemon) running,
+   start ComfyUI, and open `http://127.0.0.1:8188`.
+2. Load `h3hip_t2va_api.json`. Two nodes appear: **MiniMax-H3 (h3-hip, AMD)**
+   and **SaveVideo** (filename prefix `h3hip/t2va`).
+3. Edit `prompt`. A short one that has been run through this graph:
+
+   > A red fox walks through fresh snow at dawn, its breath steaming in the
+   > cold air. The camera tracks low beside it. Soft crunch of snow
+   > underfoot, distant birdsong.
+
+4. Leave the other widgets unless you want a different clip. `width` and
+   `height` step by 32. `length` is frames at 24 fps: 124 is about 5 s,
+   362 is about 15 s. `steps` 20 is the dense default.
+5. Queue the prompt. The progress bar is one scale for the whole job
+   (text encoder, DiT load, denoise, video VAE decode, MP4 write) and
+   reaches 100% only when the file is written. ComfyUI's console logs each
+   phase (`h3-hip <job>: denoise`, then `video VAE decode`, then `FFmpeg`).
+6. **SaveVideo** writes
+   `ComfyUI/output/h3hip/t2va_00001_.mp4` (the number goes up on each run).
+   The daemon keeps its own copy under `~/.h3d/outputs`.
+
+**Interrupt** stops the daemon job at its next progress report: the next
+denoise step, or the next temporal chunk of the VAE decode. A cancel during
+the DiT load still waits for that load to finish
+([W7900 record](../perf-runs/W7900_COMFYUI_2026-11-18.md)).
+
+Queueing the same prompt again is much faster: the daemon keeps the
+generation cache. Turn on `release_vram` when the next node in the graph
+needs the GPU; see [Sharing the GPU](#sharing-the-gpu-with-other-comfyui-nodes).
+
+### First frame (FL2VA)
+
+1. Put a picture in ComfyUI's `input/` directory and name it `example.png`,
+   or load the graph and change **LoadImage** to the file you have.
+   ComfyUI and the daemon must be on the same machine: the node copies the
+   frame into `~/.h3d/media` and the daemon reads it from there.
+2. Load `h3hip_fl2va_api.json`. **LoadImage** feeds `first_frame`. The prompt
+   refers to that picture as `<Picture 1>`. `fasth3` is on, so the daemon
+   runs 4 steps and the `steps` widget is ignored. The daemon needs the
+   FastH3 adapter (`adapters.fasth3` from [step 2](#2-build-h3-and-start-the-daemon)).
+3. Queue. **SaveVideo** writes `ComfyUI/output/h3hip/fl2va_00001_.mp4`.
+
+To build the graph yourself instead of loading a file: add
+**MiniMax-H3 (h3-hip, AMD)** from the node menu (category `video/h3-hip`),
+connect its video output to **SaveVideo**, and, for a first frame, connect
+**LoadImage** to `first_frame`.
+
+### Headless
+
+From the repository root, with ComfyUI already running:
+
+```bash
+./integrations/comfyui/run_workflow.py integrations/comfyui/workflows/h3hip_t2va_api.json \
+  --set 1.fasth3=true --set 1.seed=7
+```
+
+`--set 1.<input>=<value>` overrides one widget on the MiniMax-H3 node
+(`1` is that node's id in the T2VA file; in the FL2VA file the node id is
+`2`).
+
+## 5. Inputs
 
 | input | default | notes |
 |---|---|---|
@@ -98,20 +159,6 @@ Inputs:
 | `release_vram` | off | advanced; daemon frees its cache after the job (see below) |
 | `daemon_url` | `http://127.0.0.1:8571` | advanced; also `H3_HIP_URL` in ComfyUI's environment |
 | `first_frame`, `last_frame` | | optional IMAGE inputs; either one switches to first/last-frame mode |
-
-The progress bar covers the whole job on one scale: text encoder, DiT load,
-denoise, video VAE decode, then the MP4 write. It reaches 100% only when the
-file is written, not when denoising ends. **Interrupt** cancels the daemon
-job at its next progress report: the next denoise step or the next temporal
-chunk of the VAE decode. A cancel during the DiT load still waits for the load
-to finish ([W7900 record](../perf-runs/W7900_COMFYUI_2026-11-18.md)).
-
-Headless, from the repository root:
-
-```bash
-./integrations/comfyui/run_workflow.py integrations/comfyui/workflows/h3hip_t2va_api.json \
-  --set 1.fasth3=true --set 1.seed=7
-```
 
 ## Sharing the GPU with other ComfyUI nodes
 
