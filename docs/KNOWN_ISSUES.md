@@ -141,6 +141,7 @@ DiT before the VAE. `H3_INT8_HOST=0` restores the old behaviour.
 | X | Re-verify gfx1151 / gfx90a / gfx942 after the R9700 merge | Open. Merged after runtime checks on gfx1201 only; the other ISAs were compile-checked. Changes that reach every GPU: row-chunked int32 INT8 scratch, scratch release between phases, lazy INT8 MLP workspace, SDPA K/V scratch in VRAM on discrete GPUs, and the row-chunked grouped INT8 path. Run `hip-test`, `halo-regression` (gfx1151 fox-s2 `1731f95c…`), and fox-s2 / fox-fast / 832×480 · 5 s dense md5 against each ISA's last ledger. Grouped INT8 matches the old loop bit for bit on gfx1201 only with fp contraction off; CDNA codegen of the old loop epilogue may differ. 1344×768 · 15 s outputs are expected to change on every ISA (grouped INT8 no longer falls back above 65535 rows) |
 | W | gfx1201 `--vsa` at 1344×768 · 15 s | Does not fit in 32 GiB; analysis and options in KI-006 |
 | R | gfx1201 (R9700) `hip-functional` Ref2VA smoke | Open. Every FL2VA sub-test passes; `test_hip_ref2va_smoke` needs `Ref2VA/` (`./tools/download_weights.sh --both`), not downloaded on the R9700 box |
+| D | O_DIRECT weight loading (drop the page-cache copy on SSD → host → VRAM) | Proposed, unclaimed. Design, measurement gates, and open questions in [`DESIGN_DIRECT_IO.md`](DESIGN_DIRECT_IO.md). Step 5 (raw `O_DIRECT` vs buffered read) must pass before the loader change |
 
 ### Profiling notes (HIP)
 
