@@ -61,11 +61,27 @@ Same build, buffered vs `H3_WEIGHT_HIPFILE=1`, interleaved runs. The FL2VA page 
 
 **IO.** The DiT load stages shrink the most. For fox-fast cold, AdaLN load goes from 7.27 to 4.53 s and the transformer core load from 9.12 to 5.93 s. The video VAE load goes from 1.90 to 1.53 s.
 
-**Denoise (not IO, cause not identified).** In buffered mode the Euler denoise is 2 to 4 s slower, even though it submits the same kernels (fox-fast: direct=5115, attention=495 in both modes). The extra time is GPU time in the `linear` op class: 8.18 s buffered vs 4.85 s hipFile for fox-fast cold, and 6.32 vs 4.82 s for fox-fast with a disk-cache hit. It is roughly a fixed cost and does not grow with step count: on fox-15s it is 1.9 to 3.0 s out of 265 s.
+**Denoise: KFD queue eviction under host memory pressure.** In buffered mode the Euler denoise is 2 to 4 s slower, even though it submits the same kernels (fox-fast: direct=5115, attention=495 in both modes). The cause is that KFD evicts the process's GPU queues:
 
-A control run separates the candidate causes. `H3_WEIGHT_DIRECT=1` (O_DIRECT, which still uploads from pinned staging with H2D like buffered) denoises in 6.31 s with linear 4.84 s, the same as hipFile. So the slowdown follows the page-cache read path, not the upload path. Page-cache fill or reclaim on this 59 GiB host while the GPU runs is a plausible cause but is not confirmed. Until it is, count only the IO-wall column as the measured hipFile gain. The denoise part is a side effect of leaving the page cache, which O_DIRECT also gets.
+- `/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` reads 2286 ms and 2048 ms after two buffered fox-fast runs with a disk-cache hit, and 0 ms after a hipFile run. Each buffered run jumps by about 1 s at a time during the denoise.
+- The extra denoise time is 2.2 s and 2.0 s (8.49 and 8.30 s vs 6.28 s), which matches the eviction time.
+- In a `rocprofv3 --kernel-trace` run, one single `h3_qkv_rope_bf16_d128_kernel` launch takes 879 ms in buffered mode (median 0.301 ms, 497 launches). No hipFile launch exceeds 0.4 ms. The profiler's `linear` class counts it because the stall lands between that op's GPU events. Host `encode` time does not change (0.49 s in both modes), so the submitting thread is not what stalls.
+- Host memory explains why only buffered mode is hit. Buffered loading fills the page cache to 48.7 GiB on this 59 GiB host and leaves 0.7 GiB free when the denoise starts. The video VAE prefetch reads another 9.5 GiB during the denoise. The kernel then reclaims: kswapd scans 3.8 M pages, with 1615 allocation stalls and 2392 direct compaction stalls, all inside the denoise window. hipFile and O_DIRECT bypass the page cache, keep 28 GiB or more free, and show zero reclaim and zero eviction.
+- `H3_WEIGHT_DIRECT=1` (O_DIRECT, still H2D from pinned staging) denoises in 6.31 s, the same as hipFile. So the upload path is not the cause.
 
-**Qwen on a long prompt.** On fox-fast the Qwen phase drops from 11.2 to 8.6 s. On fox-15s (a long multi-section prompt, 4.9 s of Qwen GPU time) it does not improve: 11.2 s buffered vs 11.5 s hipFile. The hipFile loader holds one process-wide mutex, so loads overlapped with heavier Qwen compute may not gain. Not investigated.
+Which driver path turns memory pressure into a queue eviction (for example a TTM shrinker evicting system-memory buffers, or an MMU-notifier invalidation) was not determined. This is a property of the buffered loader on a host whose RAM is smaller than the weights. Leaving the page cache avoids it, so O_DIRECT gets the same benefit as hipFile.
+
+**Qwen on a long prompt: the hipFile loader serializes read and copy.** On fox-fast the Qwen phase drops from 11.2 to 8.6 s. On fox-15s (a long multi-section prompt, 4.9 s of Qwen GPU time vs 0.6 s) it does not improve: 11.2 s buffered vs 11.5 s hipFile. `hipFileRead` itself takes the same 8.07 s (5.81 GiB/s) in both cases. The D2D copy from scratch into the tensor takes 3.21 s on fox-15s vs 0.43 s on fox-fast, because it now competes with Qwen compute on the GPU. The loader holds one mutex across read, copy, and stream sync, so 8.07 + 3.21 = 11.28 s matches the 11.3 s IO wall. The next read waits behind each slowed copy, and loads stop overlapping compute. Buffered mode uploads H2D on a DMA engine and overlaps through the Qwen prefetch lanes. Likely fixes: release the mutex during the D2D copy, use double-buffered or per-lane scratch, or read straight into the destination when its offsets allow.
+
+**Host memory.** fox-fast with a disk-cache hit, sampled every 0.25 s:
+
+| Mode | Peak page cache | Minimum free RAM | Peak h3 RSS | Reclaim / compaction stalls | KFD eviction |
+|---|---|---|---|---|---|
+| Buffered | 48.7 GiB | 0.7 GiB | 1.6 GiB | 1615 / 2392 | 2.0 to 2.3 s |
+| hipFile | grows only by the 9.5 GiB VAE prefetch | 9.9 GiB | 0.8 GiB | 0 / 0 | 0 |
+| O_DIRECT | 20.5 GiB (unchanged) | 28.6 GiB | 1.5 GiB | 0 / 0 | 0 |
+
+Page cache is reclaimable, so hipFile does not lower the minimum RAM a run needs, except for the pinned staging it skips (0.8 GiB lower RSS here). What it removes is the page-cache churn: about 28 GiB of other cached data is no longer evicted, and the reclaim that led to the eviction above disappears. The video VAE prefetch still goes through the page cache in hipFile mode, because those tensors are staged in host memory first.
 
 **Memory.** fox-15s puts one 0.45 GiB DiT tensor in pinned host memory in both modes (`H3_HIP_MEMLOG`). hipFile only applies to device tensors, so that tensor still loads through the buffered path.
 
@@ -77,7 +93,8 @@ The IO saving is a fixed cost per run: about 3.5 s with a disk-cache hit and 8 t
 
 - **Not P2P.** hipFile reported `p2p=0` for every read. The gain comes from the hipFile driver path with aligned superset reads, not from a verified PCIe P2P DMA from NVMe into VRAM. The P2P/ACS question is still open (`hipFileDriverGetProperties` returns 5030; no sudo on this box).
 - **Alignment is mandatory.** Every DiT tensor in the FL2VA shards starts unaligned. An unaligned hipFile read falls back to POSIX inside the library and was slower than buffered (2.1 vs 3.2 GB/s in microbenchmarks). The loader always reads the aligned superset.
-- **Serialized.** The hipFile loader holds one process-wide mutex and one 64 MiB scratch per tensor chunk. A per-thread scratch might raise throughput further; not tested.
+- **Serialized.** The hipFile loader holds one process-wide mutex across read, D2D copy, and sync. This costs about 3 s on the long-prompt Qwen phase (see above).
+- **Big-RAM hosts.** hipFile and O_DIRECT always read from the SSD. On a host with enough RAM to keep the weights in the page cache, a buffered repeat run can be faster. Keep both switches opt-in until that case is measured.
 - **Not covered:** `--ssd-streaming`, `H3_INT8_HOST`, Ref2VA, `--serve`, multi-GPU, gfx1151.
 
 ## Reproduce
