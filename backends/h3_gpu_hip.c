@@ -276,6 +276,11 @@ static size_t h3_hip_load_upload_bytes;
 static size_t h3_hip_load_pinned_bytes;
 static size_t h3_hip_load_device_bytes;
 static pthread_mutex_t h3_hip_load_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Wall time during which at least one file load is in flight. Unlike the
+ * per-thread sums above, it is comparable with phase wall time. */
+static double h3_hip_load_io_wall_seconds;
+static double h3_hip_load_io_wall_start;
+static int h3_hip_load_io_active;
 
 static void h3_hip_load_account(double *slot, size_t *counter, double seconds,
                                 size_t bytes) {
@@ -769,6 +774,8 @@ static void h3_hip_profile_emit_load(struct h3_gpu *gpu) {
     size_t upload_bytes = h3_hip_load_upload_bytes;
     size_t pinned_bytes = h3_hip_load_pinned_bytes;
     size_t device_bytes = h3_hip_load_device_bytes;
+    double io_wall = h3_hip_load_io_wall_seconds;
+    h3_hip_load_io_wall_seconds = 0.0;
     h3_hip_load_alloc_seconds = h3_hip_load_read_seconds = 0.0;
     h3_hip_load_upload_seconds = 0.0;
     h3_hip_load_alloc_bytes = h3_hip_load_read_bytes = 0;
@@ -785,7 +792,7 @@ static void h3_hip_profile_emit_load(struct h3_gpu *gpu) {
             "h3 profile: %-24s %-14s pin=%7.3fs (%6.3fGiB, %6.2fGiB/s) "
             "read=%7.3fs (%6.3fGiB, %6.2fGiB/s) "
             "upload=%7.3fs (%6.3fGiB, %6.2fGiB/s) recycled=%5.1f%% "
-            "pinned=%6.3fGiB device=%6.3fGiB\n",
+            "pinned=%6.3fGiB device=%6.3fGiB io-wall=%7.3fs\n",
             gpu->profile_label[0] ? gpu->profile_label : "HIP context",
             "weight-load", alloc, (double)alloc_bytes / gib,
             alloc > 0.0 ? (double)alloc_bytes / gib / alloc : 0.0,
@@ -794,7 +801,7 @@ static void h3_hip_profile_emit_load(struct h3_gpu *gpu) {
             upload, (double)upload_bytes / gib,
             upload > 0.0 ? (double)upload_bytes / gib / upload : 0.0,
             hit + miss ? 100.0 * (double)hit / (double)(hit + miss) : 0.0,
-            (double)pinned_bytes / gib, (double)device_bytes / gib);
+            (double)pinned_bytes / gib, (double)device_bytes / gib, io_wall);
 }
 
 static void h3_hip_profile_emit_ops(struct h3_gpu *gpu) {
@@ -1101,9 +1108,9 @@ static int h3_hip_load_hipfile(h3_hip_direct_entry *entry,
 }
 #endif
 
-static int h3_hip_load_tensor_from_file(struct h3_gpu_tensor *obj, int fd,
-                                        const char *path, size_t bytes,
-                                        off_t offset) {
+static int h3_hip_load_tensor_from_file_io(struct h3_gpu_tensor *obj, int fd,
+                                           const char *path, size_t bytes,
+                                           off_t offset) {
     if (!obj->device) {
         return h3_hip_copy_from_file(fd, path, obj->data, bytes, offset);
     }
@@ -1142,6 +1149,20 @@ static int h3_hip_load_tensor_from_file(struct h3_gpu_tensor *obj, int fd,
                             span);
     }
     h3_hip_stage_give(staging, block);
+    return ok;
+}
+
+static int h3_hip_load_tensor_from_file(struct h3_gpu_tensor *obj, int fd,
+                                        const char *path, size_t bytes,
+                                        off_t offset) {
+    pthread_mutex_lock(&h3_hip_load_lock);
+    if (h3_hip_load_io_active++ == 0) h3_hip_load_io_wall_start = h3_hip_now();
+    pthread_mutex_unlock(&h3_hip_load_lock);
+    int ok = h3_hip_load_tensor_from_file_io(obj, fd, path, bytes, offset);
+    pthread_mutex_lock(&h3_hip_load_lock);
+    if (--h3_hip_load_io_active == 0)
+        h3_hip_load_io_wall_seconds += h3_hip_now() - h3_hip_load_io_wall_start;
+    pthread_mutex_unlock(&h3_hip_load_lock);
     return ok;
 }
 
