@@ -71,7 +71,9 @@ Same build, buffered vs `H3_WEIGHT_HIPFILE=1`, interleaved runs. The FL2VA page 
 
 Which driver path turns memory pressure into a queue eviction (for example a TTM shrinker evicting system-memory buffers, or an MMU-notifier invalidation) was not determined. This is a property of the buffered loader on a host whose RAM is smaller than the weights. Leaving the page cache avoids it, so O_DIRECT gets the same benefit as hipFile.
 
-**Qwen on a long prompt: the hipFile loader serializes read and copy.** On fox-fast the Qwen phase drops from 11.2 to 8.6 s. On fox-15s (a long multi-section prompt, 4.9 s of Qwen GPU time vs 0.6 s) it does not improve: 11.2 s buffered vs 11.5 s hipFile. `hipFileRead` itself takes the same 8.07 s (5.81 GiB/s) in both cases. The D2D copy from scratch into the tensor takes 3.21 s on fox-15s vs 0.43 s on fox-fast, because it now competes with Qwen compute on the GPU. The loader holds one mutex across read, copy, and stream sync, so 8.07 + 3.21 = 11.28 s matches the 11.3 s IO wall. The next read waits behind each slowed copy, and loads stop overlapping compute. Buffered mode uploads H2D on a DMA engine and overlaps through the Qwen prefetch lanes. Likely fixes: release the mutex during the D2D copy, use double-buffered or per-lane scratch, or read straight into the destination when its offsets allow.
+**Qwen on a long prompt: the hipFile loader serializes read and copy.** On fox-fast the Qwen phase drops from 11.2 to 8.6 s. On fox-15s (a long multi-section prompt, 4.9 s of Qwen GPU time vs 0.6 s) it does not improve: 11.2 s buffered vs 11.5 s hipFile. `hipFileRead` itself takes the same 8.07 s (5.81 GiB/s) in both cases. The D2D copy from scratch into the tensor takes 3.21 s on fox-15s vs 0.43 s on fox-fast, because it now competes with Qwen compute on the GPU. The loader holds one mutex across read, copy, and stream sync, so 8.07 + 3.21 = 11.28 s matches the 11.3 s IO wall. The next read waits behind each slowed copy, and loads stop overlapping compute. Buffered mode uploads H2D on a DMA engine and overlaps through the Qwen prefetch lanes.
+
+**Fixed by moving the copy to SDMA** (see the `--ssd-streaming` section). On a single cold fox-15s hipFile run, the Qwen phase took 9.15 s (buffered 11.2 s, compute-unit copy 11.5 s), and the D2D copy took 0.77 s instead of 3.21 s. E2E was 333.44 s, against 334.38 s with the compute-unit copy and 346.84 s buffered. IO wall was 21.58 s, against 23.52 s and 31.43 s. The md5 was unchanged. That run still showed 248 ms of KFD eviction, even though free RAM stayed at 26.7 GiB or more. The cause is not known.
 
 **Host memory.** fox-fast with a disk-cache hit, sampled every 0.25 s:
 
@@ -89,13 +91,37 @@ Page cache is reclaimable, so hipFile does not lower the minimum RAM a run needs
 
 The IO saving is a fixed cost per run: about 3.5 s with a disk-cache hit and 8 to 10 s cold. On short clips that is a large share of E2E (26 to 36%). On the 15 s clip GPU time dominates and the E2E gain is 2 to 4%.
 
+## `--ssd-streaming`, and the D2D copy moved to SDMA
+
+`--ssd-streaming` re-reads the original BF16 DiT layers on every forward into two VRAM slots. A background thread reads the next layer while the current one computes. Those reads go through the same loader, so `H3_WEIGHT_HIPFILE=1` applies to them.
+
+**The first hipFile version made streaming slower.** On fox-s2 with `--ssd-streaming`, `hipFileRead` took 11.0 s in total, but the D2D copies from scratch into the slot took 33.3 s. A compute-unit copy queues behind the DiT kernels. The stream fell to 1.21 GiB/s and left 6.2 s of unhidden wait, and the denoise rose from 37.8 s (buffered) to 42.1 s. This is the same contention as the long-prompt Qwen result above.
+
+**Fix:** the hipFile loader now copies with `hipMemcpyDeviceToDeviceNoCU`, which uses SDMA and stays off the compute units. `H3_HIPFILE_COPY_CU=1` restores the compute-unit copy for A/B runs. With SDMA, fox-s2 streaming reads at 5.45 GiB/s with no unhidden wait, the copies take 2.0 s, and the denoise takes 35.3 s. The md5 is unchanged (`2dd269fd...`).
+
+The SDMA copy costs a little when the GPU is otherwise idle. Resident fox-fast with a disk-cache hit went from 16.58 s to 17.16 s, with IO wall from 7.74 to 8.05 s (one run).
+
+**fox-fast with `--ssd-streaming`** (20 steps, 45 layers, disk-cache hit, page cache dropped, 356 GiB streamed per run):
+
+| Mode | Runs | E2E | Euler denoise | Stream read | Unhidden wait | KFD eviction | Minimum free RAM |
+|---|---|---|---|---|---|---|---|
+| Buffered | 2 | 262.41 s | 255.83 s | 4.41 to 4.46 GiB/s | 0.03 s | 0.2 to 3.9 s | 0.4 GiB |
+| hipFile (SDMA copy) | 2 | 259.62 s | 255.01 s | 5.26 GiB/s | 0 | 0 | 29.1 GiB |
+| O_DIRECT | 1 | 262.05 s | 255.44 s | 3.18 GiB/s | 0.03 s | 0 | 28.4 GiB |
+
+- md5 is identical in all modes (`eadd3d0c...`). The buffered eviction ranged from 0.2 to 3.9 s across three runs, counting the priming run.
+- **The E2E gain is 2.8 s (-1.1%).** On this card the BF16 forward is compute-bound. 356 GiB in 255 s needs only 1.4 GiB/s, and the buffered loader already streams at 4.4 GiB/s and hides it. The faster hipFile stream has nothing to hide. The saving comes from the video VAE load (3.75 to 2.70 s) and from avoiding evictions.
+- **The memory difference is large.** Buffered streaming keeps the page cache at 49 GiB and free RAM at 0.4 GiB for the whole denoise. hipFile keeps 29 GiB free and has no evictions.
+- Streaming would become IO-bound only if a 45-layer forward took less than about 12 s (51 GiB at 4.4 GiB/s), for example on a faster GPU. That was not measured.
+
 ## Caveats
 
 - **Not P2P.** hipFile reported `p2p=0` for every read. The gain comes from the hipFile driver path with aligned superset reads, not from a verified PCIe P2P DMA from NVMe into VRAM. The P2P/ACS question is still open (`hipFileDriverGetProperties` returns 5030; no sudo on this box).
 - **Alignment is mandatory.** Every DiT tensor in the FL2VA shards starts unaligned. An unaligned hipFile read falls back to POSIX inside the library and was slower than buffered (2.1 vs 3.2 GB/s in microbenchmarks). The loader always reads the aligned superset.
-- **Serialized.** The hipFile loader holds one process-wide mutex across read, D2D copy, and sync. This costs about 3 s on the long-prompt Qwen phase (see above).
+- **Serialized.** The hipFile loader still holds one process-wide mutex across read, copy, and sync. With the SDMA copy this no longer showed up as a cost, but it caps the loader at one read at a time.
+- **Numbers above the SDMA section** were measured with the compute-unit copy. Resident fox-fast changes by about +0.6 s with SDMA. Streaming and long-prompt Qwen improve.
 - **Big-RAM hosts.** hipFile and O_DIRECT always read from the SSD. On a host with enough RAM to keep the weights in the page cache, a buffered repeat run can be faster. Keep both switches opt-in until that case is measured.
-- **Not covered:** `--ssd-streaming`, `H3_INT8_HOST`, Ref2VA, `--serve`, multi-GPU, gfx1151.
+- **Not covered:** `H3_INT8_HOST`, Ref2VA, `--serve`, multi-GPU, gfx1151.
 
 ## Reproduce
 

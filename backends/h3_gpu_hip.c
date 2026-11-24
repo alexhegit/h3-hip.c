@@ -1087,10 +1087,14 @@ static int h3_hip_load_hipfile(h3_hip_direct_entry *entry,
                             h3_hip_now() - start, span);
         if (got < (ssize_t)((size_t)(begin - a0) + span)) { ok = 0; break; }
         double upload_start = h3_hip_now();
+        /* A compute-unit blit queues behind DiT and Qwen kernels; SDMA does not. */
+        hipMemcpyKind kind = getenv("H3_HIPFILE_COPY_CU")
+                                 ? hipMemcpyDeviceToDevice
+                                 : hipMemcpyDeviceToDeviceNoCU;
         ok = hipMemcpyAsync((unsigned char *)obj->data + done,
                             (unsigned char *)h3_hip_hipfile_scratch +
                                 (size_t)(begin - a0),
-                            span, hipMemcpyDeviceToDevice, stream) == hipSuccess &&
+                            span, kind, stream) == hipSuccess &&
              hipStreamSynchronize(stream) == hipSuccess;
         h3_hip_load_account(&h3_hip_load_upload_seconds,
                             &h3_hip_load_upload_bytes,
