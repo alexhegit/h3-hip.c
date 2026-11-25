@@ -158,7 +158,18 @@ Same build (SDMA copy), buffered vs `H3_WEIGHT_HIPFILE=1`, interleaved. Unless n
 | default (fastpath) | 16.96 to 17.15 s | 5.78 GiB/s | nvfs=1998, posix=0 | 21.5 GiB | 0 |
 | `HIPFILE_FORCE_COMPAT_MODE=true` | 32.23 to 32.65 s | 1.79 GiB/s | nvfs=0, posix=1998 | 47.1 GiB | 0.4 to 1.0 s |
 
-hipFile 0.5.0 zero-fills `n_p2p_reads`, so the earlier `p2p=0` says nothing about P2P. The fastpath needs O_DIRECT, leaves the page cache untouched, and is faster than both buffered reads (3.7 GiB/s) and O_DIRECT through pinned staging (3.2 GiB/s). The R9700 exposes its 32 GiB BAR as `p2pmem`, and the kernel has `CONFIG_PCI_P2PDMA=y`. A direct NVMe → VRAM DMA is therefore likely, but it is not proven. `tools/hipfile_p2p_check.sh` (run with sudo) collects ACS, IOMMU, and link state to settle it.
+hipFile 0.5.0 zero-fills `n_p2p_reads`, so the earlier `p2p=0` says nothing about P2P. The fastpath needs O_DIRECT, leaves the page cache untouched, and is faster than both buffered reads (3.7 GiB/s) and O_DIRECT through pinned staging (3.2 GiB/s).
+
+**The fastpath is P2P: the data does not pass through DRAM.** Counting DRAM CAS commands (`amd_uncore`, `amd_umc_0/1` event 0x0a, 64 B each, `perf stat -a`) while the 500 DiT tensors (60.12 GiB) are read into VRAM shows the difference. Idle background is about 3.1 GiB/s read and 1.2 GiB/s write (display scanout from the iGPU). Excess over that background, scaled to each read's duration:
+
+| Read path | Time | Throughput | Excess DRAM read | Excess DRAM write |
+|---|---|---|---|---|
+| hipFile fastpath (`nvfs=500`, `posix=0`) | 10.13 s | 6.37 GB/s | about 10 GiB | about 4 GiB |
+| O_DIRECT into pinned host memory + H2D | 16.04 s | 4.02 GB/s | about 35 GiB | about 33 GiB |
+
+The bounce path has to write every byte to DRAM and read it back. Its counted excess (about 33 to 35 GiB each way) is lower than the 60 GiB it moved, so the absolute counts run low (the background estimate also includes process startup). The comparison between the two paths still holds: for the same 60 GiB, the fastpath causes about one eighth of the bounce path's DRAM writes, within the background noise of this desktop.
+
+`sudo tools/hipfile_p2p_check.sh` shows why this works without a shared switch. GPU (PCIe 5.0 x16, root port 00:01.1, behind the card's own switch) and NVMe (PCIe 4.0 x4, root ports 00:02.4/00:02.5) sit on different root ports of the Phoenix root complex. ACS `ReqRedir+ CmpltRedir+` sends peer traffic up to the root complex and IOMMU, which forwards it to the GPU's 32 GiB `p2pmem` BAR (P2PDMA through the host bridge, which Linux allows on AMD Zen). The PCIe 4.0 x4 NVMe link (about 7 GB/s) is the limit.
 
 **Residual hipFile evictions came from pageable readback.** After the SDMA fix, hipFile runs still showed 50 to 300 ms of KFD eviction with 27 GiB free. A 0.1 s timeline put each of them at a video VAE chunk boundary, about 11 ms per chunk (7 chunks on FastH3 5 s), with no disk reads and no VRAM pressure. `hipMemcpy` into pageable host memory makes ROCm pin it in place behind an MMU notifier. Freeing or reusing that memory later evicts all queues of the process.
 
@@ -180,11 +191,11 @@ Staging everything without the pinned VAE buffer removed the evictions but made 
 
 md5 is unchanged (FastH3 `9ec19d9e...`, fox-fast `c36b933c...`). hipFile runs now show no eviction at all. Buffered runs keep most of theirs. Those come from page-cache pressure through a driver path that was not identified (it needs root to trace), and they are recorded as KI-008 in `docs/KNOWN_ISSUES.md`.
 
-**Default path.** Nothing changes by default. hipFile and O_DIRECT both avoid the buffered evictions. O_DIRECT reads more slowly than buffered here, so its E2E is about the same (fox-fast hit 22.1 to 24.1 s vs 21.5 s). hipFile is faster in every case measured. An `auto` mode (hipFile when it is built in and RAM is smaller than the weights) is the natural next step. It waits for the big-RAM measurement on MI300X.
+**Default path.** No default changes. hipFile and O_DIRECT both avoid the buffered evictions. O_DIRECT reads more slowly than buffered here, so its E2E is about the same (fox-fast hit 22.1 to 24.1 s vs 21.5 s). hipFile is faster in every case measured. An `auto` mode (hipFile when it is built in and RAM is smaller than the weights) is the natural next step. It waits for the big-RAM measurement on MI300X.
 
 ## Caveats
 
-- **P2P unproven.** See the fastpath section above. The `p2p` counter is not implemented in hipFile 0.5.0.
+- **P2P evidence is indirect.** It rests on DRAM traffic counts and throughput, because the `p2p` counter is not implemented in hipFile 0.5.0. The absolute DRAM counts run low (see the fastpath section). The conclusion rests on the ratio between the two paths.
 - **Alignment is mandatory.** Every DiT tensor in the FL2VA shards starts unaligned. An unaligned hipFile read falls back to POSIX inside the library and was slower than buffered (2.1 vs 3.2 GB/s in microbenchmarks). The loader always reads the aligned superset.
 - **Serialized.** The hipFile loader still holds one process-wide mutex across read, copy, and sync. With the SDMA copy this no longer showed up as a cost, but it caps the loader at one read at a time.
 - **Compute-unit vs SDMA numbers.** The fox-fast/fox-15s tables before the SDMA section used the compute-unit copy. The overnight section reruns them with SDMA.
