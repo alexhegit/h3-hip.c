@@ -204,4 +204,4 @@ tools/hipfile_ab.py --case fox-fast --keep-page-cache        # back-to-back
 sudo tools/hipfile_p2p_check.sh                              # P2P prerequisites
 ```
 
-Open items for other machines (MI300X, Strix Halo, P2P with root) are tracked in the hipFile validation issue.
+Open items for other machines (MI300X, Strix Halo, P2P with root) are tracked in [issue #23](https://github.com/alexhegit/h3-hip.c/issues/23).
