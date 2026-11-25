@@ -970,6 +970,13 @@ static int h3_hip_weight_io_mode(const char *path) {
             cached = h3_hip_weight_auto(path) ? H3_IO_HIPFILE : H3_IO_BUFFERED;
         else if (direct && !strcmp(direct, "1")) cached = H3_IO_DIRECT;
         else cached = H3_IO_BUFFERED;
+#ifndef H3_WITH_HIPFILE
+        if (hipfile && !strcmp(hipfile, "1")) {
+            fprintf(stderr, "h3: H3_WEIGHT_HIPFILE=1 ignored: this build has no "
+                            "hipFile (make ... HIPFILE=1)\n");
+            cached = H3_IO_BUFFERED;
+        }
+#endif
     }
     pthread_mutex_unlock(&lock);
     return cached;
