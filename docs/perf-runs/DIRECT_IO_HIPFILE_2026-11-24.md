@@ -114,14 +114,51 @@ The SDMA copy costs a little when the GPU is otherwise idle. Resident fox-fast w
 - **The memory difference is large.** Buffered streaming keeps the page cache at 49 GiB and free RAM at 0.4 GiB for the whole denoise. hipFile keeps 29 GiB free and has no evictions.
 - Streaming would become IO-bound only if a 45-layer forward took less than about 12 s (51 GiB at 4.4 GiB/s), for example on a faster GPU. That was not measured.
 
+## Follow-up cases (overnight 2026-11-25, SDMA copy)
+
+Same build (SDMA copy), buffered vs `H3_WEIGHT_HIPFILE=1`, interleaved. Unless noted, the model page cache (FL2VA and Ref2VA) is dropped before each run and the disk cache is primed. "KFD eviction" is the largest `evicted_ms` seen for the h3 process. Every case below has one md5 across all its runs and modes.
+
+| Case | Runs per mode | Buffered E2E | hipFile E2E | E2E saved | IO wall (buffered → hipFile) | KFD eviction (buffered / hipFile) |
+|---|---|---|---|---|---|---|
+| fox-fast cold (rerun) | 3 | 42.40 s | 30.27 s | -12.13 s (-28.6%) | 29.99 → 21.76 s | 1.1 to 6.4 s / 0 |
+| fox-fast disk-cache hit (rerun) | 3 | 21.47 s | 16.98 s | -4.49 s (-20.9%) | 11.52 → 8.17 s | 0.8 to 1.2 s / 0 |
+| fox-15s cold (rerun) | 2 | 343.71 s | 331.08 s | -12.63 s (-3.7%) | 30.50 → 21.60 s | 2.5 to 4.8 s / 0.3 s |
+| fox-15s disk-cache hit (rerun) | 2 | 321.71 s | 317.91 s | -3.80 s (-1.2%) | 11.49 → 8.20 s | 0.7 to 1.2 s / 0.3 s |
+| Back-to-back fox-fast, page cache kept, runs 2 and 3 | 4 | 21.58 s | 17.21 s | -4.37 s (-20.2%) | 11.61 → 8.42 s | 1.3 to 2.3 s / 0 |
+| FastH3 4-step, 864x480, 5 s, disk-cache hit | 2 | 61.64 s | 56.91 s | -4.73 s (-7.7%) | 12.42 → 8.87 s | 0.6 to 1.5 s / 0.1 s |
+| FastH3 4-step, 864x480, 5 s, cold | 2 | 82.92 s | 70.38 s | -12.54 s (-15.1%) | 31.12 → 22.44 s | 2.7 to 5.7 s / 0.1 s |
+| Low RAM (27 GiB held), fox-fast hit | 2 | 23.42 s | 17.02 s | -6.40 s (-27.3%) | 12.35 → 8.15 s | 1.3 s / 0.05 s |
+| Low RAM (27 GiB held), FastH3 hit | 1 | 62.85 s | 57.20 s | -5.65 s (-9.0%) | 12.77 → 9.00 s | 2.2 s / 0.8 s |
+| Ref2VA, 1 image, 512x512, 22 frames, 2 steps | 2 | 30.13 s | 23.25 s | -6.88 s (-22.8%) | 21.83 → 15.96 s | 1.2 to 2.4 s / 0 |
+| `--serve` fox-s2, first job of a session | 2 | 24.61 s | 19.53 s | -5.08 s (-20.6%) | n/a | see below |
+| `--serve` fox-s2, job after `/v1/cache/release` | 6 | 24.15 s (22.21 to 26.73) | 19.34 s (19.33 to 19.34) | -4.81 s (-19.9%) | n/a | 12.8 to 20.4 s per session / 0 |
+
+**Back-to-back runs** answer the fairness question for the earlier tables, which always dropped the page cache. Keeping the page cache helps buffered mode by only 0.8 s (22.37 s on the first run, 21.58 s on runs 2 and 3), because the 134 GiB FL2VA tree does not fit in 59 GiB. hipFile is unchanged (17.05 s and 17.21 s). The earlier comparisons did not overstate the gain on this host.
+
+**Low RAM.** A 27 GiB balloon (anonymous memory, touched every second; swap stayed at 0.1 GiB) leaves about 32 GiB, close to a 32 GiB desktop or the Strix Halo host. Buffered fox-fast gets 1.95 s slower (21.47 to 23.42 s), and hipFile does not change (16.98 to 17.02 s). O_DIRECT in the same setup took 22.21 s, so on this case it does not beat buffered. hipFile was not completely free of evictions here: 0.8 s on the FastH3 run, with 3.9 GiB free at the minimum.
+
+**FastH3.** The 4-step dense adapter makes the denoise short (31 s), but the 864x480 video VAE decode takes about 15 s in both modes. The disk-cache hit gain is therefore 7.7%; cold is 15.1%.
+
+**Ref2VA** loads the Qwen vision encoder and the video VAE encoder on top of the T2VA set. All of those read faster. For example, the vision encoder phase goes from 1.58 to 1.26 s, with IO wall 0.54 to 0.24 s.
+
+**`--serve`.** On this card the daemon sets `H3_INT8_HOST=1` itself, so the INT8 DiT linears live in pinned host memory and hipFile does not touch them. The gain comes from the other device tensors and from avoiding evictions:
+
+- Buffered daemon sessions accumulate 12.8 s and 20.4 s of KFD eviction over four jobs. Single jobs vary from 22.2 to 26.7 s.
+- hipFile jobs take 19.33 to 19.34 s every time, with zero eviction.
+- `/v1/cache/release` takes about 2 s in both modes.
+
+**The SDMA reruns** agree with the earlier compute-unit tables. hipFile fox-fast is 0.4 to 0.9 s slower than with the compute-unit copy (cold 30.27 vs 29.35 s, hit 16.98 vs 16.58 s). fox-15s cold is 3.3 s faster (331.08 vs 334.38 s), mostly from the Qwen fix: Qwen 9.01 s vs 11.17 s buffered. Buffered runs vary more than hipFile runs: fox-fast cold buffered ranges from 40.24 to 45.60 s, hipFile from 30.20 to 30.38 s.
+
 ## Caveats
 
 - **Not P2P.** hipFile reported `p2p=0` for every read. The gain comes from the hipFile driver path with aligned superset reads, not from a verified PCIe P2P DMA from NVMe into VRAM. The P2P/ACS question is still open (`hipFileDriverGetProperties` returns 5030; no sudo on this box).
 - **Alignment is mandatory.** Every DiT tensor in the FL2VA shards starts unaligned. An unaligned hipFile read falls back to POSIX inside the library and was slower than buffered (2.1 vs 3.2 GB/s in microbenchmarks). The loader always reads the aligned superset.
 - **Serialized.** The hipFile loader still holds one process-wide mutex across read, copy, and sync. With the SDMA copy this no longer showed up as a cost, but it caps the loader at one read at a time.
-- **Numbers above the SDMA section** were measured with the compute-unit copy. Resident fox-fast changes by about +0.6 s with SDMA. Streaming and long-prompt Qwen improve.
-- **Big-RAM hosts.** hipFile and O_DIRECT always read from the SSD. On a host with enough RAM to keep the weights in the page cache, a buffered repeat run can be faster. Keep both switches opt-in until that case is measured.
-- **Not covered:** `H3_INT8_HOST`, Ref2VA, `--serve`, multi-GPU, gfx1151.
+- **Compute-unit vs SDMA numbers.** The fox-fast/fox-15s tables before the SDMA section used the compute-unit copy. The overnight section reruns them with SDMA.
+- **Residual evictions with hipFile.** hipFile runs still show 0.1 to 0.3 s of KFD eviction on FastH3 and fox-15s, and 0.8 s on FastH3 under the low-RAM balloon. The video VAE prefetch still goes through the page cache. The cause of these evictions is not known.
+- **Big-RAM hosts.** hipFile and O_DIRECT always read from the SSD. On a host with enough RAM to keep the weights in the page cache, a buffered repeat run can be faster. Keep both switches opt-in until that case is measured (MI300X).
+- **Low-RAM simulation** uses a balloon without mlock (RLIMIT_MEMLOCK is 8 MiB), so the kernel could have swapped it. It did not: swap stayed at 0.1 GiB.
+- **Not covered:** the `H3_INT8_HOST` long-video path (hipFile does not apply to host tensors), FL2VA/Ref2VA switching inside one daemon, multi-GPU, gfx942, gfx1151.
 
 ## Reproduce
 
