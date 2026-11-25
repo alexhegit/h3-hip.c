@@ -7,6 +7,7 @@
 #include <hipfile.h>
 #endif
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -573,9 +574,15 @@ static int h3_hip_upload_bytes(void *device, const void *source, size_t bytes) {
     return ok;
 }
 
-/* Read a device allocation back into host memory. Readback is rare (a few bulk
- * calls per phase), so it goes straight through the runtime rather than paying
- * for a staging buffer it would only use once. */
+static int h3_hip_download_pageable(void) {
+    static int cached = -1;
+    if (cached < 0) cached = getenv("H3_DOWNLOAD_PAGEABLE") != NULL;
+    return cached;
+}
+
+/* Read a device allocation back into host memory. A pinned destination is
+ * copied into directly; a pageable one goes through a recycled pinned staging
+ * buffer (see below for why). */
 static int h3_hip_download_bytes(void *destination, const void *device,
                                  size_t bytes) {
     if (!h3_hip_bind_thread_device()) return 0;
@@ -589,7 +596,7 @@ static int h3_hip_download_bytes(void *destination, const void *device,
     int pinned = hipPointerGetAttributes(&attributes, destination) == hipSuccess &&
                  attributes.type == hipMemoryTypeHost;
     if (!pinned) (void)hipGetLastError();
-    if (!pinned && !getenv("H3_DOWNLOAD_PAGEABLE")) {
+    if (!pinned && !h3_hip_download_pageable()) {
         size_t chunk = h3_hip_stage_chunk(bytes), block = h3_hip_stage_block(bytes);
         void *staging = h3_hip_stage_take(block);
         if (staging) {
@@ -883,10 +890,6 @@ static struct h3_gpu_tensor *tensor_ptr(const h3_gpu_tensor *tensor) {
     return (struct h3_gpu_tensor *)(void *)tensor;
 }
 
-/* Fill a tensor from a file. A pinned tensor is read into directly; a device
- * tensor is read into a recycled pinned staging buffer and uploaded. Chunks are
- * equal so the staging sizes repeat across identically shaped tensors and the
- * pinned pool recycles instead of page-locking. */
 /* ---- O_DIRECT and hipFile weight reads (opt-in) ------------------------------
  * H3_WEIGHT_DIRECT=1 reads the 4 KiB-aligned superset of each chunk with
  * O_DIRECT into pinned staging, then uploads the tensor slice.
@@ -898,15 +901,77 @@ static struct h3_gpu_tensor *tensor_ptr(const h3_gpu_tensor *tensor) {
 #define H3_HIPFILE_CHUNK ((size_t)64u << 20)
 enum { H3_IO_BUFFERED = 0, H3_IO_DIRECT = 1, H3_IO_HIPFILE = 2 };
 
-static int h3_hip_weight_io_mode(void) {
+#ifdef H3_WITH_HIPFILE
+/* Total size of the *.safetensors files under root, recursing two levels
+ * (FL2VA/transformer/model-*.safetensors). */
+static uint64_t h3_hip_tree_bytes(const char *root, int depth) {
+    DIR *dir = opendir(root);
+    if (!dir) return 0;
+    uint64_t total = 0;
+    struct dirent *item;
+    while ((item = readdir(dir)) != NULL) {
+        if (item->d_name[0] == '.') continue;
+        char path[1024];
+        if (snprintf(path, sizeof(path), "%s/%s", root, item->d_name) >= (int)sizeof(path))
+            continue;
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        size_t length = strlen(item->d_name);
+        if (S_ISDIR(st.st_mode) && depth > 0) {
+            total += h3_hip_tree_bytes(path, depth - 1);
+        } else if (S_ISREG(st.st_mode) && length > 12 &&
+                   !strcmp(item->d_name + length - 12, ".safetensors")) {
+            total += (uint64_t)st.st_size;
+        }
+    }
+    closedir(dir);
+    return total;
+}
+#endif
+
+/* H3_WEIGHT_HIPFILE=auto: hipFile only when host RAM is smaller than the weight
+ * tree, i.e. when buffered reads would churn the page cache (KI-008). On a host
+ * that can keep the weights cached, buffered repeat runs read from RAM. The
+ * tree is the second parent of the first weight file (FL2VA or Ref2VA). */
+static int h3_hip_weight_auto(const char *path) {
+#ifdef H3_WITH_HIPFILE
+    char root[1024];
+    if (!path || snprintf(root, sizeof(root), "%s", path) >= (int)sizeof(root)) return 0;
+    for (int up = 0; up < 2; up++) {
+        char *slash = strrchr(root, '/');
+        if (!slash) return 0;
+        *slash = '\0';
+    }
+    uint64_t weights = h3_hip_tree_bytes(root, 2);
+    long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+    uint64_t ram = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0;
+    int use = weights && ram && ram < weights;
+    if (getenv("H3_PROFILE"))
+        fprintf(stderr, "h3 profile: weight IO auto: %s (%.1f GiB weights under %s, "
+                "%.1f GiB RAM)\n", use ? "hipFile" : "buffered",
+                (double)weights / 1073741824.0, root, (double)ram / 1073741824.0);
+    return use;
+#else
+    (void)path;
+    return 0;
+#endif
+}
+
+static int h3_hip_weight_io_mode(const char *path) {
     static int cached = -1;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    if (cached >= 0) return cached;
+    pthread_mutex_lock(&lock);
     if (cached < 0) {
         const char *hipfile = getenv("H3_WEIGHT_HIPFILE");
         const char *direct = getenv("H3_WEIGHT_DIRECT");
         if (hipfile && !strcmp(hipfile, "1")) cached = H3_IO_HIPFILE;
+        else if (hipfile && !strcmp(hipfile, "auto"))
+            cached = h3_hip_weight_auto(path) ? H3_IO_HIPFILE : H3_IO_BUFFERED;
         else if (direct && !strcmp(direct, "1")) cached = H3_IO_DIRECT;
         else cached = H3_IO_BUFFERED;
     }
+    pthread_mutex_unlock(&lock);
     return cached;
 }
 
@@ -1053,51 +1118,105 @@ static int h3_hip_load_direct(h3_hip_direct_entry *entry,
 }
 
 #ifdef H3_WITH_HIPFILE
-static pthread_mutex_t h3_hip_hipfile_lock = PTHREAD_MUTEX_INITIALIZER;
-static int h3_hip_hipfile_driver_ready;
-static void *h3_hip_hipfile_scratch;
-static size_t h3_hip_hipfile_scratch_bytes;
+/* Reads land in a small pool of registered device scratch slots. A loader
+ * thread takes a slot, reads into it without holding any lock, queues the SDMA
+ * copy into the tensor, records the slot's event, and hands the slot back; the
+ * next user of that slot waits on the event first. So one tensor's next read
+ * overlaps its previous copy, and several loader threads read at once. */
+#define H3_HIPFILE_SLOTS_MAX 8
+typedef struct {
+    void *buffer;
+    hipEvent_t copied;
+    int busy;
+    int pending;
+} h3_hip_hipfile_slot;
 
-/* Caller holds h3_hip_hipfile_lock. */
+static pthread_mutex_t h3_hip_hipfile_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t h3_hip_hipfile_free = PTHREAD_COND_INITIALIZER;
+static int h3_hip_hipfile_driver_ready;
+static h3_hip_hipfile_slot h3_hip_hipfile_slots[H3_HIPFILE_SLOTS_MAX];
+static int h3_hip_hipfile_slot_count;
+
+static int h3_hip_hipfile_slots_wanted(void) {
+    const char *value = getenv("H3_HIPFILE_SLOTS");
+    int count = value ? atoi(value) : 4;
+    if (count < 1) count = 1;
+    if (count > H3_HIPFILE_SLOTS_MAX) count = H3_HIPFILE_SLOTS_MAX;
+    return count;
+}
+
+static hipMemcpyKind h3_hip_hipfile_copy_kind(void) {
+    static int cached = -1;
+    /* A compute-unit blit queues behind DiT and Qwen kernels; SDMA does not. */
+    if (cached < 0) cached = getenv("H3_HIPFILE_COPY_CU") != NULL;
+    return cached ? hipMemcpyDeviceToDevice : hipMemcpyDeviceToDeviceNoCU;
+}
+
 static int h3_hip_hipfile_prepare(h3_hip_direct_entry *entry) {
     if (!h3_hip_bind_thread_device()) return 0;
+    pthread_mutex_lock(&h3_hip_hipfile_lock);
+    int ok = 1;
     if (!h3_hip_hipfile_driver_ready) {
-        if (hipFileDriverOpen().err != hipFileSuccess) return 0;
-        h3_hip_hipfile_driver_ready = 1;
+        ok = hipFileDriverOpen().err == hipFileSuccess;
+        h3_hip_hipfile_driver_ready = ok;
     }
-    if (!entry->handle_ready) {
+    if (ok && !entry->handle_ready) {
         hipFileDescr_t descr;
         memset(&descr, 0, sizeof(descr));
         descr.type = hipFileHandleTypeOpaqueFD;
         descr.handle.fd = entry->fd;
-        if (hipFileHandleRegister(&entry->handle, &descr).err != hipFileSuccess)
-            return 0;
-        entry->handle_ready = 1;
+        ok = hipFileHandleRegister(&entry->handle, &descr).err == hipFileSuccess;
+        entry->handle_ready = ok;
     }
-    if (!h3_hip_hipfile_scratch) {
-        size_t capacity = H3_HIPFILE_CHUNK + 2 * H3_DIRECT_ALIGN;
-        void *buffer = NULL;
-        if (hipMalloc(&buffer, capacity) != hipSuccess) return 0;
-        if (hipFileBufRegister(buffer, capacity, 0).err != hipFileSuccess) {
-            hipFree(buffer);
-            return 0;
+    int wanted = h3_hip_hipfile_slots_wanted();
+    size_t capacity = H3_HIPFILE_CHUNK + 2 * H3_DIRECT_ALIGN;
+    while (ok && h3_hip_hipfile_slot_count < wanted) {
+        h3_hip_hipfile_slot *slot = &h3_hip_hipfile_slots[h3_hip_hipfile_slot_count];
+        if (hipMalloc(&slot->buffer, capacity) != hipSuccess) break;
+        if (hipFileBufRegister(slot->buffer, capacity, 0).err != hipFileSuccess ||
+            hipEventCreateWithFlags(&slot->copied, hipEventDisableTiming) != hipSuccess) {
+            hipFree(slot->buffer);
+            slot->buffer = NULL;
+            break;
         }
-        h3_hip_hipfile_scratch = buffer;
-        h3_hip_hipfile_scratch_bytes = capacity;
+        h3_hip_hipfile_slot_count++;
     }
-    return 1;
+    if (!h3_hip_hipfile_slot_count) ok = 0;
+    pthread_mutex_unlock(&h3_hip_hipfile_lock);
+    return ok;
+}
+
+static h3_hip_hipfile_slot *h3_hip_hipfile_take(void) {
+    pthread_mutex_lock(&h3_hip_hipfile_lock);
+    h3_hip_hipfile_slot *slot = NULL;
+    while (!slot) {
+        for (int index = 0; index < h3_hip_hipfile_slot_count && !slot; index++) {
+            if (!h3_hip_hipfile_slots[index].busy) slot = &h3_hip_hipfile_slots[index];
+        }
+        if (!slot) pthread_cond_wait(&h3_hip_hipfile_free, &h3_hip_hipfile_lock);
+    }
+    slot->busy = 1;
+    int pending = slot->pending;
+    slot->pending = 0;
+    pthread_mutex_unlock(&h3_hip_hipfile_lock);
+    if (pending) (void)hipEventSynchronize(slot->copied);
+    return slot;
+}
+
+static void h3_hip_hipfile_give(h3_hip_hipfile_slot *slot, int pending) {
+    pthread_mutex_lock(&h3_hip_hipfile_lock);
+    slot->busy = 0;
+    slot->pending = pending;
+    pthread_cond_signal(&h3_hip_hipfile_free);
+    pthread_mutex_unlock(&h3_hip_hipfile_lock);
 }
 
 static int h3_hip_load_hipfile(h3_hip_direct_entry *entry,
                                struct h3_gpu_tensor *obj, size_t bytes,
                                off_t offset) {
     hipStream_t stream = h3_hip_upload();
-    if (!stream) return -1;
-    pthread_mutex_lock(&h3_hip_hipfile_lock);
-    if (!h3_hip_hipfile_prepare(entry)) {
-        pthread_mutex_unlock(&h3_hip_hipfile_lock);
-        return -1;
-    }
+    if (!stream || !h3_hip_hipfile_prepare(entry)) return -1;
+    hipMemcpyKind kind = h3_hip_hipfile_copy_kind();
     int ok = 1;
     for (size_t done = 0; done < bytes && ok; done += H3_HIPFILE_CHUNK) {
         size_t span = bytes - done;
@@ -1107,33 +1226,31 @@ static int h3_hip_load_hipfile(h3_hip_direct_entry *entry,
         off_t a1 = (begin + (off_t)span + (off_t)(H3_DIRECT_ALIGN - 1)) &
                    ~(off_t)(H3_DIRECT_ALIGN - 1);
         size_t len = (size_t)(a1 - a0);
-        if (len > h3_hip_hipfile_scratch_bytes) { ok = 0; break; }
+        h3_hip_hipfile_slot *slot = h3_hip_hipfile_take();
         double start = h3_hip_now();
-        ssize_t got = hipFileRead(entry->handle, h3_hip_hipfile_scratch, len,
-                                  (hoff_t)a0, 0);
+        ssize_t got = hipFileRead(entry->handle, slot->buffer, len, (hoff_t)a0, 0);
         h3_hip_load_account(&h3_hip_load_read_seconds, &h3_hip_load_read_bytes,
                             h3_hip_now() - start, span);
-        if (got < (ssize_t)((size_t)(begin - a0) + span)) { ok = 0; break; }
-        double upload_start = h3_hip_now();
-        /* A compute-unit blit queues behind DiT and Qwen kernels; SDMA does not. */
-        hipMemcpyKind kind = getenv("H3_HIPFILE_COPY_CU")
-                                 ? hipMemcpyDeviceToDevice
-                                 : hipMemcpyDeviceToDeviceNoCU;
-        ok = hipMemcpyAsync((unsigned char *)obj->data + done,
-                            (unsigned char *)h3_hip_hipfile_scratch +
-                                (size_t)(begin - a0),
+        ok = got >= (ssize_t)((size_t)(begin - a0) + span) &&
+             hipMemcpyAsync((unsigned char *)obj->data + done,
+                            (unsigned char *)slot->buffer + (size_t)(begin - a0),
                             span, kind, stream) == hipSuccess &&
-             hipStreamSynchronize(stream) == hipSuccess;
-        h3_hip_load_account(&h3_hip_load_upload_seconds,
-                            &h3_hip_load_upload_bytes,
-                            h3_hip_now() - upload_start, span);
+             hipEventRecord(slot->copied, stream) == hipSuccess;
+        h3_hip_hipfile_give(slot, ok);
     }
-    pthread_mutex_unlock(&h3_hip_hipfile_lock);
+    /* The tensor is complete once the upload stream has drained this call's
+     * copies; earlier failures still need the queued copies to finish before
+     * the buffered fallback rewrites the tensor. */
+    double sync_start = h3_hip_now();
+    if (hipStreamSynchronize(stream) != hipSuccess) ok = 0;
+    h3_hip_load_account(&h3_hip_load_upload_seconds, &h3_hip_load_upload_bytes,
+                        h3_hip_now() - sync_start, ok ? bytes : 0);
     return ok ? 1 : -1;
 }
 
-/* Cumulative per-path read counts from the library. p2p > 0 is the only proof
- * that a read went NVMe to VRAM without a host bounce. */
+/* Cumulative per-path read counts from the library. hipFile 0.5.0 zero-fills
+ * the p2p counter, so `nvfs` (its fastpath) versus `posix` is what tells a
+ * direct read from a bounce-buffer fallback. */
 static void h3_hip_hipfile_emit(const char *label) {
     if (!h3_hip_hipfile_driver_ready) return;
     hipFileStatsLevel3_t stats;
@@ -1160,6 +1277,10 @@ static int h3_hip_load_hipfile(h3_hip_direct_entry *entry,
 }
 #endif
 
+/* Fill a tensor from a file. A pinned tensor is read into directly; a device
+ * tensor is read into a recycled pinned staging buffer and uploaded. Chunks are
+ * equal so the staging sizes repeat across identically shaped tensors and the
+ * pinned pool recycles instead of page-locking. */
 static int h3_hip_load_tensor_from_file_io(struct h3_gpu_tensor *obj, int fd,
                                            const char *path, size_t bytes,
                                            off_t offset) {
@@ -1167,7 +1288,7 @@ static int h3_hip_load_tensor_from_file_io(struct h3_gpu_tensor *obj, int fd,
         return h3_hip_copy_from_file(fd, path, obj->data, bytes, offset);
     }
     if (!bytes) return 1;
-    int mode = h3_hip_weight_io_mode();
+    int mode = h3_hip_weight_io_mode(path);
     if (mode != H3_IO_BUFFERED && path) {
         h3_hip_direct_entry *entry = h3_hip_direct_open(path);
         if (entry) {

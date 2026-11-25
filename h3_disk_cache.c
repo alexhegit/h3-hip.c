@@ -25,7 +25,7 @@ static const char *const ignored_environment[] = {
     "H3_HIP_DEVICE", "H3_PIKA_SEED", "H3_MODEL", "H3_ADALN_PREFETCH",
     "H3_DISK_CACHE_DIT_INT8", "H3_PREAD_SERIAL", "H3_PREAD_THREADS",
     "H3_WEIGHT_DIRECT", "H3_WEIGHT_HIPFILE", "H3_HIPFILE_COPY_CU",
-    "H3_DOWNLOAD_PAGEABLE",
+    "H3_HIPFILE_SLOTS", "H3_DOWNLOAD_PAGEABLE",
 };
 
 typedef struct {
