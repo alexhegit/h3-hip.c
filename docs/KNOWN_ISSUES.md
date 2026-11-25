@@ -164,7 +164,8 @@ and the video VAE reads into a reused pinned buffer.
 `H3_DOWNLOAD_PAGEABLE=1` restores the old copy. This removed every
 remaining hipFile eviction, but only about 0.3 to 0.7 s of the buffered
 ones. Which driver path turns page-cache pressure into the large buffered
-evictions is not known; tracing it needs root.
+evictions is not known yet. `sudo tools/kfd_eviction_trace.sh -- COMMAND`
+prints the kernel stacks behind each eviction (MMU notifier vs TTM swap).
 
 ## Related backlog
 

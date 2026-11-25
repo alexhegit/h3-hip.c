@@ -3,7 +3,7 @@
 Branch `exp/direct-io` (from `origin/main` a0e6ff3). Opt-in switches, default behaviour unchanged:
 
 - `H3_WEIGHT_DIRECT=1`: O_DIRECT read of the 4 KiB-aligned superset of each tensor chunk into pinned staging, then H2D upload.
-- `H3_WEIGHT_HIPFILE=1` (build with `HIPFILE=1`): `hipFileRead` of the same aligned superset into a 64 MiB device scratch, then D2D copy of the tensor slice.
+- `H3_WEIGHT_HIPFILE=1` (build with `HIPFILE=1`): `hipFileRead` of the same aligned superset into VRAM scratch, then an SDMA copy of the tensor slice. The first builds used one 64 MiB scratch under a global lock; the final build uses a pool of slots (see the slot pool section). `auto` picks hipFile only when RAM is smaller than the weights. User guide: [`../HIPFILE.md`](../HIPFILE.md).
 - Any failure falls back to the existing buffered loader for that tensor. Neither switch changes numerics.
 
 ## Functional result
@@ -192,6 +192,31 @@ Staging everything without the pinned VAE buffer removed the evictions but made 
 md5 is unchanged (FastH3 `9ec19d9e...`, fox-fast `c36b933c...`). hipFile runs now show no eviction at all. Buffered runs keep most of theirs. Those come from page-cache pressure through a driver path that was not identified (it needs root to trace), and they are recorded as KI-008 in `docs/KNOWN_ISSUES.md`.
 
 **Default path.** No default changes. hipFile and O_DIRECT both avoid the buffered evictions. O_DIRECT reads more slowly than buffered here, so its E2E is about the same (fox-fast hit 22.1 to 24.1 s vs 21.5 s). hipFile is faster in every case measured. An `auto` mode (hipFile when it is built in and RAM is smaller than the weights) is the natural next step. It waits for the big-RAM measurement on MI300X.
+
+## Slot pool and `auto` (2026-11-25, final build)
+
+The hipFile loader used to hold one process-wide mutex across read, copy, and sync. It now uses a pool of registered VRAM scratch slots, 4 × 64 MiB by default (`H3_HIPFILE_SLOTS`). A loader thread reads into a slot without a lock, queues the SDMA copy, and records the slot's event. The next user of that slot waits on the event first. Consecutive chunks of one tensor overlap read and copy, and Qwen's prefetch lanes read in parallel.
+
+fox-fast cold, hipFile, 2 runs each:
+
+| Slots | E2E | IO wall | Qwen phase |
+|---|---|---|---|
+| global lock (previous build) | 30.27 s | 21.76 s | 8.92 s |
+| 1 | 31.31 s | 21.48 s | 8.95 s |
+| 2 | 28.24 s | 19.60 s | 8.08 s |
+| 4 (default) | 27.78 s | 19.18 s | 7.90 s |
+| 8 | 27.73 s | 19.14 s | 7.86 s |
+
+fox-15s cold: 330.35 s with 4 slots vs 331.75 s with 1, Qwen 8.04 vs 9.01 s, with no extra pinned fallbacks from the larger scratch. `--ssd-streaming` is compute-bound and does not change (39.74 vs 39.96 s on fox-s2). md5 is unchanged throughout.
+
+`H3_WEIGHT_HIPFILE=auto` sums the `*.safetensors` under the first weight file's grandparent (FL2VA: 134.1 GiB). It picks hipFile when that exceeds physical RAM (59.7 GiB here), and buffered otherwise.
+
+Final A/B with `tools/hipfile_ab.py` (page cache dropped, 2 runs each, md5 identical, `posix=0`):
+
+| fox-fast | Buffered | hipFile | E2E | IO wall | KFD eviction |
+|---|---|---|---|---|---|
+| cold | 42.40 s | 27.77 s | -34.5% | 29.90 → 19.18 s | 1.9 to 2.0 s / 0 |
+| disk-cache hit | 21.69 s | 16.15 s | -25.5% | 11.53 → 7.33 s | 0.9 to 1.4 s / 0 |
 
 ## Caveats
 
