@@ -149,13 +149,45 @@ Same build (SDMA copy), buffered vs `H3_WEIGHT_HIPFILE=1`, interleaved. Unless n
 
 **The SDMA reruns** agree with the earlier compute-unit tables. hipFile fox-fast is 0.4 to 0.9 s slower than with the compute-unit copy (cold 30.27 vs 29.35 s, hit 16.98 vs 16.58 s). fox-15s cold is 3.3 s faster (331.08 vs 334.38 s), mostly from the Qwen fix: Qwen 9.01 s vs 11.17 s buffered. Buffered runs vary more than hipFile runs: fox-fast cold buffered ranges from 40.24 to 45.60 s, hipFile from 30.20 to 30.38 s.
 
+## hipFile fastpath vs compat mode, and the residual evictions (2026-11-25)
+
+**The fastpath is a different data path from the bounce buffer.** Every aligned hipFile read is counted as `nvfs` (the library's "fastpath"). The profile prints these counts with `H3_PROFILE=1`, on a `hipfile-reads` line per phase. `HIPFILE_FORCE_COMPAT_MODE=true` forces the POSIX bounce-buffer path. fox-fast with a disk-cache hit, 2 runs each:
+
+| hipFile mode | E2E | DiT weight read | Read counts | Peak page cache | KFD eviction |
+|---|---|---|---|---|---|
+| default (fastpath) | 16.96 to 17.15 s | 5.78 GiB/s | nvfs=1998, posix=0 | 21.5 GiB | 0 |
+| `HIPFILE_FORCE_COMPAT_MODE=true` | 32.23 to 32.65 s | 1.79 GiB/s | nvfs=0, posix=1998 | 47.1 GiB | 0.4 to 1.0 s |
+
+hipFile 0.5.0 zero-fills `n_p2p_reads`, so the earlier `p2p=0` says nothing about P2P. The fastpath needs O_DIRECT, leaves the page cache untouched, and is faster than both buffered reads (3.7 GiB/s) and O_DIRECT through pinned staging (3.2 GiB/s). The R9700 exposes its 32 GiB BAR as `p2pmem`, and the kernel has `CONFIG_PCI_P2PDMA=y`. A direct NVMe → VRAM DMA is therefore likely, but it is not proven. `tools/hipfile_p2p_check.sh` (run with sudo) collects ACS, IOMMU, and link state to settle it.
+
+**Residual hipFile evictions came from pageable readback.** After the SDMA fix, hipFile runs still showed 50 to 300 ms of KFD eviction with 27 GiB free. A 0.1 s timeline put each of them at a video VAE chunk boundary, about 11 ms per chunk (7 chunks on FastH3 5 s), with no disk reads and no VRAM pressure. `hipMemcpy` into pageable host memory makes ROCm pin it in place behind an MMU notifier. Freeing or reusing that memory later evicts all queues of the process.
+
+Fix (affects every mode):
+
+- `h3_hip_download_bytes` stages pageable destinations through pinned memory. `H3_DOWNLOAD_PAGEABLE=1` restores the old copy.
+- The video VAE reads its output patches into one reused pinned buffer, so the large per-tile readback has no extra `memcpy`.
+
+Staging everything without the pinned VAE buffer removed the evictions but made the VAE decode 0.25 s slower, which is why the VAE buffer is pinned instead.
+
+| Case (disk-cache hit) | Mode | Runs | E2E | Video VAE decode | KFD eviction |
+|---|---|---|---|---|---|
+| FastH3 864x480 5 s | hipFile, new readback | 2 | 56.38 s | 14.51 s | 0, 0 |
+| FastH3 864x480 5 s | buffered, new readback | 2 | 61.24 s | 14.78 s | 1.38, 1.41 s |
+| FastH3 864x480 5 s | buffered, old readback | 2 | 61.66 s | 15.40 s | 1.68, 2.15 s |
+| fox-fast | hipFile, new readback | 3 | 16.99 s | 2.53 s | 0, 0, 0 |
+| fox-fast | buffered, new readback | 3 | 21.53 s | 2.90 s | 0.8 to 1.3 s |
+| fox-fast | buffered, old readback | 3 | 21.59 s | 2.90 s | 1.0 to 1.2 s |
+
+md5 is unchanged (FastH3 `9ec19d9e...`, fox-fast `c36b933c...`). hipFile runs now show no eviction at all. Buffered runs keep most of theirs. Those come from page-cache pressure through a driver path that was not identified (it needs root to trace), and they are recorded as KI-008 in `docs/KNOWN_ISSUES.md`.
+
+**Default path.** Nothing changes by default. hipFile and O_DIRECT both avoid the buffered evictions. O_DIRECT reads more slowly than buffered here, so its E2E is about the same (fox-fast hit 22.1 to 24.1 s vs 21.5 s). hipFile is faster in every case measured. An `auto` mode (hipFile when it is built in and RAM is smaller than the weights) is the natural next step. It waits for the big-RAM measurement on MI300X.
+
 ## Caveats
 
-- **Not P2P.** hipFile reported `p2p=0` for every read. The gain comes from the hipFile driver path with aligned superset reads, not from a verified PCIe P2P DMA from NVMe into VRAM. The P2P/ACS question is still open (`hipFileDriverGetProperties` returns 5030; no sudo on this box).
+- **P2P unproven.** See the fastpath section above. The `p2p` counter is not implemented in hipFile 0.5.0.
 - **Alignment is mandatory.** Every DiT tensor in the FL2VA shards starts unaligned. An unaligned hipFile read falls back to POSIX inside the library and was slower than buffered (2.1 vs 3.2 GB/s in microbenchmarks). The loader always reads the aligned superset.
 - **Serialized.** The hipFile loader still holds one process-wide mutex across read, copy, and sync. With the SDMA copy this no longer showed up as a cost, but it caps the loader at one read at a time.
 - **Compute-unit vs SDMA numbers.** The fox-fast/fox-15s tables before the SDMA section used the compute-unit copy. The overnight section reruns them with SDMA.
-- **Residual evictions with hipFile.** hipFile runs still show 0.1 to 0.3 s of KFD eviction on FastH3 and fox-15s, and 0.8 s on FastH3 under the low-RAM balloon. The video VAE prefetch still goes through the page cache. The cause of these evictions is not known.
 - **Big-RAM hosts.** hipFile and O_DIRECT always read from the SSD. On a host with enough RAM to keep the weights in the page cache, a buffered repeat run can be faster. Keep both switches opt-in until that case is measured (MI300X).
 - **Low-RAM simulation** uses a balloon without mlock (RLIMIT_MEMLOCK is 8 MiB), so the kernel could have swapped it. It did not: swap stayed at 0.1 GiB.
 - **Not covered:** the `H3_INT8_HOST` long-video path (hipFile does not apply to host tensors), FL2VA/Ref2VA switching inside one daemon, multi-GPU, gfx942, gfx1151.
@@ -165,4 +197,11 @@ Same build (SDMA copy), buffered vs `H3_WEIGHT_HIPFILE=1`, interleaved. Unless n
 ```bash
 make HIP_ARCH=gfx1201 HIPFILE=1 HIPFILE_INC=<rocm devel>/include HIPFILE_LIB=<rocm devel>/lib -j$(nproc) h3
 H3_WEIGHT_HIPFILE=1 ./bench/fox-s2.sh $H3_MODEL   # md5 must be 6d17f81a...
+
+tools/hipfile_ab.py --case fox-fast --runs 3                 # buffered vs hipFile, disk-cache hit
+tools/hipfile_ab.py --case fox-fast --disk-cache 0           # cold
+tools/hipfile_ab.py --case fox-fast --keep-page-cache        # back-to-back
+sudo tools/hipfile_p2p_check.sh                              # P2P prerequisites
 ```
+
+Open items for other machines (MI300X, Strix Halo, P2P with root) are tracked in the hipFile validation issue.
