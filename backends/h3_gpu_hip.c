@@ -581,6 +581,31 @@ static int h3_hip_download_bytes(void *destination, const void *device,
     if (!h3_hip_bind_thread_device()) return 0;
     hipStream_t stream = h3_hip_upload();
     if (!stream || !bytes) return bytes == 0;
+    /* A copy into pageable memory makes ROCm pin it in place behind an MMU
+     * notifier. Freeing, reusing, or migrating those pages later evicts every
+     * GPU queue of the process (about 10 ms each, seconds under reclaim), so
+     * pageable destinations go through pinned staging. */
+    hipPointerAttribute_t attributes;
+    int pinned = hipPointerGetAttributes(&attributes, destination) == hipSuccess &&
+                 attributes.type == hipMemoryTypeHost;
+    if (!pinned) (void)hipGetLastError();
+    if (!pinned && !getenv("H3_DOWNLOAD_PAGEABLE")) {
+        size_t chunk = h3_hip_stage_chunk(bytes), block = h3_hip_stage_block(bytes);
+        void *staging = h3_hip_stage_take(block);
+        if (staging) {
+            int ok = 1;
+            for (size_t done = 0; done < bytes && ok; done += chunk) {
+                size_t span = bytes - done;
+                if (span > chunk) span = chunk;
+                ok = hipMemcpyAsync(staging, (const unsigned char *)device + done,
+                                    span, hipMemcpyDeviceToHost, stream) == hipSuccess &&
+                     hipStreamSynchronize(stream) == hipSuccess;
+                if (ok) memcpy((unsigned char *)destination + done, staging, span);
+            }
+            h3_hip_stage_give(staging, block);
+            return ok;
+        }
+    }
     return hipMemcpyAsync(destination, device, bytes, hipMemcpyDeviceToHost,
                           stream) == hipSuccess &&
            hipStreamSynchronize(stream) == hipSuccess;
@@ -764,6 +789,8 @@ static uint64_t h3_hip_counter_delta(uint64_t value, uint64_t start) {
     return value >= start ? value - start : 0;
 }
 
+static void h3_hip_hipfile_emit(const char *label);
+
 static void h3_hip_profile_emit_load(struct h3_gpu *gpu) {
     if (!gpu || !h3_hip_profile_enabled()) return;
     pthread_mutex_lock(&h3_hip_load_lock);
@@ -802,6 +829,7 @@ static void h3_hip_profile_emit_load(struct h3_gpu *gpu) {
             upload > 0.0 ? (double)upload_bytes / gib / upload : 0.0,
             hit + miss ? 100.0 * (double)hit / (double)(hit + miss) : 0.0,
             (double)pinned_bytes / gib, (double)device_bytes / gib, io_wall);
+    h3_hip_hipfile_emit(gpu->profile_label[0] ? gpu->profile_label : "HIP context");
 }
 
 static void h3_hip_profile_emit_ops(struct h3_gpu *gpu) {
@@ -1103,7 +1131,27 @@ static int h3_hip_load_hipfile(h3_hip_direct_entry *entry,
     pthread_mutex_unlock(&h3_hip_hipfile_lock);
     return ok ? 1 : -1;
 }
+
+/* Cumulative per-path read counts from the library. p2p > 0 is the only proof
+ * that a read went NVMe to VRAM without a host bounce. */
+static void h3_hip_hipfile_emit(const char *label) {
+    if (!h3_hip_hipfile_driver_ready) return;
+    hipFileStatsLevel3_t stats;
+    memset(&stats, 0, sizeof(stats));
+    if (hipFileGetStatsL3(&stats).err != hipFileSuccess) return;
+    const hipFilePerGpuStats_t *gpu = &stats.per_gpu_stats[0];
+    fprintf(stderr,
+            "h3 profile: %-24s %-14s total=%llu p2p=%llu nvfs=%llu posix=%llu "
+            "unaligned=%llu errors=%llu (cumulative)\n",
+            label, "hipfile-reads", (unsigned long long)gpu->n_total_reads,
+            (unsigned long long)gpu->n_p2p_reads,
+            (unsigned long long)gpu->n_nvfs_reads,
+            (unsigned long long)gpu->n_posix_reads,
+            (unsigned long long)gpu->n_unaligned_reads,
+            (unsigned long long)gpu->n_reads_err);
+}
 #else
+static void h3_hip_hipfile_emit(const char *label) { (void)label; }
 static int h3_hip_load_hipfile(h3_hip_direct_entry *entry,
                                struct h3_gpu_tensor *obj, size_t bytes,
                                off_t offset) {
