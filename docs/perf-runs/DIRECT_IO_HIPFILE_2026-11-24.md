@@ -209,7 +209,23 @@ fox-fast cold, hipFile, 2 runs each:
 
 fox-15s cold: 330.35 s with 4 slots vs 331.75 s with 1, Qwen 8.04 vs 9.01 s, with no extra pinned fallbacks from the larger scratch. `--ssd-streaming` is compute-bound and does not change (39.74 vs 39.96 s on fox-s2). md5 is unchanged throughout.
 
-`H3_WEIGHT_HIPFILE=auto` sums the `*.safetensors` under the first weight file's grandparent (FL2VA: 134.1 GiB). It picks hipFile when that exceeds physical RAM (59.7 GiB here), and buffered otherwise.
+`H3_WEIGHT_HIPFILE=auto` finds the weight tree as the nearest parent of the first weight file that has a `transformer/` directory (FL2VA, 134.1 GiB). It sums the `.safetensors` files under it, three levels deep, and picks hipFile when that exceeds physical RAM (59.7 GiB here), buffered otherwise.
+
+## TAEH3, VSA, Pika, and `hip-functional` (2026-11-26)
+
+832x480, 2 s, seed 42, disk-cache hit, page cache dropped, 2 runs per mode:
+
+| Path | md5 (both modes) | Buffered | hipFile | E2E | KFD eviction (buffered / hipFile) |
+|---|---|---|---|---|---|
+| FastH3 dense + `--taeh3` | `aae31480...` | 26.08 s | 21.47 s | -17.7% | 0.4 to 0.8 s / 0 |
+| VSA (`--fasth3-lora` vsa-datafree + `--vsa`) | `4043313c...` | 36.61 s | 30.19 s | -17.5% | 2.3 to 2.8 s / 0 |
+| Pika H3 Flex (`--pika-lora` fl2va) | `c694fefc...` | 37.84 s | 32.14 s | -15.1% | 1.3 to 1.4 s / 0 |
+
+The LoRA and TAEH3 files load through the same path, and the output matches in every case. The Pika Ref2VA adapter is not downloaded on this box, so `--pika-ref-lora` was not run.
+
+`make HIP_ARCH=gfx1201 HIPFILE=1 hip-functional` passes all six sub-tests, with and without `H3_WEIGHT_HIPFILE=1`: encoder roundtrip, AudioVAE, Qwen vision, Qwen text, FL2VA multimodal, and Ref2VA. Every `ok`/metric line is identical between the two modes. This is also the first Ref2VA smoke pass on gfx1201 (the Ref2VA weights are now on the box).
+
+Both weight trees fit the loader's file cache: FL2VA and Ref2VA have 29 `.safetensors` files each, 58 in total against a limit of 64 open O_DIRECT handles. Files beyond the limit would fall back to buffered reads. Switching FL2VA ↔ Ref2VA inside one `--serve` daemon was not run.
 
 Final A/B with `tools/hipfile_ab.py` (page cache dropped, 2 runs each, md5 identical, `posix=0`):
 

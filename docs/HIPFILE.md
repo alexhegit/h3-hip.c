@@ -23,7 +23,7 @@ With a regular `/opt/rocm`, `make HIP_ARCH=... HIPFILE=1` is enough. Switching b
 | `H3_WEIGHT_HIPFILE=auto` | hipFile only when host RAM is smaller than the weight tree (FL2VA is about 134 GiB), otherwise buffered |
 | `H3_WEIGHT_DIRECT=1` | O_DIRECT into pinned staging, then H2D. Avoids page-cache pressure but is not faster than buffered |
 
-Works for the CLI, `--serve`, FastH3, Ref2VA, and `--ssd-streaming`. Any failed read falls back to the buffered loader for that tensor.
+Tested with the CLI, `--serve`, FastH3, TAEH3, VSA, Pika (FL2VA), Ref2VA, `--ssd-streaming`, and `hip-functional`, with the buffered md5 in every case. Any failed read falls back to the buffered loader for that tensor.
 
 To check that hipFile is active, run with `H3_PROFILE=1` (or `--profile`). Each phase then prints a line like this:
 
@@ -43,6 +43,7 @@ Page cache dropped before each run, md5 identical between modes.
 | fox-fast, disk-cache hit | 21.69 s | 16.15 s | -25.5% |
 | FastH3 4-step 864x480 5 s, cold / hit | 82.92 / 61.64 s | 70.38 / 56.91 s | -15.1% / -7.7% |
 | Ref2VA, one image | 30.13 s | 23.25 s | -22.8% |
+| FastH3 + TAEH3 / VSA / Pika, 832x480 2 s, hit | 26.08 / 36.61 / 37.84 s | 21.47 / 30.19 / 32.14 s | -17.7% / -17.5% / -15.1% |
 | `--serve` job after `/v1/cache/release` | 24.15 s | 19.34 s | -19.9% |
 | fox-15s (864x480, 15 s), cold / hit | 343.71 / 321.71 s | 331.08 / 317.91 s | -3.7% / -1.2% |
 | fox-fast `--ssd-streaming` | 262.41 s | 259.62 s | -1.1% |

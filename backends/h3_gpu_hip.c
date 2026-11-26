@@ -902,8 +902,8 @@ static struct h3_gpu_tensor *tensor_ptr(const h3_gpu_tensor *tensor) {
 enum { H3_IO_BUFFERED = 0, H3_IO_DIRECT = 1, H3_IO_HIPFILE = 2 };
 
 #ifdef H3_WITH_HIPFILE
-/* Total size of the *.safetensors files under root, recursing two levels
- * (FL2VA/transformer/model-*.safetensors). */
+/* Total size of the .safetensors files under root, recursing depth levels
+ * (the video VAE file sits three below FL2VA, in video_vae/source). */
 static uint64_t h3_hip_tree_bytes(const char *root, int depth) {
     DIR *dir = opendir(root);
     if (!dir) return 0;
@@ -932,17 +932,27 @@ static uint64_t h3_hip_tree_bytes(const char *root, int depth) {
 /* H3_WEIGHT_HIPFILE=auto: hipFile only when host RAM is smaller than the weight
  * tree, i.e. when buffered reads would churn the page cache (KI-008). On a host
  * that can keep the weights cached, buffered repeat runs read from RAM. The
- * tree is the second parent of the first weight file (FL2VA or Ref2VA). */
+ * tree is the nearest parent of the first weight file that has a transformer/
+ * directory (FL2VA or Ref2VA), else its grandparent. */
 static int h3_hip_weight_auto(const char *path) {
 #ifdef H3_WITH_HIPFILE
-    char root[1024];
+    char root[1024], probe[1100], grandparent[1024] = "";
     if (!path || snprintf(root, sizeof(root), "%s", path) >= (int)sizeof(root)) return 0;
-    for (int up = 0; up < 2; up++) {
+    int found = 0;
+    for (int up = 0; up < 4 && !found; up++) {
         char *slash = strrchr(root, '/');
-        if (!slash) return 0;
+        if (!slash) break;
         *slash = '\0';
+        if (up == 1) snprintf(grandparent, sizeof(grandparent), "%s", root);
+        struct stat st;
+        snprintf(probe, sizeof(probe), "%s/transformer", root);
+        found = stat(probe, &st) == 0 && S_ISDIR(st.st_mode);
     }
-    uint64_t weights = h3_hip_tree_bytes(root, 2);
+    if (!found) {
+        if (!grandparent[0]) return 0;
+        snprintf(root, sizeof(root), "%s", grandparent);
+    }
+    uint64_t weights = h3_hip_tree_bytes(root, 3);
     long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
     uint64_t ram = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0;
     int use = weights && ram && ram < weights;
