@@ -132,6 +132,41 @@ DiT hits the cache but denoise runs 5× slower:
 The CLI is not affected: it runs one job with the cache off and frees the
 DiT before the VAE. `H3_INT8_HOST=0` restores the old behaviour.
 
+## KI-008: Buffered weight loading causes KFD queue evictions on small-RAM hosts
+
+**Status:** open. Workaround: the experimental `H3_WEIGHT_HIPFILE=1`
+(build with `HIPFILE=1`) or `H3_WEIGHT_DIRECT=1`. Both bypass the page
+cache. Details: [`perf-runs/DIRECT_IO_HIPFILE_2026-11-24.md`](perf-runs/DIRECT_IO_HIPFILE_2026-11-24.md).
+
+The default loader reads weights through the page cache. When host RAM is
+smaller than the weights (the FL2VA tree is about 134 GiB), the page cache
+fills every free byte. On a 59 GiB host with an R9700, free RAM drops to
+0.3 to 0.7 GiB. The reclaim that follows makes KFD stop and restore every
+GPU queue of the process. Each eviction takes about 1 s
+(`/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms`):
+
+| Run (R9700, page cache dropped first) | KFD eviction per run, buffered | hipFile |
+|---|---:|---:|
+| fox-fast, disk-cache hit | 0.8 to 2.3 s | 0 |
+| fox-fast, cold | 1.1 to 6.4 s | 0 |
+| FastH3 864×480 · 5 s, cold | 2.7 to 5.7 s | 0 |
+| `--serve` fox-s2, 4 jobs per daemon | 12.8 to 20.4 s | 0 |
+
+The eviction lands inside whichever kernel is running at the time (one
+`qkv_rope` launch took 879 ms instead of 0.3 ms). That adds 2 to 4 s of
+denoise time per run and makes buffered runs vary by several seconds.
+
+A second, smaller source affected every mode: device-to-host copies into
+pageable memory made ROCm pin those pages in place, and freeing or reusing
+them later cost about 10 ms of eviction each time (once per video VAE
+chunk). Readback now stages pageable destinations through pinned memory,
+and the video VAE reads into a reused pinned buffer.
+`H3_DOWNLOAD_PAGEABLE=1` restores the old copy. This removed every
+remaining hipFile eviction, but only about 0.3 to 0.7 s of the buffered
+ones. Which driver path turns page-cache pressure into the large buffered
+evictions is not known yet. `sudo tools/kfd_eviction_trace.sh -- COMMAND`
+prints the kernel stacks behind each eviction (MMU notifier vs TTM swap).
+
 ## Related backlog
 
 | ID | Topic | Status |
@@ -140,7 +175,7 @@ DiT before the VAE. `H3_INT8_HOST=0` restores the old behaviour.
 | V | `--ref-video-audio VIDEO AUDIO` E2E clip | Same kernels as `--ref-video`; not separately showcased |
 | X | Re-verify gfx1151 / gfx90a / gfx942 after the R9700 merge | Open. Merged after runtime checks on gfx1201 only; the other ISAs were compile-checked. Changes that reach every GPU: row-chunked int32 INT8 scratch, scratch release between phases, lazy INT8 MLP workspace, SDPA K/V scratch in VRAM on discrete GPUs, and the row-chunked grouped INT8 path. Run `hip-test`, `halo-regression` (gfx1151 fox-s2 `1731f95c…`), and fox-s2 / fox-fast / 832×480 · 5 s dense md5 against each ISA's last ledger. Grouped INT8 matches the old loop bit for bit on gfx1201 only with fp contraction off; CDNA codegen of the old loop epilogue may differ. 1344×768 · 15 s outputs are expected to change on every ISA (grouped INT8 no longer falls back above 65535 rows) |
 | W | gfx1201 `--vsa` at 1344×768 · 15 s | Does not fit in 32 GiB; analysis and options in KI-006 |
-| R | gfx1201 (R9700) `hip-functional` Ref2VA smoke | Open. Every FL2VA sub-test passes; `test_hip_ref2va_smoke` needs `Ref2VA/` (`./tools/download_weights.sh --both`), not downloaded on the R9700 box |
+| R | gfx1201 (R9700) `hip-functional` Ref2VA smoke | Done 2026-11-26. All six sub-tests pass, including `test_hip_ref2va_smoke`, now that `Ref2VA/` is on the box. They also pass with `H3_WEIGHT_HIPFILE=1` |
 
 ### Profiling notes (HIP)
 

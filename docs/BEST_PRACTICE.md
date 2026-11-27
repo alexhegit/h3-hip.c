@@ -35,6 +35,8 @@ H3_INT8_VAE=1 H3_TOKEN_REDUCTION=1 H3_GPU_SAMPLER=1 ./h3 ...
 | `H3_DISK_CACHE` | `1` | Exact disk cache of prompt embeddings and the AdaLN schedule; `0` disables |
 | `H3_CACHE_DIR` | `~/.cache/h3-hip` | Disk cache directory (`$XDG_CACHE_HOME/h3-hip` when set) |
 | `H3_CACHE_MAX_GIB` | `8` | Disk cache cap; least recently used entries are removed first |
+| `H3_WEIGHT_HIPFILE` | `0` | `1` or `auto`: load device weights NVMe → VRAM with hipFile (experimental, needs a `HIPFILE=1` build). See [`HIPFILE.md`](HIPFILE.md) |
+| `H3_WEIGHT_DIRECT` | `0` | `1`: O_DIRECT through pinned staging. Avoids page-cache pressure, not faster |
 
 ## Quality Scale
 

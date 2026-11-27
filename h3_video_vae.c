@@ -101,6 +101,11 @@ typedef struct {
     int int8_vae;
     h3_gpu_tensor *quant_ws;
     h3_gpu_tensor *scale_ws;
+    /* Pinned readback buffer reused by every tile. Reading into fresh heap
+     * memory made ROCm pin it in place; freeing it then cost a KFD queue
+     * eviction (~11 ms) per decoded chunk. */
+    float *rows_host;
+    size_t rows_capacity;
 } vae_context;
 
 typedef struct vae_loader vae_loader;
@@ -184,6 +189,7 @@ static void cleanup(vae_context *vae) {
     free_tensor(&vae->activated_bf16); free_tensor(&vae->rope_cos);
     free_tensor(&vae->rope_sin); free_tensor(&vae->projected);
     free_tensor(&vae->quant_ws); free_tensor(&vae->scale_ws);
+    h3_gpu_host_pinned_free(vae->rows_host);
     h3_gpu_free(vae->gpu);
     h3_weight_store_free(vae->weights);
     memset(vae, 0, sizeof(*vae));
@@ -924,19 +930,25 @@ static int unpack_frame_range(vae_context *vae, int first_frame,
         return 0;
     }
     size_t projected_count = (size_t)vae->sequence * OUTPUT_PATCH;
-    float *rows = malloc(projected_count * sizeof(*rows));
+    if (vae->rows_capacity < projected_count) {
+        h3_gpu_host_pinned_free(vae->rows_host);
+        vae->rows_host = h3_gpu_host_pinned_alloc(projected_count * sizeof(float));
+        vae->rows_capacity = vae->rows_host ? projected_count : 0;
+    }
+    float *heap_rows = vae->rows_host ? NULL : malloc(projected_count * sizeof(float));
+    float *rows = vae->rows_host ? vae->rows_host : heap_rows;
     int pixel_h = vae->latent_h * 16;
     int pixel_w = vae->latent_w * 16;
     size_t rgb_count = (size_t)frame_count * (size_t)pixel_h *
                        (size_t)pixel_w * 3;
     float *rgb = malloc(rgb_count * sizeof(*rgb));
     if (!rows || !rgb) {
-        free(rows); free(rgb);
+        free(heap_rows); free(rgb);
         fail(error, error_size, "out of memory unpacking video VAE frames");
         return 0;
     }
     if (!h3_gpu_tensor_read_f32(vae->projected, rows, projected_count)) {
-        free(rows); free(rgb);
+        free(heap_rows); free(rgb);
         fail(error, error_size, "cannot read video VAE output patches");
         return 0;
     }
@@ -973,7 +985,7 @@ static int unpack_frame_range(vae_context *vae, int first_frame,
             }
         }
     }
-    free(rows);
+    free(heap_rows);
     output->frames = frame_count;
     output->height = pixel_h;
     output->width = pixel_w;

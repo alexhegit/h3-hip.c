@@ -70,6 +70,15 @@ ifeq ($(H3_BACKEND),hip)
   endif
   LDLIBS := -L$(ROCM_PATH)/lib -Wl,-rpath,$(ROCM_PATH)/lib \
 	-lamdhip64 -lhipblas -lhipblaslt -lm -pthread
+  # Opt-in hipFile for H3_WEIGHT_HIPFILE=1 (experimental). The ROCm wheel keeps
+  # hipfile.h in the -dev tree and libhipfile.so in the core tree, so both
+  # locations can be set: make HIPFILE=1 HIPFILE_INC=... HIPFILE_LIB=...
+  ifeq ($(HIPFILE),1)
+    HIPFILE_INC ?= $(ROCM_PATH)/include
+    HIPFILE_LIB ?= $(ROCM_PATH)/lib
+    CFLAGS += -DH3_WITH_HIPFILE -I$(HIPFILE_INC)
+    LDLIBS += -L$(HIPFILE_LIB) -Wl,-rpath,$(HIPFILE_LIB) -lhipfile
+  endif
   LIB_GPU := backends/h3_gpu_hip.o backends/h3_gpu_hip_stubs.o \
 	backends/h3_hip_probe.o backends/h3_device.o \
 	backends/h3_tokenizer.o kernels/h3_kernels.o \
